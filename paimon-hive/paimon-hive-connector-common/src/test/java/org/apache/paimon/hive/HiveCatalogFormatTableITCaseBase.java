@@ -134,6 +134,14 @@ public abstract class HiveCatalogFormatTableITCaseBase {
     }
 
     @Test
+    public void testTableWithBlobField() throws Exception {
+        tEnv.executeSql(
+                        "CREATE TABLE blob_table (a INT  COMMENT 'comment a', b binary COMMENT 'comment b') with ('row-tracking.enabled'='true', 'data-evolution.enabled'='true', 'blob-fields'='b')")
+                .await();
+        doTestTableWithBlobField();
+    }
+
+    @Test
     public void testCsvFormatTableWithDelimiter() throws Exception {
         hiveShell.execute(
                 "CREATE TABLE csv_table_delimiter (a INT COMMENT 'comment a', b STRING COMMENT 'comment b') ROW FORMAT DELIMITED FIELDS TERMINATED BY ';'");
@@ -184,6 +192,17 @@ public abstract class HiveCatalogFormatTableITCaseBase {
                         "CREATE TABLE flink_json_table (a INT COMMENT 'comment a', b TIMESTAMP COMMENT 'comment b') with ('type'='format-table', 'file.format'='json')")
                 .await();
         doTestJSONFormatTable("flink_json_table");
+    }
+
+    private void doTestTableWithBlobField() throws Exception {
+        assertThat(hiveShell.executeQuery("desc formatted blob_table"))
+                .contains("a	int	comment a", "b	binary	comment b");
+        tEnv.executeSql(
+                        "INSERT INTO blob_table VALUES (1, X'48656C6C6F'), (2, cast(null as BYTES))")
+                .await();
+        assertThat(collect("SELECT * FROM blob_table"))
+                .containsExactlyInAnyOrder(
+                        Row.of(1, new byte[] {72, 101, 108, 108, 111}), Row.of(2, null));
     }
 
     private void doTestCSVFormatTable(String tableName) throws Exception {
