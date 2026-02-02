@@ -1,0 +1,9 @@
+paimon-faiss/paimon-faiss-jni/src/main/resources/linux/amd64/libgcc_s.so.1 filter=lfs diff=lfs merge=lfs -text
+paimon-faiss/paimon-faiss-jni/src/main/resources/linux/amd64/libgfortran.so.3 filter=lfs diff=lfs merge=lfs -text
+paimon-faiss/paimon-faiss-jni/src/main/resources/linux/amd64/libgomp.so.1 filter=lfs diff=lfs merge=lfs -text
+paimon-faiss/paimon-faiss-jni/src/main/resources/linux/amd64/libopenblas.so.0 filter=lfs diff=lfs merge=lfs -text
+paimon-faiss/paimon-faiss-jni/src/main/resources/linux/amd64/libquadmath.so.0 filter=lfs diff=lfs merge=lfs -text
+paimon-faiss/paimon-faiss-jni/src/main/resources/linux/amd64/libblas.so.3 filter=lfs diff=lfs merge=lfs -text
+paimon-faiss/paimon-faiss-jni/src/main/resources/linux/amd64/libfaiss.so filter=lfs diff=lfs merge=lfs -text
+paimon-faiss/paimon-faiss-jni/src/main/resources/linux/amd64/liblapack.so.3 filter=lfs diff=lfs merge=lfs -text
+paimon-faiss/paimon-faiss-jni/src/main/resources/linux/amd64/libpaimon_faiss_jni.so filter=lfs diff=lfs merge=lfs -text
