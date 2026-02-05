@@ -60,6 +60,12 @@ under the License.
         </dependency>
 
         <dependency>
+            <groupId>org.apache.paimon</groupId>
+            <artifactId>paimon-hive-connector-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-sql_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
@@ -152,6 +158,7 @@ under the License.
                                      <include>org.apache.paimon:paimon-spark3-common_${scala.binary.version}</include>
                                      <include>org.apache.paimon:paimon-faiss-index</include>
                                      <include>org.apache.paimon:paimon-faiss-jni</include>
+                                     <include>org.apache.paimon:paimon-hive-connector-common</include>
                                 </includes>
                             </artifactSet>
                         </configuration>
