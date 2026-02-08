@@ -28,6 +28,7 @@ import org.apache.paimon.table.FallbackReadFileStoreTable;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.source.DataSplit;
 import org.apache.paimon.table.source.InnerTableScan;
+import org.apache.paimon.table.source.Split;
 import org.apache.paimon.tag.TagPreview;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.BinPacking;
@@ -49,7 +50,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
-import java.util.stream.Collectors;
 
 import static java.util.Collections.singletonMap;
 import static org.apache.paimon.CoreOptions.SCAN_TAG_NAME;
@@ -63,6 +63,7 @@ public class HiveSplitGenerator {
 
     public static InputSplit[] generateSplits(
             FileStoreTable table, JobConf jobConf, int numSplits) {
+        LOG.info("##### debug， 进入了 generateSplits");
         List<Predicate> predicates = new ArrayList<>();
         createPredicate(table.schema(), jobConf, false).ifPresent(predicates::add);
 
@@ -113,17 +114,26 @@ public class HiveSplitGenerator {
                     scan.withFilter(PredicateBuilder.and(predicatePerPartition));
                 }
             }
-            List<DataSplit> dataSplits =
-                    scan.dropStats().plan().splits().stream()
-                            .map(s -> (DataSplit) s)
-                            .collect(Collectors.toList());
+            List<Split> plannedSplits = scan.dropStats().plan().splits();
+            List<DataSplit> dataSplits = new ArrayList<>();
+            List<Split> otherSplits = new ArrayList<>();
+            for (Split split : plannedSplits) {
+                if (split instanceof DataSplit) {
+                    dataSplits.add((DataSplit) split);
+                } else {
+                    otherSplits.add(split);
+                }
+            }
             List<DataSplit> packed = dataSplits;
             if (jobConf.getBoolean(
                     HiveConnectorOptions.HIVE_PAIMON_RESPECT_MINMAXSPLITSIZE_ENABLED.key(),
                     false)) {
                 packed = packSplits(table, jobConf, dataSplits, numSplits);
             }
-            packed.forEach(ss -> splits.add(new PaimonInputSplit(location, ss, table)));
+            List<Split> finalSplits = new ArrayList<>(packed.size() + otherSplits.size());
+            finalSplits.addAll(packed);
+            finalSplits.addAll(otherSplits);
+            finalSplits.forEach(ss -> splits.add(new PaimonInputSplit(location, ss, table)));
         }
         return splits.toArray(new InputSplit[0]);
     }
@@ -159,6 +169,7 @@ public class HiveSplitGenerator {
 
     public static List<DataSplit> packSplits(
             FileStoreTable table, JobConf jobConf, List<DataSplit> splits, int numSplits) {
+        LOG.info("##### debug， 进入了 packSplits");
         if (table.coreOptions().deletionVectorsEnabled()) {
             return splits;
         }

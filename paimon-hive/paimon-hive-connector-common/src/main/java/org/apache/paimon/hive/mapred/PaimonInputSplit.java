@@ -21,8 +21,11 @@ package org.apache.paimon.hive.mapred;
 import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.io.DataInputDeserializer;
 import org.apache.paimon.io.DataOutputSerializer;
+import org.apache.paimon.table.FallbackReadFileStoreTable;
 import org.apache.paimon.table.FileStoreTable;
+import org.apache.paimon.table.source.ChainSplit;
 import org.apache.paimon.table.source.DataSplit;
+import org.apache.paimon.table.source.Split;
 import org.apache.paimon.utils.InstantiationUtil;
 
 import org.apache.hadoop.fs.Path;
@@ -31,30 +34,29 @@ import org.apache.hadoop.mapred.FileSplit;
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
+import java.util.List;
 import java.util.Objects;
 
-/**
- * {@link FileSplit} for paimon. It contains all files to read from a certain partition and bucket.
- */
+/** {@link FileSplit} for paimon. It contains the serialized split for reading table data. */
 public class PaimonInputSplit extends FileSplit {
 
     private static final String[] ANYWHERE = new String[] {"*"};
 
     private String path;
-    private DataSplit split;
+    private Split split;
 
     private FileStoreTable table;
 
     // public no-argument constructor for deserialization
     public PaimonInputSplit() {}
 
-    public PaimonInputSplit(String path, DataSplit split, FileStoreTable table) {
+    public PaimonInputSplit(String path, Split split, FileStoreTable table) {
         this.path = path;
         this.split = split;
         this.table = table;
     }
 
-    public DataSplit split() {
+    public Split split() {
         return split;
     }
 
@@ -70,7 +72,7 @@ public class PaimonInputSplit extends FileSplit {
 
     @Override
     public long getLength() {
-        return split.dataFiles().stream().mapToLong(DataFileMeta::fileSize).sum();
+        return splitLength(split);
     }
 
     @Override
@@ -85,10 +87,18 @@ public class PaimonInputSplit extends FileSplit {
     @Override
     public void write(DataOutput dataOutput) throws IOException {
         dataOutput.writeUTF(path);
-        DataOutputSerializer out = new DataOutputSerializer(128);
-        split.serialize(out);
-        dataOutput.writeInt(out.length());
-        dataOutput.write(out.getCopyOfBuffer());
+        if (split instanceof DataSplit
+                && !(split instanceof FallbackReadFileStoreTable.FallbackSplit)) {
+            DataOutputSerializer out = new DataOutputSerializer(128);
+            ((DataSplit) split).serialize(out);
+            dataOutput.writeInt(out.length());
+            dataOutput.write(out.getCopyOfBuffer());
+        } else {
+            byte[] splitBytes = InstantiationUtil.serializeObject(split);
+            // Negative length signals Java-serialized split (non-DataSplit or fallback).
+            dataOutput.writeInt(-splitBytes.length);
+            dataOutput.write(splitBytes);
+        }
         writeFileStoreTable(dataOutput);
     }
 
@@ -106,9 +116,23 @@ public class PaimonInputSplit extends FileSplit {
     public void readFields(DataInput dataInput) throws IOException {
         path = dataInput.readUTF();
         int length = dataInput.readInt();
+        boolean useObjectSerde = length < 0;
+        if (useObjectSerde) {
+            length = -length;
+        }
         byte[] bytes = new byte[length];
         dataInput.readFully(bytes);
-        split = DataSplit.deserialize(new DataInputDeserializer(bytes));
+        if (useObjectSerde) {
+            try {
+                split =
+                        InstantiationUtil.deserializeObject(
+                                bytes, Thread.currentThread().getContextClassLoader());
+            } catch (ClassNotFoundException e) {
+                throw new IOException("Unable to deserialize split.", e);
+            }
+        } else {
+            split = DataSplit.deserialize(new DataInputDeserializer(bytes));
+        }
         readFileStoreTable(dataInput);
     }
 
@@ -149,5 +173,22 @@ public class PaimonInputSplit extends FileSplit {
     @Override
     public int hashCode() {
         return Objects.hash(path, split, table);
+    }
+
+    private static long splitLength(Split split) {
+        if (split instanceof DataSplit) {
+            return dataFilesLength(((DataSplit) split).dataFiles());
+        }
+        if (split instanceof ChainSplit) {
+            return dataFilesLength(((ChainSplit) split).dataFiles());
+        }
+        if (split instanceof FallbackReadFileStoreTable.FallbackSplit) {
+            return splitLength(((FallbackReadFileStoreTable.FallbackSplit) split).wrapped());
+        }
+        return 0L;
+    }
+
+    private static long dataFilesLength(List<DataFileMeta> dataFiles) {
+        return dataFiles.stream().mapToLong(DataFileMeta::fileSize).sum();
     }
 }
