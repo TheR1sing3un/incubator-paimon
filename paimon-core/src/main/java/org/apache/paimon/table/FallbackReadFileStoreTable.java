@@ -542,10 +542,11 @@ public class FallbackReadFileStoreTable extends DelegatedFileStoreTable {
                 if (fallbackSplit.isFallback()) {
                     try {
                         return fallbackRead.createReader(fallbackSplit.wrapped());
-                    } catch (Exception ignored) {
+                    } catch (Exception e) {
                         LOG.error(
                                 "Reading from fallback branch has problems: {}",
-                                fallbackSplit.wrapped());
+                                fallbackSplit.wrapped(),
+                                e);
                     }
                 }
             }
