@@ -37,9 +37,11 @@ import org.xml.sax.InputSource;
 
 import javax.xml.parsers.DocumentBuilderFactory;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.StringReader;
 import java.io.UncheckedIOException;
+import java.net.URL;
 
 import static org.apache.paimon.options.ConfigOptions.key;
 import static org.apache.paimon.options.description.TextElement.text;
@@ -51,6 +53,8 @@ import static org.apache.paimon.options.description.TextElement.text;
 public class HadoopUtils {
 
     private static final Logger LOG = LoggerFactory.getLogger(HadoopUtils.class);
+
+    private static final String KWAI_FLINK_CLIENT_HADOOP_CONFIG_FILE_NAME = "flink-hadoop.xml";
 
     public static final ConfigOption<HadoopConfigLoader> HADOOP_CONF_LOADER =
             key("hadoop-conf-loader")
@@ -154,7 +158,22 @@ public class HadoopUtils {
             LOG.warn("Could not find Hadoop configuration via any of the supported methods");
         }
 
+        if (fileExistInClassPath(KWAI_FLINK_CLIENT_HADOOP_CONFIG_FILE_NAME, HadoopUtils.class)) {
+            result.addResource(KWAI_FLINK_CLIENT_HADOOP_CONFIG_FILE_NAME);
+            LOG.info(
+                    "Kwai Flink: filesystems add resource {}",
+                    KWAI_FLINK_CLIENT_HADOOP_CONFIG_FILE_NAME);
+        }
+
         return result;
+    }
+
+    private static boolean fileExistInClassPath(String fileName, Class<?> clazz) {
+        URL filePathURL = clazz.getClassLoader().getResource(fileName);
+        if (filePathURL != null) {
+            return new File(filePathURL.getFile()).exists();
+        }
+        return false;
     }
 
     /**

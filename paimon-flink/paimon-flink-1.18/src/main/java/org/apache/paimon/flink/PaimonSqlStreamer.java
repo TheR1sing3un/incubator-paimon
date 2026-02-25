@@ -18,10 +18,8 @@
 
 package org.apache.paimon.flink;
 
-import org.apache.commons.lang3.StringUtils;
 import org.apache.flink.api.java.hadoop.mapred.utils.HadoopUtils;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.StatementSet;
@@ -36,11 +34,12 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
 
-/** PaimonSqlStreamer */
+/** PaimonSqlStreamer. */
 public class PaimonSqlStreamer {
 
     // 分隔符：SQL 语句以分号分隔（需避免 SQL 注释中包含分号）
@@ -48,19 +47,23 @@ public class PaimonSqlStreamer {
 
     public static void main(String[] args) throws Exception {
         // 1. 解析命令行参数（获取输入的 Flink SQL）
+        // print args (null-safe)
+        System.out.println(
+                "PaimonSqlStreamer - input args :"
+                        + (args == null ? "null" : Arrays.toString(args)));
         String flinkSql = parseArgs(args);
         if (flinkSql == null || flinkSql.trim().isEmpty()) {
             throw new IllegalArgumentException("请传入有效的 Flink SQL（--sqlFile 或 --sql 参数）");
-        } else {
-            System.out.println("PaimonSqlStreamer - input args :" + StringUtils.join(args, ","));
         }
 
         // 2. 初始化 Flink Stream 执行环境
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         // 配置 Checkpoint（Paimon 依赖 Checkpoint 提交数据）
-        env.enableCheckpointing(30000); // 30秒一次 Checkpoint
-        env.getCheckpointConfig().setCheckpointingMode(CheckpointingMode.EXACTLY_ONCE); // 精确一次语义
-        env.getCheckpointConfig().setMinPauseBetweenCheckpoints(10000); // 两次 Checkpoint 最小间隔10秒
+        //        env.enableCheckpointing(30000); // 30秒一次 Checkpoint
+        //        env.getCheckpointConfig().setCheckpointingMode(CheckpointingMode.EXACTLY_ONCE); //
+        // 精确一次语义
+        //        env.getCheckpointConfig().setMinPauseBetweenCheckpoints(10000); // 两次 Checkpoint
+        // 最小间隔10秒
         // 目前线上flink不支持SQL内设置：
         //      env.setRestartStrategy(RestartStrategies.fixedDelayRestart(3, 5000)); //
         // 重启策略：失败3次，每次间隔5秒
@@ -76,7 +79,8 @@ public class PaimonSqlStreamer {
         TableEnvironment tableEnv = TableEnvironment.create(tableEnvSettings);
 
         // 4. （可选）配置 Paimon/Hadoop 环境（如 HDFS 路径、权限等）
-        Configuration config = tableEnv.getConfig().getConfiguration();
+        // (optional) get Flink TableEnvironment configuration if needed later.
+        // Configuration config = tableEnv.getConfig().getConfiguration();
 
         // 5. 拆分 SQL 语句（支持多句 SQL，以分号分隔）
         List<String> sqlStatements = splitSql(flinkSql);
@@ -110,45 +114,73 @@ public class PaimonSqlStreamer {
         System.out.println("Flink 作业执行成功！");
     }
 
-    /** 解析命令行参数 支持 --sqlFile /path/to/job.sql 或 --sql "CREATE TABLE ...; INSERT ...;" */
+    /** 解析命令行参数 支持 --sqlFile /path/to/job.sql 或 --sql "CREATE TABLE ...; INSERT ...;" . */
     private static String parseArgs(String[] args) throws IOException {
-        if (args.length < 2) {
+        if (args == null || args.length == 0) {
             printUsage();
             return null;
         }
 
-        String arg1 = args[0];
-        String arg2 = args[1];
-        switch (arg1) {
-            case "--sqlFile":
-                return readSqlFromFile(arg2); // 从文件读取 SQL
-            case "--sql":
-                return URLDecoder.decode(arg2); // 直接读取 SQL 语句
-            default:
-                printUsage();
-                return null;
+        String sqlValue = null;
+        String sqlFileValue = null;
+
+        for (int i = 0; i < args.length; i++) {
+            String a = args[i];
+            if (a == null) {
+                continue;
+            }
+            // support --key=value
+            if (a.startsWith("--sql=")) {
+                sqlValue = a.substring("--sql=".length());
+            } else if (a.startsWith("--sqlFile=")) {
+                sqlFileValue = a.substring("--sqlFile=".length());
+            } else if ("--sql".equals(a)) {
+                // support --key value
+                if (i + 1 < args.length) {
+                    sqlValue = args[i + 1];
+                    i++; // skip value
+                } else {
+                    System.out.println("Missing value for --sql");
+                }
+            } else if ("--sqlFile".equals(a)) {
+                if (i + 1 < args.length) {
+                    sqlFileValue = args[i + 1];
+                    i++; // skip value
+                } else {
+                    System.out.println("Missing value for --sqlFile");
+                }
+            }
         }
+
+        // Prefer direct --sql over --sqlFile if both provided.
+        if (sqlValue != null && !sqlValue.trim().isEmpty()) {
+            // URL decode using UTF-8
+            return URLDecoder.decode(sqlValue, StandardCharsets.UTF_8.name());
+        }
+
+        if (sqlFileValue != null && !sqlFileValue.trim().isEmpty()) {
+            return readSqlFromFile(sqlFileValue);
+        }
+
+        printUsage();
+        return null;
     }
 
-    /** 从文件读取 SQL 内容 */
+    /** 从文件读取 SQL 内容. */
     private static String readSqlFromFile(String filePath) throws IOException {
         StringBuilder sqlBuilder = new StringBuilder();
         Path readPath = new Path(filePath);
         FileSystem fs = readPath.getFileSystem(getHadoopConf());
         if (fs.exists(readPath)) {
-            FSDataInputStream in = fs.open(readPath);
-            try (BufferedReader br = new BufferedReader(new InputStreamReader(in))) {
+            try (FSDataInputStream in = fs.open(readPath);
+                    BufferedReader br = new BufferedReader(new InputStreamReader(in))) {
                 String line;
                 while ((line = br.readLine()) != null) {
-                    // 跳过注释行（-- 开头）和空行
+                    // 跳过注释行（-- 开头）和空行。
                     String trimmedLine = line.trim();
                     if (!trimmedLine.isEmpty() && !trimmedLine.startsWith("--")) {
                         sqlBuilder.append(line).append("\n");
                     }
-                }
-            } finally {
-                if (in != null) {
-                    in.close();
                 }
             }
         } else {
@@ -158,7 +190,7 @@ public class PaimonSqlStreamer {
         return sqlBuilder.toString();
     }
 
-    /** 拆分 SQL 语句（以分号分隔，避免拆分注释中的分号） */
+    /** 拆分 SQL 语句（以分号分隔，避免拆分注释中的分号）. */
     private static List<String> splitSql(String sql) {
         // 简单拆分：若 SQL 中包含注释内的分号，需优化正则（示例为基础版）
         String[] split = sql.split(SQL_DELIMITER);
@@ -168,13 +200,14 @@ public class PaimonSqlStreamer {
                 .collect(Collectors.toList());
     }
 
-    /** 打印使用说明 */
+    /** 打印使用说明. */
     private static void printUsage() {
         System.out.println("使用方式：");
         System.out.println(
                 "1. 从 SQL 文件执行：java -jar FlinkKafkaToPaimon.jar --sqlFile /path/to/job.sql");
         System.out.println(
                 "2. 直接执行 SQL 语句(需要urlencode编码)：java -jar FlinkKafkaToPaimon.jar --sql \"CREATE TABLE kafka_source (...) WITH (...); INSERT INTO paimon_sink SELECT * FROM kafka_source;\"");
+        System.out.println("支持 --sql=... 和 --sqlFile=... 形式，且位置不限。");
     }
 
     public static org.apache.hadoop.conf.Configuration getHadoopConf() {
