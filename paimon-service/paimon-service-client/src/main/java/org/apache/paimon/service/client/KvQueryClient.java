@@ -18,8 +18,13 @@
 
 package org.apache.paimon.service.client;
 
+import org.apache.paimon.CoreOptions;
+import org.apache.paimon.bucket.BucketFunction;
+import org.apache.paimon.codegen.CodeGenUtils;
+import org.apache.paimon.codegen.Projection;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.query.QueryLocation;
+import org.apache.paimon.schema.TableSchema;
 import org.apache.paimon.service.exceptions.UnknownPartitionBucketException;
 import org.apache.paimon.service.messages.KvRequest;
 import org.apache.paimon.service.messages.KvResponse;
@@ -27,12 +32,16 @@ import org.apache.paimon.service.network.NetworkClient;
 import org.apache.paimon.service.network.messages.MessageSerializer;
 import org.apache.paimon.service.network.stats.DisabledServiceRequestStats;
 import org.apache.paimon.utils.FutureUtils;
+import org.apache.paimon.utils.Preconditions;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -43,9 +52,25 @@ public class KvQueryClient {
 
     private final NetworkClient<KvRequest, KvResponse> networkClient;
     private final QueryLocation queryLocation;
+    @Nullable private final TableSchema tableSchema;
+    private volatile UnpartitionedPrimaryKeyLookup primaryKeyLookup;
 
     public KvQueryClient(QueryLocation queryLocation, int numEventLoopThreads) {
+        this(queryLocation, numEventLoopThreads, null, false);
+    }
+
+    public KvQueryClient(
+            QueryLocation queryLocation, int numEventLoopThreads, TableSchema tableSchema) {
+        this(queryLocation, numEventLoopThreads, tableSchema, true);
+    }
+
+    private KvQueryClient(
+            QueryLocation queryLocation,
+            int numEventLoopThreads,
+            @Nullable TableSchema tableSchema,
+            boolean requireSchema) {
         this.queryLocation = queryLocation;
+        this.tableSchema = requireSchema ? Preconditions.checkNotNull(tableSchema) : tableSchema;
         final MessageSerializer<KvRequest, KvResponse> messageSerializer =
                 new MessageSerializer<>(
                         new KvRequest.KvRequestDeserializer(),
@@ -64,6 +89,30 @@ public class KvQueryClient {
         CompletableFuture<BinaryRow[]> response = new CompletableFuture<>();
         executeActionAsync(response, new KvRequest(partition, bucket, keys), false);
         return response;
+    }
+
+    /**
+     * Get value by primary key for unpartitioned primary key table.
+     *
+     * <p>Requires {@link #KvQueryClient(QueryLocation, int, TableSchema)} to initialize.
+     */
+    public CompletableFuture<KvLookupResult> getValueByPrimaryKey(BinaryRow primaryKey) {
+        Preconditions.checkState(
+                tableSchema != null,
+                "Primary key lookup is not initialized. "
+                        + "Use KvQueryClient(QueryLocation, int, TableSchema).");
+        UnpartitionedPrimaryKeyLookup lookup = primaryKeyLookup;
+        if (lookup == null) {
+            synchronized (this) {
+                if (primaryKeyLookup == null) {
+                    primaryKeyLookup = new UnpartitionedPrimaryKeyLookup(tableSchema);
+                }
+                lookup = primaryKeyLookup;
+            }
+        }
+        int bucket = lookup.bucket(primaryKey);
+        return getValues(lookup.partition(), bucket, new BinaryRow[] {primaryKey})
+                .thenApply(values -> new KvLookupResult(values[0]));
     }
 
     private void executeActionAsync(
@@ -119,5 +168,69 @@ public class KvQueryClient {
 
     public CompletableFuture<Void> shutdownFuture() {
         return networkClient.shutdown();
+    }
+
+    /** Result for primary key lookup. */
+    public static final class KvLookupResult {
+
+        private final BinaryRow value;
+
+        private KvLookupResult(BinaryRow value) {
+            this.value = value;
+        }
+
+        public BinaryRow value() {
+            return value;
+        }
+
+        public boolean exists() {
+            return value != null;
+        }
+    }
+
+    private static final class UnpartitionedPrimaryKeyLookup {
+
+        private final Projection bucketKeyProjection;
+        private final BucketFunction bucketFunction;
+        private final int numBuckets;
+
+        private UnpartitionedPrimaryKeyLookup(TableSchema schema) {
+            Preconditions.checkArgument(
+                    schema.partitionKeys().isEmpty(),
+                    "Only support unpartitioned primary key table.");
+            Preconditions.checkArgument(
+                    !schema.primaryKeys().isEmpty(), "Primary key is required.");
+            Preconditions.checkArgument(
+                    schema.numBuckets() > 0, "Only support fixed bucket for lookup.");
+
+            List<String> primaryKeys = schema.trimmedPrimaryKeys();
+            List<String> bucketKeys = schema.bucketKeys();
+            int[] mapping = new int[bucketKeys.size()];
+            for (int i = 0; i < bucketKeys.size(); i++) {
+                int index = primaryKeys.indexOf(bucketKeys.get(i));
+                Preconditions.checkArgument(
+                        index >= 0,
+                        "Bucket key %s is not in primary keys %s.",
+                        bucketKeys.get(i),
+                        primaryKeys);
+                mapping[i] = index;
+            }
+
+            this.bucketKeyProjection =
+                    CodeGenUtils.newProjection(schema.logicalTrimmedPrimaryKeysType(), mapping);
+            this.bucketFunction =
+                    BucketFunction.create(
+                            new CoreOptions(schema.options()), schema.logicalBucketKeyType());
+            this.numBuckets = schema.numBuckets();
+        }
+
+        public BinaryRow partition() {
+            return BinaryRow.EMPTY_ROW;
+        }
+
+        public int bucket(BinaryRow primaryKey) {
+            BinaryRow bucketKey = bucketKeyProjection.apply(primaryKey);
+            return bucketFunction.bucket(bucketKey, numBuckets);
+        }
     }
 }
