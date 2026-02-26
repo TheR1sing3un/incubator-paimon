@@ -29,6 +29,7 @@ import org.apache.paimon.data.serializer.InternalSerializers;
 import org.apache.paimon.data.serializer.RowCompactedSerializer;
 import org.apache.paimon.deletionvectors.DeletionVector;
 import org.apache.paimon.disk.IOManager;
+import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.io.KeyValueFileReaderFactory;
 import org.apache.paimon.io.cache.CacheManager;
@@ -38,6 +39,7 @@ import org.apache.paimon.mergetree.LookupFile;
 import org.apache.paimon.mergetree.LookupLevels;
 import org.apache.paimon.mergetree.lookup.LookupSerializerFactory;
 import org.apache.paimon.mergetree.lookup.PersistValueProcessor;
+import org.apache.paimon.mergetree.lookup.RemoteLookupFileManager;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.reader.RecordReader;
 import org.apache.paimon.table.FileStoreTable;
@@ -66,6 +68,7 @@ public class LocalTableQuery implements TableQuery {
     private final Map<BinaryRow, Map<Integer, LookupLevels<KeyValue>>> tableView;
 
     private final CoreOptions options;
+    private final FileIO fileIO;
 
     private final Supplier<Comparator<InternalRow>> keyComparatorSupplier;
 
@@ -86,6 +89,7 @@ public class LocalTableQuery implements TableQuery {
 
     public LocalTableQuery(FileStoreTable table) {
         this.options = table.coreOptions();
+        this.fileIO = table.fileIO();
         this.tableView = new HashMap<>();
         FileStore<?> tableStore = table.store();
         if (!(tableStore instanceof KeyValueFileStore)) {
@@ -165,6 +169,14 @@ public class LocalTableQuery implements TableQuery {
                         lookupStoreFactory,
                         bfGenerator(options),
                         lookupFileCache);
+
+        if (this.options.lookupRemoteFileEnabled()) {
+            new RemoteLookupFileManager<>(
+                    fileIO,
+                    factory.pathFactory(),
+                    lookupLevels,
+                    this.options.lookupRemoteLevelThreshold());
+        }
 
         tableView.computeIfAbsent(partition, k -> new HashMap<>()).put(bucket, lookupLevels);
     }
