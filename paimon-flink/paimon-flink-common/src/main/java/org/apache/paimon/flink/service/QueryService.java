@@ -19,7 +19,9 @@
 package org.apache.paimon.flink.service;
 
 import org.apache.paimon.data.InternalRow;
+import org.apache.paimon.flink.FlinkConnectorOptions;
 import org.apache.paimon.flink.utils.InternalTypeInfo;
+import org.apache.paimon.options.Options;
 import org.apache.paimon.table.BucketMode;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Table;
@@ -52,10 +54,21 @@ public class QueryService {
                             + " is not fixed or the table has no primary key.");
         }
 
+        Options options = new Options(table.options());
+        int eventLoopThreads = options.get(FlinkConnectorOptions.QUERY_SERVICE_EVENT_LOOP_THREADS);
+        int queryThreads = options.get(FlinkConnectorOptions.QUERY_SERVICE_QUERY_THREADS);
+        Preconditions.checkArgument(
+                eventLoopThreads > 0,
+                "Invalid query service event loop threads: %s.",
+                eventLoopThreads);
+        Preconditions.checkArgument(
+                queryThreads > 0, "Invalid query service query threads: %s.", queryThreads);
+
         DataStream<InternalRow> stream = QueryFileMonitor.build(env, table);
         stream = partition(stream, QueryFileMonitor.createChannelComputer(), parallelism);
 
-        QueryExecutorOperator executorOperator = new QueryExecutorOperator(table);
+        QueryExecutorOperator executorOperator =
+                new QueryExecutorOperator(table, eventLoopThreads, queryThreads);
         DataStreamSink<?> sink =
                 stream.transform(
                                 "Executor",

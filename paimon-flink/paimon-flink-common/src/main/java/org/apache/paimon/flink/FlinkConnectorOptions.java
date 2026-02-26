@@ -238,6 +238,19 @@ public class FlinkConnectorOptions {
                     .defaultValue(16)
                     .withDescription("The thread number for lookup async.");
 
+    public static final ConfigOption<Integer> QUERY_SERVICE_EVENT_LOOP_THREADS =
+            ConfigOptions.key("query-service.event-loop-threads")
+                    .intType()
+                    .defaultValue(1)
+                    .withDescription(
+                            "The number of Netty event loop threads for query service server.");
+
+    public static final ConfigOption<Integer> QUERY_SERVICE_QUERY_THREADS =
+            ConfigOptions.key("query-service.query-threads")
+                    .intType()
+                    .defaultValue(1)
+                    .withDescription("The number of query execution threads for query service.");
+
     public static final ConfigOption<LookupCacheMode> LOOKUP_CACHE_MODE =
             ConfigOptions.key("lookup.cache")
                     .enumType(LookupCacheMode.class)

@@ -53,13 +53,17 @@ public class QueryExecutorOperator extends AbstractStreamOperator<InternalRow>
     private static final long serialVersionUID = 1L;
 
     private final Table table;
+    private final int numEventLoopThreads;
+    private final int numQueryThreads;
 
     private transient LocalTableQuery query;
 
     private transient IOManager ioManager;
 
-    public QueryExecutorOperator(Table table) {
+    public QueryExecutorOperator(Table table, int numEventLoopThreads, int numQueryThreads) {
         this.table = table;
+        this.numEventLoopThreads = numEventLoopThreads;
+        this.numQueryThreads = numQueryThreads;
     }
 
     public static RowType outputType() {
@@ -82,8 +86,8 @@ public class QueryExecutorOperator extends AbstractStreamOperator<InternalRow>
                         RuntimeContextUtils.getNumberOfParallelSubtasks(getRuntimeContext()),
                         NetworkUtils.findHostAddress(),
                         Collections.singletonList(0).iterator(),
-                        1,
-                        1,
+                        numEventLoopThreads,
+                        numQueryThreads,
                         query,
                         new DisabledServiceRequestStats());
 
