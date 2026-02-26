@@ -81,6 +81,7 @@ under the License.
         <module>paimon-hive</module>
         <module>paimon-spark</module>
         <module>paimon-service</module>
+        <module>paimon-query-service-sdk</module>
         <module>paimon-test-utils</module>
         <module>paimon-arrow</module>
         <module>tools/ci/paimon-ci-tools</module>

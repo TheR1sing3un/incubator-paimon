@@ -1,0 +1,223 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<configuration>
+    <property>
+        <name>fs.defaultFS</name>
+        <value>viewfs://hadoop-lt-cluster</value>
+    </property>
+    <property>
+        <name>fs.viewfs.mounttable.hadoop-lt-cluster.link./home</name>
+        <value>hdfs://lt-router.sy/home</value>
+    </property>
+    <property>
+        <name>fs.viewfs.mounttable.hadoop-lt-cluster.link./user</name>
+        <value>hdfs://lt-router.sy/user</value>
+    </property>
+    <property>
+        <name>fs.viewfs.mounttable.hadoop-lt-cluster.link./tmp</name>
+        <value>hdfs://lt-router.sy/tmp</value>
+    </property>
+    <property>
+        <name>hadoop.ssl.require.client.cert</name>
+        <value>false</value>
+    </property>
+    <property>
+        <name>hadoop.proxyuser.mapred.hosts</name>
+        <value>*</value>
+    </property>
+    <property>
+        <name>hadoop.ssl.client.conf</name>
+        <value>ssl-client.xml</value>
+    </property>
+    <property>
+        <name>hadoop.security.auth_to_local</name>
+        <value>DEFAULT</value>
+    </property>
+    <property>
+        <name>hadoop.proxyuser.flume.hosts</name>
+        <value>*</value>
+    </property>
+    <property>
+        <name>hadoop.user.group.static.mapping.overrides</name>
+        <value>rinf=rinf;abtest=abtest;acfun=acfun;ad=ad;apm_testing=apm_testing;app=app;audit_admin=audit_admin;budget=budget;business=business;camus=camus;cc=cc;cdn=cdn;dp=dp;druid=druid;ds=ds;finance=finance;flink=flink;gamecloud=gamecloud;gamelive=gamelive;growth=growth;grpr=grpr;hbase=hbase;hbase_bulkload=hbase_bulkload;hdp=hdp;hiveserver=hiveserver;imcloud=imcloud;impala=impala;infra=infra;jy=jy;kudu=kudu;market=market;mmu=mmu;new_product=new_product;nova=nova;op=op;operation=operation;oversea=oversea;overseas-growth=overseas-growth;overseas-rc=overseas-rc;overseas-video=overseas-video;plateco=plateco;pm=pm;presto=presto;rc=rc;reco=reco;rl=rl;sa=sa;security=security;server=server;sre=sre;strategy=strategy;system=system;ub=ub;video=video;yarn=yarn;ylab=ylab;yz=yz;strategy_x3=strategy_x3;econ=econ;xlab=xlab;race=race;hr=hr;publicgroup=publicgroup;ai_platform=ai_platform;</value>
+    </property>
+    <property>
+        <name>hadoop.ssl.enabled</name>
+        <value>false</value>
+    </property>
+    <property>
+        <name>hadoop.proxyuser.hdfs.groups</name>
+        <value>*</value>
+    </property>
+    <property>
+        <name>fs.trash.interval</name>
+        <value>1</value>
+    </property>
+    <property>
+        <name>hadoop.security.authorization</name>
+        <value>false</value>
+    </property>
+    <property>
+        <name>hadoop.ssl.server.conf</name>
+        <value>ssl-server.xml</value>
+    </property>
+    <property>
+        <name>hadoop.proxyuser.HTTP.hosts</name>
+        <value>*</value>
+    </property>
+    <property>
+        <name>hadoop.proxyuser.hive.hosts</name>
+        <value>*</value>
+    </property>
+    <property>
+        <name>hadoop.proxyuser.httpfs.groups</name>
+        <value>*</value>
+    </property>
+    <property>
+        <name>hadoop.proxyuser.httpfs.hosts</name>
+        <value>*</value>
+    </property>
+    <property>
+        <name>hadoop.security.authentication</name>
+        <value>simple</value>
+    </property>
+    <property>
+        <name>hadoop.proxyuser.hdfs.hosts</name>
+        <value>*</value>
+    </property>
+    <property>
+        <name>hadoop.security.instrumentation.requires.admin</name>
+        <value>false</value>
+    </property>
+    <property>
+        <name>hadoop.proxyuser.hue.hosts</name>
+        <value>*</value>
+    </property>
+    <property>
+        <name>dfs.client.failover.multi-path.enable</name>
+        <value>true</value>
+    </property>
+    <property>
+        <name>hadoop.proxyuser.yarn.groups</name>
+        <value>*</value>
+    </property>
+    <property>
+        <name>io.file.buffer.size</name>
+        <value>65536</value>
+    </property>
+    <property>
+        <name>fs.hdfs.impl</name>
+        <value>org.apache.hadoop.hdfs.DistributedFileSystem</value>
+    </property>
+    <property>
+        <name>hadoop.proxyuser.oozie.hosts</name>
+        <value>*</value>
+    </property>
+    <property>
+        <name>hadoop.rpc.protection</name>
+        <value>authentication</value>
+    </property>
+    <property>
+        <name>hadoop.proxyuser.mapred.groups</name>
+        <value>*</value>
+    </property>
+    <property>
+        <name>hadoop.proxyuser.hue.groups</name>
+        <value>*</value>
+    </property>
+    <property>
+        <name>hadoop.proxyuser.oozie.groups</name>
+        <value>*</value>
+    </property>
+    <property>
+        <name>hadoop.security.group.mapping</name>
+        <value>org.apache.hadoop.security.ShellBasedUnixGroupsMapping</value>
+    </property>
+    <property>
+        <name>hadoop.ssl.keystores.factory.class</name>
+        <value>org.apache.hadoop.security.ssl.FileBasedKeyStoresFactory</value>
+    </property>
+    <property>
+        <name>io.compression.codecs</name>
+        <value>org.apache.hadoop.io.compress.DefaultCodec,org.apache.hadoop.io.compress.GzipCodec,org.apache.hadoop.io.compress.BZip2Codec,org.apache.hadoop.io.compress.DeflateCodec,org.apache.hadoop.io.compress.SnappyCodec,org.apache.hadoop.io.compress.Lz4Codec</value>
+    </property>
+    <property>
+        <name>hadoop.proxyuser.hive.groups</name>
+        <value>*</value>
+    </property>
+    <property>
+        <name>hadoop.proxyuser.yarn.hosts</name>
+        <value>*</value>
+    </property>
+    <property>
+        <name>hadoop.proxyuser.flume.groups</name>
+        <value>*</value>
+    </property>
+    <property>
+        <name>hadoop.proxyuser.HTTP.groups</name>
+        <value>*</value>
+    </property>
+    <property>
+        <name>fs.s3a.endpoint</name>
+        <value>http://bs3-hb1.internal</value>
+    </property>
+    <property>
+        <name>fs.s3a.endpoint.region</name>
+        <value>hb1</value>
+    </property>
+    <property>
+        <name>fs.s3a.impl</name>
+        <value>org.apache.hadoop.fs.s3a.S3AFileSystem</value>
+    </property>
+    <property>
+        <name>fs.s3a.aws.credentials.provider</name>
+        <value>org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider</value>
+        <!--value>org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider</value-->
+    </property>
+    <property>
+        <name>fs.s3a.path.style.access</name>
+        <value>true</value>  <!-- 强制路径访问（http://s3.region.amazonaws.com/bucket/object），避免虚拟主机问题 -->
+    </property>
+    <!--property>
+        <name>fs.s3a.secret.key</name>
+        <value>123</value>
+    </property>
+    <property>
+        <name>fs.s3a.access.key</name>
+        <value>123</value>
+    </property-->
+    <!--property>
+        <name>fs.s3.endpoint</name>
+        <value>http://bs3-hb1.internal</value>
+    </property>
+    <property>
+        <name>fs.s3.endpoint.region</name>
+        <value>hb1</value>
+    </property>
+    <property>
+        <name>fs.s3.awsAccessKeyId</name>
+        <value>123</value>
+    </property>
+    <property>
+        <name>fs.s3.awsSecretAccessKey</name>
+        <value>123</value>
+    </property-->
+
+</configuration>
