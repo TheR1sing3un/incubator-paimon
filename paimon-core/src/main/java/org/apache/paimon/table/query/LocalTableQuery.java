@@ -53,10 +53,19 @@ import org.apache.paimon.shade.caffeine2.com.github.benmanes.caffeine.cache.Cach
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 import static org.apache.paimon.lookup.LookupStoreFactory.bfGenerator;
@@ -77,6 +86,7 @@ public class LocalTableQuery implements TableQuery {
     private final LookupStoreFactory lookupStoreFactory;
 
     private final int startLevel;
+    private final int preheatMaxFilesPerRefresh;
 
     private IOManager ioManager;
 
@@ -86,6 +96,7 @@ public class LocalTableQuery implements TableQuery {
     private final RowType partitionType;
 
     @Nullable private Filter<InternalRow> cacheRowFilter;
+    @Nullable private final ExecutorService preheatExecutor;
 
     public LocalTableQuery(FileStoreTable table) {
         this.options = table.coreOptions();
@@ -102,7 +113,7 @@ public class LocalTableQuery implements TableQuery {
         this.rowType = table.schema().logicalRowType();
         this.partitionType = table.schema().logicalPartitionType();
         RowType keyType = readerFactoryBuilder.keyType();
-        this.keyComparatorSupplier = new KeyComparatorSupplier(readerFactoryBuilder.keyType());
+        this.keyComparatorSupplier = new KeyComparatorSupplier(keyType);
         this.lookupStoreFactory =
                 LookupStoreFactory.create(
                         options,
@@ -110,6 +121,13 @@ public class LocalTableQuery implements TableQuery {
                                 options.lookupCacheMaxMemory(),
                                 options.lookupCacheHighPrioPoolRatio()),
                         new RowCompactedSerializer(keyType).createSliceComparator());
+        this.preheatMaxFilesPerRefresh = Math.max(0, options.lookupPreheatMaxFilesPerRefresh());
+        int preheatQueueSize = Math.max(1, options.lookupPreheatQueueSize());
+        this.preheatExecutor =
+                createPreheatExecutor(
+                        options.lookupRemoteFileEnabled(),
+                        preheatMaxFilesPerRefresh,
+                        preheatQueueSize);
         startLevel = options.needLookup() ? 1 : 0;
     }
 
@@ -118,27 +136,33 @@ public class LocalTableQuery implements TableQuery {
             int bucket,
             List<DataFileMeta> beforeFiles,
             List<DataFileMeta> dataFiles) {
-        LookupLevels<KeyValue> lookupLevels =
-                tableView.computeIfAbsent(partition, k -> new HashMap<>()).get(bucket);
+        Map<Integer, LookupLevels<KeyValue>> buckets =
+                tableView.computeIfAbsent(partition, k -> new HashMap<>());
+        LookupLevels<KeyValue> lookupLevels = buckets.get(bucket);
         if (lookupLevels == null) {
             // Initial phase: ignore beforeFiles as they represent deletions from previous state
-            newLookupLevels(partition, bucket, dataFiles);
+            lookupLevels = newLookupLevels(partition, bucket, dataFiles);
+            buckets.put(bucket, lookupLevels);
         } else {
+            int droppedCachedFiles = countDroppedCachedFiles(beforeFiles, dataFiles, lookupLevels);
             lookupLevels.getLevels().update(beforeFiles, dataFiles);
+            preheatNewFiles(
+                    partition, bucket, beforeFiles, dataFiles, droppedCachedFiles, lookupLevels);
         }
     }
 
-    private void newLookupLevels(BinaryRow partition, int bucket, List<DataFileMeta> dataFiles) {
+    private LookupLevels<KeyValue> newLookupLevels(
+            BinaryRow partition, int bucket, List<DataFileMeta> dataFiles) {
         Levels levels = new Levels(keyComparatorSupplier.get(), dataFiles, options.numLevels());
         // TODO pass DeletionVector factory
         KeyValueFileReaderFactory factory =
                 readerFactoryBuilder.build(partition, bucket, DeletionVector.emptyFactory());
-        Options options = this.options.toConfiguration();
+        Options conf = this.options.toConfiguration();
         if (lookupFileCache == null) {
             lookupFileCache =
                     LookupFile.createCache(
-                            options.get(CoreOptions.LOOKUP_CACHE_FILE_RETENTION),
-                            options.get(CoreOptions.LOOKUP_CACHE_MAX_DISK_SIZE));
+                            conf.get(CoreOptions.LOOKUP_CACHE_FILE_RETENTION),
+                            conf.get(CoreOptions.LOOKUP_CACHE_MAX_DISK_SIZE));
         }
 
         RowType readValueType = readerFactoryBuilder.readValueType();
@@ -167,7 +191,7 @@ public class LocalTableQuery implements TableQuery {
                                                         partitionType, partition, bucket, file))
                                         .getPathFile(),
                         lookupStoreFactory,
-                        bfGenerator(options),
+                        bfGenerator(conf),
                         lookupFileCache);
 
         if (this.options.lookupRemoteFileEnabled()) {
@@ -178,7 +202,123 @@ public class LocalTableQuery implements TableQuery {
                     this.options.lookupRemoteLevelThreshold());
         }
 
-        tableView.computeIfAbsent(partition, k -> new HashMap<>()).put(bucket, lookupLevels);
+        return lookupLevels;
+    }
+
+    private void preheatNewFiles(
+            BinaryRow partition,
+            int bucket,
+            List<DataFileMeta> beforeFiles,
+            List<DataFileMeta> dataFiles,
+            int droppedCachedFiles,
+            LookupLevels<KeyValue> lookupLevels) {
+        if (preheatExecutor == null
+                || preheatMaxFilesPerRefresh <= 0
+                || dataFiles.isEmpty()
+                || droppedCachedFiles <= 0) {
+            return;
+        }
+
+        List<DataFileMeta> candidates = findAddedFiles(beforeFiles, dataFiles);
+        if (candidates.isEmpty()) {
+            return;
+        }
+
+        candidates.sort(
+                (left, right) -> {
+                    int levelOrder = Integer.compare(right.level(), left.level());
+                    return levelOrder != 0
+                            ? levelOrder
+                            : Long.compare(right.rowCount(), left.rowCount());
+                });
+
+        int maxPreheatFiles = Math.min(preheatMaxFilesPerRefresh, droppedCachedFiles);
+        int scheduled = 0;
+        for (DataFileMeta file : candidates) {
+            if (scheduled >= maxPreheatFiles) {
+                break;
+            }
+            if (file.level() < startLevel) {
+                continue;
+            }
+            if (!lookupLevels.remoteSst(file).isPresent()) {
+                continue;
+            }
+
+            scheduled++;
+            try {
+                preheatExecutor.execute(() -> lookupLevels.preheat(file));
+            } catch (RejectedExecutionException ignored) {
+                // Query service is shutting down.
+                return;
+            }
+        }
+    }
+
+    private static int countDroppedCachedFiles(
+            List<DataFileMeta> beforeFiles,
+            List<DataFileMeta> dataFiles,
+            LookupLevels<KeyValue> lookupLevels) {
+        if (beforeFiles.isEmpty()) {
+            return 0;
+        }
+
+        Set<String> afterFileNames = new HashSet<>(dataFiles.size());
+        for (DataFileMeta dataFile : dataFiles) {
+            afterFileNames.add(dataFile.fileName());
+        }
+
+        int droppedCached = 0;
+        for (DataFileMeta beforeFile : beforeFiles) {
+            String fileName = beforeFile.fileName();
+            if (!afterFileNames.contains(fileName) && lookupLevels.hasCachedFile(fileName)) {
+                droppedCached++;
+            }
+        }
+        return droppedCached;
+    }
+
+    private static List<DataFileMeta> findAddedFiles(
+            List<DataFileMeta> beforeFiles, List<DataFileMeta> dataFiles) {
+        if (dataFiles.isEmpty()) {
+            return Collections.emptyList();
+        }
+        if (beforeFiles.isEmpty()) {
+            return new ArrayList<>(dataFiles);
+        }
+
+        Set<String> beforeFileNames = new HashSet<>(beforeFiles.size());
+        for (DataFileMeta beforeFile : beforeFiles) {
+            beforeFileNames.add(beforeFile.fileName());
+        }
+
+        List<DataFileMeta> addedFiles = new ArrayList<>();
+        for (DataFileMeta dataFile : dataFiles) {
+            if (!beforeFileNames.contains(dataFile.fileName())) {
+                addedFiles.add(dataFile);
+            }
+        }
+        return addedFiles;
+    }
+
+    @Nullable
+    private static ExecutorService createPreheatExecutor(
+            boolean enableRemoteLookup, int maxFilesPerRefresh, int queueSize) {
+        if (!enableRemoteLookup || maxFilesPerRefresh <= 0) {
+            return null;
+        }
+        return new ThreadPoolExecutor(
+                1,
+                1,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(queueSize),
+                runnable -> {
+                    Thread thread = new Thread(runnable, "paimon-lookup-preheater");
+                    thread.setDaemon(true);
+                    return thread;
+                },
+                new ThreadPoolExecutor.DiscardPolicy());
     }
 
     /** TODO remove synchronized and supports multiple thread to lookup. */
@@ -226,6 +366,9 @@ public class LocalTableQuery implements TableQuery {
 
     @Override
     public void close() throws IOException {
+        if (preheatExecutor != null) {
+            preheatExecutor.shutdownNow();
+        }
         for (Map.Entry<BinaryRow, Map<Integer, LookupLevels<KeyValue>>> buckets :
                 tableView.entrySet()) {
             for (Map.Entry<Integer, LookupLevels<KeyValue>> bucket :

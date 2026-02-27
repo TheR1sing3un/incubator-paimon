@@ -70,6 +70,7 @@ public class LookupLevels<T> implements Levels.DropFileCallback, Closeable {
     private final Function<Long, BloomFilter.Builder> bfGenerator;
     private final Cache<String, LookupFile> lookupFileCache;
     private final Set<String> ownCachedFiles;
+    private final Map<String, Object> creatingLookupFileLocks;
     private final Map<Pair<Long, String>, PersistProcessor<T>> schemaIdAndSerVersionToProcessors;
 
     @Nullable private RemoteFileDownloader remoteFileDownloader;
@@ -99,7 +100,8 @@ public class LookupLevels<T> implements Levels.DropFileCallback, Closeable {
         this.lookupStoreFactory = lookupStoreFactory;
         this.bfGenerator = bfGenerator;
         this.lookupFileCache = lookupFileCache;
-        this.ownCachedFiles = new HashSet<>();
+        this.ownCachedFiles = ConcurrentHashMap.newKeySet();
+        this.creatingLookupFileLocks = new ConcurrentHashMap<>();
         this.schemaIdAndSerVersionToProcessors = new ConcurrentHashMap<>();
         levels.addDropFileCallback(this);
     }
@@ -120,6 +122,10 @@ public class LookupLevels<T> implements Levels.DropFileCallback, Closeable {
     @VisibleForTesting
     Set<String> cachedFiles() {
         return ownCachedFiles;
+    }
+
+    public boolean hasCachedFile(String fileName) {
+        return lookupFileCache.getIfPresent(fileName) != null;
     }
 
     @Override
@@ -144,29 +150,50 @@ public class LookupLevels<T> implements Levels.DropFileCallback, Closeable {
 
     @Nullable
     private T lookup(InternalRow key, DataFileMeta file) throws IOException {
-        LookupFile lookupFile = lookupFileCache.getIfPresent(file.fileName());
+        LookupFileCreationResult lookupFileCreation = getOrCreateLookupFile(file);
+        LookupFile lookupFile = lookupFileCreation.lookupFile;
 
-        boolean newCreatedLookupFile = false;
-        if (lookupFile == null) {
-            lookupFile = createLookupFile(file);
-            newCreatedLookupFile = true;
-        }
-
-        byte[] valueBytes;
-        try {
-            byte[] keyBytes = keySerializer.serializeToBytes(key);
-            valueBytes = lookupFile.get(keyBytes);
-        } finally {
-            if (newCreatedLookupFile) {
-                addLocalFile(file, lookupFile);
-            }
-        }
+        byte[] keyBytes = keySerializer.serializeToBytes(key);
+        byte[] valueBytes = lookupFile.get(keyBytes);
         if (valueBytes == null) {
             return null;
         }
 
         return getOrCreateProcessor(lookupFile.schemaId(), lookupFile.serVersion())
                 .readFromDisk(key, lookupFile.level(), valueBytes, file.fileName());
+    }
+
+    public boolean preheat(DataFileMeta file) {
+        try {
+            LookupFileCreationResult lookupFileCreation = getOrCreateLookupFile(file);
+            return lookupFileCreation.newCreatedLookupFile;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private LookupFileCreationResult getOrCreateLookupFile(DataFileMeta file) throws IOException {
+        LookupFile lookupFile = lookupFileCache.getIfPresent(file.fileName());
+        if (lookupFile != null) {
+            return new LookupFileCreationResult(lookupFile, false);
+        }
+
+        Object lock =
+                creatingLookupFileLocks.computeIfAbsent(file.fileName(), ignored -> new Object());
+        try {
+            synchronized (lock) {
+                lookupFile = lookupFileCache.getIfPresent(file.fileName());
+                if (lookupFile != null) {
+                    return new LookupFileCreationResult(lookupFile, false);
+                }
+
+                lookupFile = createLookupFile(file);
+                addLocalFile(file, lookupFile);
+                return new LookupFileCreationResult(lookupFile, true);
+            }
+        } finally {
+            creatingLookupFileLocks.remove(file.fileName(), lock);
+        }
     }
 
     private PersistProcessor<T> getOrCreateProcessor(long schemaId, String serVersion) {
@@ -187,6 +214,7 @@ public class LookupLevels<T> implements Levels.DropFileCallback, Closeable {
 
         long schemaId = this.currentSchemaId;
         String fileSerVersion = serializerFactory.version();
+
         Optional<String> downloadSerVersion = tryToDownloadRemoteSst(file, localFile);
         if (downloadSerVersion.isPresent()) {
             // use schema id from remote file
@@ -323,6 +351,17 @@ public class LookupLevels<T> implements Levels.DropFileCallback, Closeable {
         private RemoteSstFile(String sstFileName, String serVersion) {
             this.sstFileName = sstFileName;
             this.serVersion = serVersion;
+        }
+    }
+
+    private static class LookupFileCreationResult {
+
+        private final LookupFile lookupFile;
+        private final boolean newCreatedLookupFile;
+
+        private LookupFileCreationResult(LookupFile lookupFile, boolean newCreatedLookupFile) {
+            this.lookupFile = lookupFile;
+            this.newCreatedLookupFile = newCreatedLookupFile;
         }
     }
 }

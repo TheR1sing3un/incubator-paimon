@@ -1293,6 +1293,19 @@ public class CoreOptions implements Serializable {
                             "Level threshold of lookup to generate remote lookup files. "
                                     + "Level files below this threshold will not generate remote lookup files.");
 
+    public static final ConfigOption<Integer> LOOKUP_PREHEAT_MAX_FILES_PER_REFRESH =
+            key("lookup.preheat.max-files-per-refresh")
+                    .intType()
+                    .defaultValue(64)
+                    .withDescription(
+                            "Maximum number of new data files to preheat for each lookup file refresh.");
+
+    public static final ConfigOption<Integer> LOOKUP_PREHEAT_QUEUE_SIZE =
+            key("lookup.preheat.queue-size")
+                    .intType()
+                    .defaultValue(16)
+                    .withDescription("Queue size of asynchronous lookup preheat tasks.");
+
     public static final ConfigOption<Integer> READ_BATCH_SIZE =
             key("read.batch-size")
                     .intType()
@@ -2756,6 +2769,14 @@ public class CoreOptions implements Serializable {
 
     public int lookupRemoteLevelThreshold() {
         return options.get(LOOKUP_REMOTE_LEVEL_THRESHOLD);
+    }
+
+    public int lookupPreheatMaxFilesPerRefresh() {
+        return options.get(LOOKUP_PREHEAT_MAX_FILES_PER_REFRESH);
+    }
+
+    public int lookupPreheatQueueSize() {
+        return options.get(LOOKUP_PREHEAT_QUEUE_SIZE);
     }
 
     public double lookupCacheHighPrioPoolRatio() {
