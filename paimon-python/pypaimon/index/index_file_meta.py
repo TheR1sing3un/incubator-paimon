@@ -40,7 +40,7 @@ class IndexFileMeta:
     dv_ranges: Optional[Dict[str, DeletionVectorMeta]] = field(default=None)
     # External path for the index file (optional)
     external_path: Optional[str] = None
-    # For global index
+    # For global index (e.g., FAISS vector index)
     global_index_meta: Optional[GlobalIndexMeta] = None
 
     def __eq__(self, other):
