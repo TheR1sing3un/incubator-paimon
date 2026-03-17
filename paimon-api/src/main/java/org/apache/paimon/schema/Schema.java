@@ -88,7 +88,9 @@ public class Schema {
         this.options = new HashMap<>(options);
         this.partitionKeys = normalizePartitionKeys(partitionKeys);
         this.primaryKeys = normalizePrimaryKeys(primaryKeys);
-        this.fields = normalizeFields(fields, this.primaryKeys, this.partitionKeys);
+        this.fields =
+                normalizeFields(
+                        reassignFieldIdsIfNeeded(fields), this.primaryKeys, this.partitionKeys);
         this.comment = comment;
     }
 
@@ -123,6 +125,48 @@ public class Schema {
 
     public Schema copy(RowType rowType) {
         return new Schema(rowType.getFields(), partitionKeys, primaryKeys, options, comment);
+    }
+
+    /**
+     * Reassign field ids if they are all unassigned (sentinel value -1).
+     *
+     * <ul>
+     *   <li>All fields have id == -1: reassign starting from 0
+     *   <li>All fields have id >= 0: return as-is
+     *   <li>Mixed: throw error
+     * </ul>
+     */
+    private static List<DataField> reassignFieldIdsIfNeeded(List<DataField> fields) {
+        if (fields.isEmpty()) {
+            return fields;
+        }
+
+        boolean allUnassigned = fields.stream().allMatch(f -> f.id() == -1);
+        boolean noneUnassigned = fields.stream().noneMatch(f -> f.id() == -1);
+
+        if (noneUnassigned) {
+            return fields;
+        }
+
+        Preconditions.checkState(
+                allUnassigned,
+                "Partial field id assignment is not allowed. "
+                        + "Either specify ids for all fields or omit ids entirely.");
+
+        AtomicInteger id = new AtomicInteger(-1);
+        List<DataField> newFields = new ArrayList<>();
+        for (DataField field : fields) {
+            int newId = id.incrementAndGet();
+            DataType reassignedType = ReassignFieldId.reassign(field.type(), id);
+            newFields.add(
+                    new DataField(
+                            newId,
+                            field.name(),
+                            reassignedType,
+                            field.description(),
+                            field.defaultValue()));
+        }
+        return newFields;
     }
 
     private static List<DataField> normalizeFields(

@@ -48,8 +48,12 @@ public final class DataTypeJsonParser {
         if (idNode != null) {
             checkState(fieldId == null || fieldId.get() == -1, "Partial field id is not allowed.");
             id = idNode.asInt();
-        } else {
+        } else if (fieldId != null) {
             id = fieldId.incrementAndGet();
+        } else {
+            // Top-level deserialization without field id, use -1 as sentinel
+            // to indicate "unassigned". Valid field ids start from 0.
+            id = -1;
         }
         String name = json.get("name").asText();
         DataType type = parseDataType(json.get("type"), fieldId);

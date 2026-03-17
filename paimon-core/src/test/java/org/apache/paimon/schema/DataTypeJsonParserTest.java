@@ -276,6 +276,105 @@ public class DataTypeJsonParserTest {
         return JsonSerdeUtil.fromJson(json, DataType.class);
     }
 
+    @Test
+    void testParseTopLevelDataFieldWithoutId() {
+        String json = "{\"name\":\"col1\",\"type\":\"INT\"}";
+        DataField field = JsonSerdeUtil.fromJson(json, DataField.class);
+        assertThat(field.name()).isEqualTo("col1");
+        assertThat(field.type()).isEqualTo(new IntType());
+        // Sentinel -1 indicates unassigned
+        assertThat(field.id()).isEqualTo(-1);
+    }
+
+    @Test
+    void testParseTopLevelDataFieldWithId() {
+        String json = "{\"id\":5,\"name\":\"col1\",\"type\":\"INT\"}";
+        DataField field = JsonSerdeUtil.fromJson(json, DataField.class);
+        assertThat(field.id()).isEqualTo(5);
+        assertThat(field.name()).isEqualTo("col1");
+    }
+
+    @Test
+    void testSchemaReassignFieldIdsWhenUnassigned() {
+        // All fields have sentinel id -1 (unassigned), constructor auto-assigns
+        Schema schema =
+                new Schema(
+                        Arrays.asList(
+                                new DataField(-1, "a", new IntType()),
+                                new DataField(-1, "b", DataTypes.STRING()),
+                                new DataField(-1, "c", new BigIntType())),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.emptyMap(),
+                        null);
+        assertThat(schema.fields().get(0).id()).isEqualTo(0);
+        assertThat(schema.fields().get(1).id()).isEqualTo(1);
+        assertThat(schema.fields().get(2).id()).isEqualTo(2);
+    }
+
+    @Test
+    void testSchemaKeepsExplicitFieldIds() {
+        // All fields have explicit ids, should be kept as-is
+        Schema schema =
+                new Schema(
+                        Arrays.asList(
+                                new DataField(0, "a", new IntType()),
+                                new DataField(1, "b", DataTypes.STRING()),
+                                new DataField(2, "c", new BigIntType())),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.emptyMap(),
+                        null);
+        assertThat(schema.fields().get(0).id()).isEqualTo(0);
+        assertThat(schema.fields().get(1).id()).isEqualTo(1);
+        assertThat(schema.fields().get(2).id()).isEqualTo(2);
+    }
+
+    @Test
+    void testSchemaRejectsPartialFieldIds() {
+        // Mixed: some have ids, some don't — should fail
+        assertThatThrownBy(
+                        () ->
+                                new Schema(
+                                        Arrays.asList(
+                                                new DataField(0, "a", new IntType()),
+                                                new DataField(-1, "b", DataTypes.STRING())),
+                                        Collections.emptyList(),
+                                        Collections.emptyList(),
+                                        Collections.emptyMap(),
+                                        null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Partial field id assignment is not allowed");
+    }
+
+    @Test
+    void testSchemaReassignFieldIdsWithNestedRow() {
+        RowType nestedRow =
+                RowType.builder()
+                        .fields(
+                                new DataType[] {DataTypes.INT(), DataTypes.STRING()},
+                                new String[] {"city", "zip"})
+                        .build();
+        // Constructor auto-assigns when all ids are -1
+        Schema schema =
+                new Schema(
+                        Arrays.asList(
+                                new DataField(-1, "id", new BigIntType()),
+                                new DataField(-1, "address", nestedRow),
+                                new DataField(-1, "ts", new TimestampType())),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.emptyMap(),
+                        null);
+        // id: 0, address: 1, address.city: 2, address.zip: 3, ts: 4
+        assertThat(schema.fields().get(0).id()).isEqualTo(0);
+        assertThat(schema.fields().get(1).id()).isEqualTo(1);
+        RowType reassignedRow = (RowType) schema.fields().get(1).type();
+        assertThat(reassignedRow.getFields().get(0).id()).isEqualTo(2);
+        assertThat(reassignedRow.getFields().get(1).id()).isEqualTo(3);
+        assertThat(schema.fields().get(2).id()).isEqualTo(4);
+    }
+
     // --------------------------------------------------------------------------------------------
 
     private static class TestSpec {
