@@ -192,6 +192,86 @@ class Catalog(ABC):
             "rollback_to is not supported by this catalog."
         )
 
+    def create_branch(self, identifier: Union[str, Identifier],
+                      branch_name: str, from_tag: Optional[str] = None):
+        """Create a branch for a table.
+
+        Args:
+            identifier: Table identifier.
+            branch_name: Name of the branch to create.
+            from_tag: Optional tag name to create the branch from.
+        """
+        raise NotImplementedError(
+            "create_branch is not supported by this catalog."
+        )
+
+    def delete_branch(self, identifier: Union[str, Identifier],
+                      branch_name: str):
+        """Delete a branch from a table.
+
+        Args:
+            identifier: Table identifier.
+            branch_name: Name of the branch to delete.
+        """
+        raise NotImplementedError(
+            "delete_branch is not supported by this catalog."
+        )
+
+    def list_branches(self, identifier: Union[str, Identifier]) -> List[str]:
+        """List all branches of a table.
+
+        Args:
+            identifier: Table identifier.
+
+        Returns:
+            List of branch names.
+        """
+        raise NotImplementedError(
+            "list_branches is not supported by this catalog."
+        )
+
+    def create_tag(self, identifier: Union[str, Identifier],
+                   tag_name: str, snapshot_id: Optional[int] = None,
+                   time_retained: Optional[str] = None,
+                   ignore_if_exists: bool = False):
+        """Create a tag for a table.
+
+        Args:
+            identifier: Table identifier.
+            tag_name: Name of the tag to create.
+            snapshot_id: Optional snapshot ID to tag.
+            time_retained: Optional time retained string.
+            ignore_if_exists: If True, do not raise error if tag exists.
+        """
+        raise NotImplementedError(
+            "create_tag is not supported by this catalog."
+        )
+
+    def delete_tag(self, identifier: Union[str, Identifier],
+                   tag_name: str):
+        """Delete a tag from a table.
+
+        Args:
+            identifier: Table identifier.
+            tag_name: Name of the tag to delete.
+        """
+        raise NotImplementedError(
+            "delete_tag is not supported by this catalog."
+        )
+
+    def list_tags(self, identifier: Union[str, Identifier]) -> List[str]:
+        """List all tags of a table.
+
+        Args:
+            identifier: Table identifier.
+
+        Returns:
+            List of tag names.
+        """
+        raise NotImplementedError(
+            "list_tags is not supported by this catalog."
+        )
+
     def drop_partitions(
             self,
             identifier: Union[str, Identifier],

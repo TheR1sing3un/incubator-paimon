@@ -295,3 +295,13 @@ class GetTableSnapshotResponse(RESTResponse):
 
     def get_snapshot(self) -> Optional[TableSnapshot]:
         return self.snapshot
+
+
+@dataclass
+class ListBranchesResponse(RESTResponse):
+    branches: List[str] = json_field("branches")
+
+
+@dataclass
+class ListTagsResponse(RESTResponse):
+    tags: List[str] = json_field("tags")

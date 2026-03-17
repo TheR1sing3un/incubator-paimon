@@ -35,8 +35,10 @@ class ManifestListManager:
         from pypaimon.table.file_store_table import FileStoreTable
 
         self.table: FileStoreTable = table
-        manifest_path = table.table_path.rstrip('/')
-        self.manifest_path = f"{manifest_path}/manifest"
+        # Manifest files are always shared at the table root level,
+        # regardless of branch (same as Java's FileStorePathFactory).
+        base_path = table.table_path.rstrip('/')
+        self.manifest_path = f"{base_path}/manifest"
         self.file_io = self.table.file_io
 
     def read_all(self, snapshot: Optional[Snapshot]) -> List[ManifestFileMeta]:

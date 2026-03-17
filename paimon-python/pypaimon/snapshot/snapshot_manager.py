@@ -36,8 +36,12 @@ class SnapshotManager:
         self.file_io: FileIO = self.table.file_io
         self.snapshot_loader: Optional[SnapshotLoader] = self.table.catalog_environment.snapshot_loader()
 
-        snapshot_path = self.table.table_path.rstrip('/')
-        self.snapshot_dir = f"{snapshot_path}/snapshot"
+        branch = self.table.current_branch()
+        if branch == "main":
+            base_path = self.table.table_path.rstrip('/')
+        else:
+            base_path = f"{self.table.table_path.rstrip('/')}/branch/branch-{branch}"
+        self.snapshot_dir = f"{base_path}/snapshot"
         self.latest_file = f"{self.snapshot_dir}/LATEST"
 
     def get_latest_snapshot(self) -> Optional[Snapshot]:
@@ -51,8 +55,9 @@ class SnapshotManager:
         Returns:
             The latest snapshot JSON string, or None if not found
         """
-        # Try to load from snapshotLoader if available
-        if self.snapshot_loader is not None:
+        # Try to load from snapshotLoader if available (only for main branch)
+        branch = self.table.current_branch()
+        if self.snapshot_loader is not None and branch == "main":
             try:
                 snapshot = self.snapshot_loader.load()
             except NotImplementedError:
@@ -62,21 +67,24 @@ class SnapshotManager:
                 # IO error, re-raise with context
                 raise RuntimeError(f"Failed to load snapshot from loader: {e}")
         else:
-            # No loader, use filesystem directly
+            # No loader or non-main branch, use filesystem directly
             snapshot = self._get_latest_snapshot_from_filesystem()
         return snapshot
 
     def _get_latest_snapshot_from_filesystem(self) -> Optional[Snapshot]:
         """
         Get the latest snapshot from filesystem by reading LATEST file.
-        
+        Falls back to scanning the snapshot directory if LATEST doesn't exist.
+
         Returns:
             The latest snapshot, or None if not found
         """
-        if not self.file_io.exists(self.latest_file):
+        if not self.file_io.exists(self.snapshot_dir):
             return None
-
-        latest_content = self.read_latest_file()
+        try:
+            latest_content = self.read_latest_file()
+        except RuntimeError:
+            return None
         latest_snapshot_id = int(latest_content.strip())
 
         snapshot_file = f"{self.snapshot_dir}/snapshot-{latest_snapshot_id}"

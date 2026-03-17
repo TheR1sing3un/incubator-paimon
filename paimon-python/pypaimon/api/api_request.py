@@ -94,3 +94,17 @@ class RollbackTableRequest(RESTRequest):
 
     instant: Instant = json_field(FIELD_INSTANT)
     from_snapshot: Optional[int] = json_field(FIELD_FROM_SNAPSHOT)
+
+
+@dataclass
+class CreateBranchRequest(RESTRequest):
+    branch: str = json_field("branch")
+    from_tag: Optional[str] = json_field("fromTag", default=None)
+
+
+@dataclass
+class CreateTagRequest(RESTRequest):
+    tag_name: str = json_field("tagName")
+    snapshot_id: Optional[int] = json_field("snapshotId", default=None)
+    time_retained: Optional[str] = json_field("timeRetained", default=None)
+    ignore_if_exists: bool = json_field("ignoreIfExists", default=False)
