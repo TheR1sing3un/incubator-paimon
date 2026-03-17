@@ -40,6 +40,15 @@ from pypaimon.table.file_store_table import FileStoreTable
 from pypaimon.table.table import Table
 
 
+def _copy_schemas_to_branch(file_io, schema_mgr, branch_schema_dir, max_schema_id):
+    file_io.mkdirs(branch_schema_dir)
+    for i in range(max_schema_id + 1):
+        src = schema_mgr._to_schema_path(i)
+        if file_io.exists(src):
+            dst = "{}/schema-{}".format(branch_schema_dir, i)
+            file_io.copy_file(src, dst)
+
+
 class FileSystemCatalog(Catalog):
     def __init__(self, catalog_options: Options):
         if not catalog_options.contains(CatalogOptions.WAREHOUSE):
@@ -243,6 +252,103 @@ class FileSystemCatalog(Catalog):
             statistics: List[PartitionStatistics]
     ) -> bool:
         raise NotImplementedError("This catalog does not support commit catalog")
+
+    def create_branch(self, identifier, branch_name, from_tag=None):
+        if not isinstance(identifier, Identifier):
+            identifier = Identifier.from_string(identifier)
+        table_path = self.get_table_path(identifier)
+        branch_path = "{}/branch/branch-{}".format(table_path, branch_name)
+        if self.file_io.exists(branch_path):
+            raise ValueError(
+                "Branch '{}' already exists.".format(branch_name))
+
+        table = self.get_table(identifier)
+        schema_mgr = SchemaManager(self.file_io, table_path)
+        branch_schema_dir = "{}/schema".format(branch_path)
+
+        if from_tag is not None:
+            tag_mgr = table.tag_manager()
+            tag = tag_mgr.get_or_throw(from_tag)
+            snapshot = tag.trim_to_snapshot()
+
+            # Copy tag file
+            branch_tag_dir = "{}/tag".format(branch_path)
+            self.file_io.mkdirs(branch_tag_dir)
+            self.file_io.copy_file(
+                tag_mgr.tag_path(from_tag),
+                "{}/tag-{}".format(branch_tag_dir, from_tag))
+
+            # Copy snapshot file
+            snapshot_mgr = table.snapshot_manager()
+            branch_snapshot_dir = "{}/snapshot".format(branch_path)
+            self.file_io.mkdirs(branch_snapshot_dir)
+            self.file_io.copy_file(
+                snapshot_mgr.get_snapshot_path(snapshot.id),
+                "{}/snapshot-{}".format(branch_snapshot_dir, snapshot.id))
+
+            # Copy schema files (0 to snapshot.schema_id)
+            _copy_schemas_to_branch(
+                self.file_io, schema_mgr, branch_schema_dir,
+                snapshot.schema_id)
+        else:
+            # Create empty branch: only copy schema files
+            latest_schema = schema_mgr.latest()
+            if latest_schema is None:
+                raise ValueError("Table has no schema.")
+            _copy_schemas_to_branch(
+                self.file_io, schema_mgr, branch_schema_dir,
+                latest_schema.id)
+
+    def delete_branch(self, identifier, branch_name):
+        if not isinstance(identifier, Identifier):
+            identifier = Identifier.from_string(identifier)
+        table_path = self.get_table_path(identifier)
+        branch_path = "{}/branch/branch-{}".format(table_path, branch_name)
+        if not self.file_io.exists(branch_path):
+            raise ValueError(
+                "Branch '{}' doesn't exist.".format(branch_name))
+        self.file_io.delete(branch_path, True)
+
+    def list_branches(self, identifier):
+        if not isinstance(identifier, Identifier):
+            identifier = Identifier.from_string(identifier)
+        table_path = self.get_table_path(identifier)
+        branch_dir = "{}/branch".format(table_path)
+        if not self.file_io.exists(branch_dir):
+            return []
+        import pyarrow.fs as pafs
+        statuses = self.file_io.list_status(branch_dir)
+        branches = []
+        for status in statuses:
+            is_directory = (
+                hasattr(status, 'type')
+                and status.type == pafs.FileType.Directory)
+            name = status.base_name if hasattr(status, 'base_name') else ""
+            if is_directory and name and name.startswith("branch-"):
+                branches.append(name[len("branch-"):])
+        return sorted(branches)
+
+    def create_tag(self, identifier, tag_name, snapshot_id=None,
+                   time_retained=None, ignore_if_exists=False):
+        if not isinstance(identifier, Identifier):
+            identifier = Identifier.from_string(identifier)
+        table = self.get_table(identifier)
+        table.create_tag(tag_name, snapshot_id=snapshot_id,
+                         ignore_if_exists=ignore_if_exists)
+
+    def delete_tag(self, identifier, tag_name):
+        if not isinstance(identifier, Identifier):
+            identifier = Identifier.from_string(identifier)
+        table = self.get_table(identifier)
+        if not table.delete_tag(tag_name):
+            raise ValueError(
+                "Tag '{}' doesn't exist.".format(tag_name))
+
+    def list_tags(self, identifier):
+        if not isinstance(identifier, Identifier):
+            identifier = Identifier.from_string(identifier)
+        table = self.get_table(identifier)
+        return table.list_tags()
 
     def load_snapshot(self, identifier: Identifier):
         """Load the snapshot of table identified by the given Identifier.

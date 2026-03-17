@@ -19,14 +19,16 @@ import logging
 from typing import Callable, Dict, List, Optional, Union
 
 from pypaimon.api.api_request import (AlterDatabaseRequest, AlterTableRequest, CommitTableRequest,
-                                      CreateDatabaseRequest,
-                                      CreateTableRequest, RenameTableRequest,
-                                      RollbackTableRequest)
+                                      CreateBranchRequest, CreateDatabaseRequest,
+                                      CreateTableRequest, CreateTagRequest,
+                                      RenameTableRequest, RollbackTableRequest)
 from pypaimon.api.api_response import (CommitTableResponse, ConfigResponse,
                                        GetDatabaseResponse, GetTableResponse,
                                        GetTableTokenResponse,
+                                       ListBranchesResponse,
                                        ListDatabasesResponse,
-                                       ListTablesResponse, PagedList,
+                                       ListTablesResponse, ListTagsResponse,
+                                       PagedList,
                                        PagedResponse, GetTableSnapshotResponse)
 from pypaimon.api.auth import AuthProviderFactory, RESTAuthFunction
 from pypaimon.api.client import HttpClient
@@ -399,6 +401,62 @@ class RESTApi:
             return None
         return response.get_snapshot()
 
+    def create_branch(self, identifier, branch_name, from_tag=None):
+        database_name, table_name = self.__validate_identifier(identifier)
+        request = CreateBranchRequest(branch=branch_name, from_tag=from_tag)
+        self.client.post(
+            self.resource_paths.branches(database_name, table_name),
+            request,
+            self.rest_auth_function
+        )
+
+    def delete_branch(self, identifier, branch_name):
+        database_name, table_name = self.__validate_identifier(identifier)
+        self.client.delete(
+            self.resource_paths.branch(database_name, table_name, branch_name),
+            self.rest_auth_function
+        )
+
+    def list_branches(self, identifier):
+        database_name, table_name = self.__validate_identifier(identifier)
+        response = self.client.get(
+            self.resource_paths.branches(database_name, table_name),
+            ListBranchesResponse,
+            self.rest_auth_function
+        )
+        return response.branches
+
+    def create_tag(self, identifier, tag_name, snapshot_id=None,
+                   time_retained=None, ignore_if_exists=False):
+        database_name, table_name = self.__validate_identifier(identifier)
+        request = CreateTagRequest(
+            tag_name=tag_name,
+            snapshot_id=snapshot_id,
+            time_retained=time_retained,
+            ignore_if_exists=ignore_if_exists
+        )
+        self.client.post(
+            self.resource_paths.tags(database_name, table_name),
+            request,
+            self.rest_auth_function
+        )
+
+    def delete_tag(self, identifier, tag_name):
+        database_name, table_name = self.__validate_identifier(identifier)
+        self.client.delete(
+            self.resource_paths.tag(database_name, table_name, tag_name),
+            self.rest_auth_function
+        )
+
+    def list_tags(self, identifier):
+        database_name, table_name = self.__validate_identifier(identifier)
+        response = self.client.get(
+            self.resource_paths.tags(database_name, table_name),
+            ListTagsResponse,
+            self.rest_auth_function
+        )
+        return response.tags
+
     @staticmethod
     def __validate_identifier(identifier: Identifier):
         if not identifier:
@@ -412,4 +470,9 @@ class RESTApi:
         if not table_name or not table_name.strip():
             raise ValueError("Table name cannot be None")
 
-        return database_name.strip(), table_name.strip()
+        table_name = table_name.strip()
+        branch = identifier.get_branch_name()
+        if branch and branch != "main":
+            table_name = "{}.{}".format(table_name, branch)
+
+        return database_name.strip(), table_name

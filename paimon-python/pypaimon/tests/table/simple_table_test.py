@@ -685,3 +685,210 @@ class SimpleTableTest(unittest.TestCase):
             table.rollback_to("no-such-tag")
         self.assertIn("no-such-tag", str(context.exception))
         self.assertIn("doesn't exist", str(context.exception))
+
+    def _write_commit(self, write_builder, data_dict, schema):
+        """Helper to write a single commit."""
+        table_write = write_builder.new_write()
+        table_commit = write_builder.new_commit()
+        data = pa.Table.from_pydict(data_dict, schema=schema)
+        table_write.write_arrow(data)
+        table_commit.commit(table_write.prepare_commit())
+        table_write.close()
+        table_commit.close()
+
+    def _read_table(self, table):
+        """Helper to read all data from a table."""
+        read_builder = table.new_read_builder()
+        table_scan = read_builder.new_scan()
+        table_read = read_builder.new_read()
+        return table_read.to_arrow(table_scan.plan().splits())
+
+    def _create_branch(self, identifier, branch_name, from_tag=None):
+        """Create a branch using catalog API."""
+        self.catalog.create_branch(identifier, branch_name, from_tag)
+
+    def test_scan_snapshot_id(self):
+        """Test reading from a specific snapshot ID."""
+        schema = Schema.from_pyarrow_schema(
+            self.pa_schema,
+            primary_keys=['pt', 'k'],
+            partition_keys=['pt'],
+            options={'bucket': '3'}
+        )
+        self.catalog.create_table(
+            'default.test_scan_snapshot_id', schema, False)
+        table = self.catalog.get_table('default.test_scan_snapshot_id')
+
+        write_builder = table.new_batch_write_builder()
+
+        # Commit 1
+        self._write_commit(write_builder, {
+            'pt': [1, 1], 'k': [10, 20], 'v': [100, 200]
+        }, self.pk_pa_schema)
+
+        # Commit 2
+        self._write_commit(write_builder, {
+            'pt': [2, 2], 'k': [30, 40], 'v': [101, 201]
+        }, self.pk_pa_schema)
+
+        # Commit 3
+        self._write_commit(write_builder, {
+            'pt': [3, 3], 'k': [50, 60], 'v': [500, 600]
+        }, self.pk_pa_schema)
+
+        # Read snapshot 2: should contain data from commit 1 and 2
+        table_snap2 = table.copy(
+            {CoreOptions.SCAN_SNAPSHOT_ID.key(): "2"})
+        result = self._read_table(table_snap2)
+        result_sorted = result.sort_by(
+            [('pt', 'ascending'), ('k', 'ascending')])
+
+        self.assertEqual(result_sorted.num_rows, 4)
+        self.assertEqual(
+            result_sorted.column('pt').to_pylist(), [1, 1, 2, 2])
+        self.assertEqual(
+            result_sorted.column('k').to_pylist(), [10, 20, 30, 40])
+        self.assertEqual(
+            result_sorted.column('v').to_pylist(), [100, 200, 101, 201])
+
+        # Read snapshot 1: should contain only commit 1 data
+        table_snap1 = table.copy(
+            {CoreOptions.SCAN_SNAPSHOT_ID.key(): "1"})
+        result1 = self._read_table(table_snap1)
+        result1_sorted = result1.sort_by(
+            [('pt', 'ascending'), ('k', 'ascending')])
+
+        self.assertEqual(result1_sorted.num_rows, 2)
+        self.assertEqual(
+            result1_sorted.column('pt').to_pylist(), [1, 1])
+        self.assertEqual(
+            result1_sorted.column('k').to_pylist(), [10, 20])
+        self.assertEqual(
+            result1_sorted.column('v').to_pylist(), [100, 200])
+
+    def test_scan_snapshot_id_not_exist(self):
+        """Test reading from a non-existent snapshot ID raises error."""
+        schema = Schema.from_pyarrow_schema(
+            self.pa_schema,
+            primary_keys=['pt', 'k'],
+            partition_keys=['pt'],
+            options={'bucket': '3'}
+        )
+        self.catalog.create_table(
+            'default.test_scan_snapshot_not_exist', schema, False)
+        table = self.catalog.get_table(
+            'default.test_scan_snapshot_not_exist')
+
+        write_builder = table.new_batch_write_builder()
+        self._write_commit(write_builder, {
+            'pt': [1], 'k': [10], 'v': [100]
+        }, self.pk_pa_schema)
+
+        table_snap = table.copy(
+            {CoreOptions.SCAN_SNAPSHOT_ID.key(): "999"})
+        read_builder = table_snap.new_read_builder()
+        with self.assertRaises(ValueError) as ctx:
+            read_builder.new_scan().plan()
+        self.assertIn("999", str(ctx.exception))
+
+    def test_read_from_branch(self):
+        """Test reading from a branch created from a tag."""
+        schema = Schema.from_pyarrow_schema(
+            self.pa_schema,
+            primary_keys=['pt', 'k'],
+            partition_keys=['pt'],
+            options={'bucket': '3'}
+        )
+        self.catalog.create_table(
+            'default.test_read_branch', schema, False)
+        table = self.catalog.get_table('default.test_read_branch')
+
+        write_builder = table.new_batch_write_builder()
+
+        # Write 2 commits on main
+        self._write_commit(write_builder, {
+            'pt': [1, 1], 'k': [10, 20], 'v': [100, 200]
+        }, self.pk_pa_schema)
+        self._write_commit(write_builder, {
+            'pt': [2, 2], 'k': [30, 40], 'v': [101, 201]
+        }, self.pk_pa_schema)
+
+        # Create tag at snapshot 2, then branch from that tag
+        table.create_tag("branch_tag", snapshot_id=2)
+        self._create_branch(
+            'default.test_read_branch', 'test_branch',
+            from_tag='branch_tag')
+
+        # Write commit 3 on main only
+        self._write_commit(write_builder, {
+            'pt': [3, 3], 'k': [50, 60], 'v': [500, 600]
+        }, self.pk_pa_schema)
+
+        # Read from main: should have all 3 commits (6 rows)
+        result_main = self._read_table(table)
+        self.assertEqual(result_main.num_rows, 6)
+
+        # Read from branch: should have only 2 commits (4 rows)
+        table_branch = table.copy({"branch": "test_branch"})
+        result_branch = self._read_table(table_branch)
+        result_branch_sorted = result_branch.sort_by(
+            [('pt', 'ascending'), ('k', 'ascending')])
+
+        self.assertEqual(result_branch_sorted.num_rows, 4)
+        self.assertEqual(
+            result_branch_sorted.column('pt').to_pylist(), [1, 1, 2, 2])
+        self.assertEqual(
+            result_branch_sorted.column('k').to_pylist(),
+            [10, 20, 30, 40])
+
+    def test_read_from_branch_with_snapshot_id(self):
+        """Test reading from a branch with a specific snapshot ID."""
+        schema = Schema.from_pyarrow_schema(
+            self.pa_schema,
+            primary_keys=['pt', 'k'],
+            partition_keys=['pt'],
+            options={'bucket': '3'}
+        )
+        self.catalog.create_table(
+            'default.test_branch_snapshot', schema, False)
+        table = self.catalog.get_table('default.test_branch_snapshot')
+
+        write_builder = table.new_batch_write_builder()
+
+        # Write 2 commits on main
+        self._write_commit(write_builder, {
+            'pt': [1, 1], 'k': [10, 20], 'v': [100, 200]
+        }, self.pk_pa_schema)
+        self._write_commit(write_builder, {
+            'pt': [2, 2], 'k': [30, 40], 'v': [101, 201]
+        }, self.pk_pa_schema)
+
+        # Create tag at snapshot 2, then branch from that tag
+        table.create_tag("snap_branch_tag", snapshot_id=2)
+        self._create_branch(
+            'default.test_branch_snapshot', 'snap_branch',
+            from_tag='snap_branch_tag')
+
+        # Read branch snapshot 2: should have commit 1 + 2 (4 rows)
+        # Note: branch created from tag at snapshot 2 only has snapshot 2
+        table_branch_snap2 = table.copy({
+            "branch": "snap_branch",
+            CoreOptions.SCAN_SNAPSHOT_ID.key(): "2"
+        })
+        result2 = self._read_table(table_branch_snap2)
+        result2_sorted = result2.sort_by(
+            [('pt', 'ascending'), ('k', 'ascending')])
+
+        self.assertEqual(result2_sorted.num_rows, 4)
+        self.assertEqual(
+            result2_sorted.column('pt').to_pylist(), [1, 1, 2, 2])
+        self.assertEqual(
+            result2_sorted.column('k').to_pylist(), [10, 20, 30, 40])
+
+        # Snapshot 1 does not exist in the branch
+        table_branch_snap1 = table.copy({
+            "branch": "snap_branch",
+            CoreOptions.SCAN_SNAPSHOT_ID.key(): "1"
+        })
+        with self.assertRaises(ValueError):
+            self._read_table(table_branch_snap1)

@@ -78,3 +78,15 @@ class ResourcePaths:
     def table_snapshot(self, database_name: str, table_name: str) -> str:
         return ("{}/{}/{}/{}/{}/snapshot".format(self.base_path, self.DATABASES, RESTUtil.encode_string(database_name),
                                                  self.TABLES, RESTUtil.encode_string(table_name)))
+
+    def branches(self, database_name: str, table_name: str) -> str:
+        return "{}/branches".format(self.table(database_name, table_name))
+
+    def branch(self, database_name: str, table_name: str, branch_name: str) -> str:
+        return "{}/branches/{}".format(self.table(database_name, table_name), RESTUtil.encode_string(branch_name))
+
+    def tags(self, database_name: str, table_name: str) -> str:
+        return "{}/tags".format(self.table(database_name, table_name))
+
+    def tag(self, database_name: str, table_name: str, tag_name: str) -> str:
+        return "{}/tags/{}".format(self.table(database_name, table_name), RESTUtil.encode_string(tag_name))

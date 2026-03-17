@@ -29,12 +29,14 @@ from urllib.parse import urlparse
 if TYPE_CHECKING:
     from pypaimon.catalog.rest.rest_token import RESTToken
 
-from pypaimon.api.api_request import (AlterTableRequest, CreateDatabaseRequest,
-                                      CreateTableRequest, RenameTableRequest)
-from pypaimon.api.api_response import (ConfigResponse, GetDatabaseResponse,
-                                       GetTableResponse, ListDatabasesResponse,
-                                       ListTablesResponse, PagedList,
-                                       RESTResponse, ErrorResponse)
+from pypaimon.api.api_request import (AlterTableRequest, CreateBranchRequest,
+                                      CreateDatabaseRequest, CreateTableRequest,
+                                      CreateTagRequest, RenameTableRequest)
+from pypaimon.api.api_response import (ConfigResponse, ErrorResponse,
+                                       GetDatabaseResponse, GetTableResponse,
+                                       ListBranchesResponse, ListDatabasesResponse,
+                                       ListTablesResponse, ListTagsResponse,
+                                       PagedList, RESTResponse)
 from pypaimon.api.resource_paths import ResourcePaths
 from pypaimon.api.rest_util import RESTUtil
 from pypaimon.catalog.catalog_exception import (DatabaseNoPermissionException,
@@ -452,7 +454,7 @@ class RESTCatalogServer:
             # Basic table operations (GET, DELETE, etc.)
             return self._table_handle(method, data, lookup_identifier)
         elif len(path_parts) == 4:
-            # Extended operations (e.g., commit, token, snapshot)
+            # Extended operations (e.g., commit, token, snapshot, branches, tags)
             operation = path_parts[3]
             if operation == "commit":
                 return self._table_commit_handle(method, data, lookup_identifier, branch_part)
@@ -462,6 +464,19 @@ class RESTCatalogServer:
                 return self._table_rollback_handle(method, data, lookup_identifier)
             elif operation == "snapshot":
                 return self._table_snapshot_handle(method, lookup_identifier)
+            elif operation == "branches":
+                return self._branches_handle(method, data, lookup_identifier)
+            elif operation == "tags":
+                return self._tags_handle(method, data, lookup_identifier)
+            else:
+                return self._mock_response(ErrorResponse(None, None, "Not Found", 404), 404)
+        elif len(path_parts) == 5:
+            operation = path_parts[3]
+            resource_name = RESTUtil.decode_string(path_parts[4])
+            if operation == "branches":
+                return self._branch_handle(method, lookup_identifier, resource_name)
+            elif operation == "tags":
+                return self._tag_handle(method, lookup_identifier, resource_name)
             else:
                 return self._mock_response(ErrorResponse(None, None, "Not Found", 404), 404)
         return self._mock_response(ErrorResponse(None, None, "Not Found", 404), 404)
@@ -625,7 +640,7 @@ class RESTCatalogServer:
                 )
 
             # Write snapshot to file system
-            self._write_snapshot_files(identifier, commit_request.snapshot, commit_request.statistics)
+            self._write_snapshot_files(identifier, commit_request.snapshot, commit_request.statistics, branch)
 
             self.logger.info(f"Successfully committed snapshot for table {identifier.get_full_name()}, "
                              f"branch: {branch or 'main'}")
@@ -772,6 +787,176 @@ class RESTCatalogServer:
         response = GetTableSnapshotResponse(table_snapshot)
         return self._mock_response(response, 200)
 
+    def _branches_handle(self, method: str, data: str,
+                         identifier: Identifier) -> Tuple[str, int]:
+        """Handle /tables/{table}/branches — list and create branches."""
+        if identifier.get_full_name() not in self.table_metadata_store:
+            raise TableNotExistException(identifier)
+
+        import os
+        table_path = os.path.join(
+            self.data_path, self.warehouse,
+            identifier.get_database_name(), identifier.get_object_name())
+        branch_dir = os.path.join(table_path, "branch")
+
+        if method == "GET":
+            branches = []
+            if os.path.isdir(branch_dir):
+                prefix = "branch-"
+                for name in os.listdir(branch_dir):
+                    if name.startswith(prefix) and os.path.isdir(
+                            os.path.join(branch_dir, name)):
+                        branches.append(name[len(prefix):])
+            response = ListBranchesResponse(branches=branches)
+            return self._mock_response(response, 200)
+        elif method == "POST":
+            request = JSON.from_json(data, CreateBranchRequest)
+            branch_name = request.branch
+            from_tag = request.from_tag
+            branch_path = os.path.join(branch_dir, f"branch-{branch_name}")
+            if os.path.exists(branch_path):
+                msg = f"Branch '{branch_name}' already exists."
+                response = ErrorResponse(
+                    ErrorResponse.RESOURCE_TYPE_BRANCH, branch_name, msg, 409)
+                return self._mock_response(response, 409)
+
+            from pypaimon.schema.schema_manager import SchemaManager
+            from pypaimon.common.file_io import FileIO
+            from pypaimon.common.options.options import Options
+
+            file_table_path = f'file://{table_path}'
+            file_io = FileIO.get(file_table_path, Options({}))
+            schema_mgr = SchemaManager(file_io, file_table_path)
+            branch_schema_dir = f"{file_table_path}/branch/branch-{branch_name}/schema"
+
+            if from_tag is not None:
+                table = self._get_file_table(identifier)
+                tag_mgr = table.tag_manager()
+                tag = tag_mgr.get_or_throw(from_tag)
+                snapshot = tag.trim_to_snapshot()
+
+                # Copy tag file
+                branch_tag_dir = f"{file_table_path}/branch/branch-{branch_name}/tag"
+                file_io.mkdirs(branch_tag_dir)
+                file_io.copy_file(
+                    tag_mgr.tag_path(from_tag),
+                    f"{branch_tag_dir}/tag-{from_tag}")
+
+                # Copy snapshot file
+                snapshot_mgr = table.snapshot_manager()
+                branch_snapshot_dir = f"{file_table_path}/branch/branch-{branch_name}/snapshot"
+                file_io.mkdirs(branch_snapshot_dir)
+                file_io.copy_file(
+                    snapshot_mgr.get_snapshot_path(snapshot.id),
+                    f"{branch_snapshot_dir}/snapshot-{snapshot.id}")
+
+                # Copy schemas
+                self._copy_schemas_to_branch(
+                    file_io, schema_mgr, branch_schema_dir, snapshot.schema_id)
+            else:
+                latest_schema = schema_mgr.latest()
+                if latest_schema is None:
+                    raise ValueError("Table has no schema.")
+                self._copy_schemas_to_branch(
+                    file_io, schema_mgr, branch_schema_dir, latest_schema.id)
+
+            return self._mock_response("", 200)
+        return self._mock_response(ErrorResponse(None, None, "Method Not Allowed", 405), 405)
+
+    @staticmethod
+    def _copy_schemas_to_branch(file_io, schema_mgr, branch_schema_dir, max_schema_id):
+        file_io.mkdirs(branch_schema_dir)
+        for sid in range(max_schema_id + 1):
+            src = schema_mgr._to_schema_path(sid)
+            dst = f"{branch_schema_dir}/schema-{sid}"
+            if file_io.exists(src):
+                file_io.copy_file(src, dst)
+
+    def _branch_handle(self, method: str, identifier: Identifier,
+                       branch_name: str) -> Tuple[str, int]:
+        """Handle /tables/{table}/branches/{branch} — delete branch."""
+        if identifier.get_full_name() not in self.table_metadata_store:
+            raise TableNotExistException(identifier)
+
+        if method == "DELETE":
+            import os
+            import shutil
+            table_path = os.path.join(
+                self.data_path, self.warehouse,
+                identifier.get_database_name(), identifier.get_object_name())
+            branch_path = os.path.join(table_path, "branch", f"branch-{branch_name}")
+            if not os.path.exists(branch_path):
+                msg = f"Branch '{branch_name}' doesn't exist."
+                response = ErrorResponse(
+                    ErrorResponse.RESOURCE_TYPE_BRANCH, branch_name, msg, 404)
+                return self._mock_response(response, 404)
+            shutil.rmtree(branch_path)
+            return self._mock_response("", 200)
+        return self._mock_response(ErrorResponse(None, None, "Method Not Allowed", 405), 405)
+
+    def _tags_handle(self, method: str, data: str,
+                     identifier: Identifier) -> Tuple[str, int]:
+        """Handle /tables/{table}/tags — list and create tags."""
+        if identifier.get_full_name() not in self.table_metadata_store:
+            raise TableNotExistException(identifier)
+
+        if method == "GET":
+            table = self._get_file_table(identifier)
+            tags = table.list_tags()
+            response = ListTagsResponse(tags=tags)
+            return self._mock_response(response, 200)
+        elif method == "POST":
+            request = JSON.from_json(data, CreateTagRequest)
+            try:
+                table = self._get_file_table(identifier)
+                table.create_tag(
+                    request.tag_name,
+                    snapshot_id=request.snapshot_id,
+                    ignore_if_exists=request.ignore_if_exists)
+                return self._mock_response("", 200)
+            except ValueError as e:
+                msg = str(e)
+                if "already exists" in msg:
+                    response = ErrorResponse(
+                        ErrorResponse.RESOURCE_TYPE_TAG, request.tag_name, msg, 409)
+                    return self._mock_response(response, 409)
+                raise
+        return self._mock_response(ErrorResponse(None, None, "Method Not Allowed", 405), 405)
+
+    def _tag_handle(self, method: str, identifier: Identifier,
+                    tag_name: str) -> Tuple[str, int]:
+        """Handle /tables/{table}/tags/{tag} — delete tag."""
+        if identifier.get_full_name() not in self.table_metadata_store:
+            raise TableNotExistException(identifier)
+
+        if method == "DELETE":
+            try:
+                table = self._get_file_table(identifier)
+                if not table.delete_tag(tag_name):
+                    response = ErrorResponse(
+                        ErrorResponse.RESOURCE_TYPE_TAG, tag_name,
+                        f"Tag '{tag_name}' doesn't exist.", 404)
+                    return self._mock_response(response, 404)
+                return self._mock_response("", 200)
+            except ValueError as e:
+                msg = str(e)
+                if "doesn't exist" in msg:
+                    response = ErrorResponse(
+                        ErrorResponse.RESOURCE_TYPE_TAG, tag_name, msg, 404)
+                    return self._mock_response(response, 404)
+                raise
+        return self._mock_response(ErrorResponse(None, None, "Method Not Allowed", 405), 405)
+
+    def _get_file_catalog(self):
+        """Construct a FileSystemCatalog for branch/tag operations."""
+        from pypaimon.catalog.filesystem_catalog import FileSystemCatalog
+        from pypaimon.common.options.options import Options
+        from pypaimon.common.options.config import CatalogOptions
+
+        warehouse_path = f'file://{self.data_path}/{self.warehouse}'
+        options = Options({CatalogOptions.WAREHOUSE.key(): warehouse_path})
+        return FileSystemCatalog(options)
+
     def _get_file_table(self, identifier: Identifier):
         """Construct a FileStoreTable from the metadata store.
 
@@ -803,7 +988,7 @@ class RESTCatalogServer:
         file_io = FileIO.get(table_path, Options({}))
         return FileStoreTable(file_io, identifier, table_path, table_schema, catalog_env)
 
-    def _write_snapshot_files(self, identifier: Identifier, snapshot, statistics):
+    def _write_snapshot_files(self, identifier: Identifier, snapshot, statistics, branch=None):
         """Write snapshot and related files to the file system"""
         import json
         import os
@@ -813,8 +998,14 @@ class RESTCatalogServer:
         table_path = os.path.join(self.data_path, self.warehouse, identifier.get_database_name(),
                                   identifier.get_object_name())
 
+        # Use branch-specific directory if branch is specified and not "main"
+        if branch and branch != "main":
+            base_path = os.path.join(table_path, "branch", f"branch-{branch}")
+        else:
+            base_path = table_path
+
         # Create directory structure
-        snapshot_dir = os.path.join(table_path, "snapshot")
+        snapshot_dir = os.path.join(base_path, "snapshot")
 
         os.makedirs(snapshot_dir, exist_ok=True)
 
