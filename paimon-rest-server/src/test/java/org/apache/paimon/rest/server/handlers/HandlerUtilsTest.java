@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link HandlerUtils}. */
 class HandlerUtilsTest {
@@ -146,6 +147,32 @@ class HandlerUtilsTest {
         java.util.Map<String, String> params = new java.util.HashMap<>();
         int result = HandlerUtils.getMaxResults(params);
         assertThat(result).isEqualTo(HandlerUtils.DEFAULT_MAX_RESULTS);
+    }
+
+    @Test
+    void testGetMaxResultsZero() {
+        java.util.Map<String, String> params = new java.util.HashMap<>();
+        params.put("maxResults", "0");
+        assertThatThrownBy(() -> HandlerUtils.getMaxResults(params))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxResults must be positive");
+    }
+
+    @Test
+    void testGetMaxResultsNegative() {
+        java.util.Map<String, String> params = new java.util.HashMap<>();
+        params.put("maxResults", "-1");
+        assertThatThrownBy(() -> HandlerUtils.getMaxResults(params))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxResults must be positive");
+    }
+
+    @Test
+    void testGetMaxResultsNonNumeric() {
+        java.util.Map<String, String> params = new java.util.HashMap<>();
+        params.put("maxResults", "abc");
+        assertThatThrownBy(() -> HandlerUtils.getMaxResults(params))
+                .isInstanceOf(NumberFormatException.class);
     }
 
     @Test

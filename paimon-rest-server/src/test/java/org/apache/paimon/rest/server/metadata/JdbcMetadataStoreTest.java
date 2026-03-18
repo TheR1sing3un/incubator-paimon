@@ -36,6 +36,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Unit tests for {@link JdbcMetadataStore} using H2 in MySQL compatibility mode. */
 class JdbcMetadataStoreTest {
@@ -456,6 +457,35 @@ class JdbcMetadataStoreTest {
         String token = page1.get(1).commitId();
         List<CommitInfo> page2 = store.listCommits(DB, TABLE, null, false, 2, token);
         assertThat(page2.size()).isLessThanOrEqualTo(3);
+    }
+
+    @Test
+    void testSaveCommitWithNullCommitterFails() {
+        CommitInfo commit =
+                new CommitInfo(
+                        "null_committer",
+                        "main",
+                        "null_committer",
+                        null,
+                        null,
+                        "test null committer",
+                        1L,
+                        null,
+                        "ACTIVE",
+                        null);
+        assertThatThrownBy(
+                        () ->
+                                store.saveCommitWithLog(
+                                        DB,
+                                        TABLE,
+                                        commit,
+                                        null,
+                                        null,
+                                        "COMMIT",
+                                        "null_committer",
+                                        null,
+                                        null))
+                .isInstanceOf(RuntimeException.class);
     }
 
     // -- Helper methods --

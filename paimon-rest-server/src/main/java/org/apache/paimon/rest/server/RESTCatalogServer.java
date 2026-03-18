@@ -34,6 +34,13 @@ import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Properties;
+
 /** REST Catalog Server entry point. Starts a Netty HTTP server backed by a FileSystemCatalog. */
 public class RESTCatalogServer {
 
@@ -186,13 +193,19 @@ public class RESTCatalogServer {
     }
 
     private static Options parseArgs(String[] args) {
-        Options options = new Options();
+        Map<String, String> cliMap = new LinkedHashMap<>();
+        String configFile = null;
+
         for (int i = 0; i < args.length; i++) {
             String arg = args[i];
             if (arg.startsWith("--") && i + 1 < args.length) {
                 String key = arg.substring(2);
                 String value = args[i + 1];
-                options.setString(key, value);
+                if ("config".equals(key)) {
+                    configFile = value;
+                } else {
+                    cliMap.put(key, value);
+                }
                 i++;
             } else if (arg.contains("=")) {
                 String[] parts = arg.split("=", 2);
@@ -200,9 +213,35 @@ public class RESTCatalogServer {
                 if (key.startsWith("--")) {
                     key = key.substring(2);
                 }
-                options.setString(key, parts[1]);
+                if ("config".equals(key)) {
+                    configFile = parts[1];
+                } else {
+                    cliMap.put(key, parts[1]);
+                }
             }
         }
-        return options;
+
+        Map<String, String> fileMap = Collections.emptyMap();
+        if (configFile != null) {
+            fileMap = loadConfigFile(configFile);
+            LOG.info("Loaded configuration from file: {}", configFile);
+        }
+
+        // File first, CLI overrides (Options(map1, map2) applies map2 after map1)
+        return new Options(fileMap, cliMap);
+    }
+
+    static Map<String, String> loadConfigFile(String path) {
+        Properties props = new Properties();
+        try (FileInputStream fis = new FileInputStream(path)) {
+            props.load(fis);
+        } catch (IOException e) {
+            throw new IllegalArgumentException("Failed to load config file: " + path, e);
+        }
+        Map<String, String> map = new LinkedHashMap<>();
+        for (String name : props.stringPropertyNames()) {
+            map.put(name, props.getProperty(name));
+        }
+        return map;
     }
 }

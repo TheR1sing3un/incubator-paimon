@@ -30,6 +30,8 @@ import org.apache.paimon.rest.responses.ConfigResponse;
 import org.apache.paimon.rest.responses.GetDatabaseResponse;
 import org.apache.paimon.rest.responses.GetTableTokenResponse;
 import org.apache.paimon.rest.responses.ListDatabasesResponse;
+import org.apache.paimon.rest.responses.ListFunctionsResponse;
+import org.apache.paimon.rest.responses.ListPartitionsResponse;
 import org.apache.paimon.rest.responses.ListTablesResponse;
 import org.apache.paimon.rest.server.metadata.handlers.SchemaHandler;
 import org.apache.paimon.schema.Schema;
@@ -483,6 +485,198 @@ class RESTCatalogServerIntegrationTest {
         httpDelete("/v1/test-prefix/databases/tag_404_db");
     }
 
+    // -- Consumer Handler Tests --
+
+    @Test
+    void testListConsumers() throws Exception {
+        createTestTableWithData("consumer_list_db", "tbl");
+        String tablePath = "/v1/test-prefix/databases/consumer_list_db/tables/tbl";
+
+        // FileSystemCatalog does not support listConsumersPaged, should return 501
+        int status = httpGetStatus(tablePath + "/consumers");
+        assertThat(status).isEqualTo(501);
+
+        // Clean up
+        httpDelete(tablePath);
+        httpDelete("/v1/test-prefix/databases/consumer_list_db");
+    }
+
+    @Test
+    void testResetConsumer() throws Exception {
+        createTestTableWithData("consumer_reset_db", "tbl");
+        String tablePath = "/v1/test-prefix/databases/consumer_reset_db/tables/tbl";
+
+        // FileSystemCatalog does not support resetConsumer, should return 501
+        String body = "{\"consumerId\":\"my-consumer\",\"nextSnapshotId\":1}";
+        int status = httpPostStatus(tablePath + "/consumers/reset", body);
+        assertThat(status).isEqualTo(501);
+
+        // Clean up
+        httpDelete(tablePath);
+        httpDelete("/v1/test-prefix/databases/consumer_reset_db");
+    }
+
+    // -- Function Handler Tests --
+
+    @Test
+    void testListFunctionsEmpty() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"func_list_db\", \"options\": {}}");
+
+        // FileSystemCatalog returns empty list for listFunctions
+        String response = httpGet("/v1/test-prefix/databases/func_list_db/functions");
+        ListFunctionsResponse result =
+                JsonSerdeUtil.fromJson(response, ListFunctionsResponse.class);
+        assertThat(result).isNotNull();
+        assertThat(result.functions()).isEmpty();
+
+        // Clean up
+        httpDelete("/v1/test-prefix/databases/func_list_db");
+    }
+
+    @Test
+    void testListFunctionsGlobally() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"func_global_db\", \"options\": {}}");
+
+        int status = httpGetStatus("/v1/test-prefix/functions");
+        assertThat(status).isEqualTo(200);
+
+        // Clean up
+        httpDelete("/v1/test-prefix/databases/func_global_db");
+    }
+
+    @Test
+    void testCreateFunctionUnsupported() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"func_create_db\", \"options\": {}}");
+
+        String body =
+                "{\"name\":\"my_func\","
+                        + "\"inputParams\":[],\"returnParams\":[],"
+                        + "\"deterministic\":true,"
+                        + "\"definitions\":{},\"comment\":\"test\",\"options\":{}}";
+        int status = httpPostStatus("/v1/test-prefix/databases/func_create_db/functions", body);
+        assertThat(status).isEqualTo(501);
+
+        // Clean up
+        httpDelete("/v1/test-prefix/databases/func_create_db");
+    }
+
+    @Test
+    void testGetFunctionNotExist() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"func_get_db\", \"options\": {}}");
+
+        int status = httpGetStatus("/v1/test-prefix/databases/func_get_db/functions/nonexistent");
+        assertThat(status).isEqualTo(404);
+
+        // Clean up
+        httpDelete("/v1/test-prefix/databases/func_get_db");
+    }
+
+    @Test
+    void testDropFunctionUnsupported() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"func_drop_db\", \"options\": {}}");
+
+        int status =
+                httpDeleteStatus("/v1/test-prefix/databases/func_drop_db/functions/nonexistent");
+        assertThat(status).isEqualTo(501);
+
+        // Clean up
+        httpDelete("/v1/test-prefix/databases/func_drop_db");
+    }
+
+    @Test
+    void testAlterFunctionUnsupported() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"func_alter_db\", \"options\": {}}");
+
+        String body = "{\"changes\":[]}";
+        int status =
+                httpPostStatus(
+                        "/v1/test-prefix/databases/func_alter_db/functions/nonexistent", body);
+        assertThat(status).isEqualTo(501);
+
+        // Clean up
+        httpDelete("/v1/test-prefix/databases/func_alter_db");
+    }
+
+    @Test
+    void testListFunctionDetails() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"func_detail_db\", \"options\": {}}");
+
+        String response = httpGet("/v1/test-prefix/databases/func_detail_db/function-details");
+        assertThat(response).isNotNull();
+        int status = httpGetStatus("/v1/test-prefix/databases/func_detail_db/function-details");
+        assertThat(status).isEqualTo(200);
+
+        // Clean up
+        httpDelete("/v1/test-prefix/databases/func_detail_db");
+    }
+
+    // -- Partition Handler Tests --
+
+    @Test
+    void testListPartitionsEmpty() throws Exception {
+        createTestTableWithData("part_empty_db", "tbl");
+        String tablePath = "/v1/test-prefix/databases/part_empty_db/tables/tbl";
+
+        // Non-partitioned table returns one root partition entry
+        String response = httpGet(tablePath + "/partitions");
+        ListPartitionsResponse result =
+                JsonSerdeUtil.fromJson(response, ListPartitionsResponse.class);
+        assertThat(result).isNotNull();
+        assertThat(result.getPartitions()).hasSize(1);
+        assertThat(result.getPartitions().get(0).spec()).isEmpty();
+
+        // Clean up
+        httpDelete(tablePath);
+        httpDelete("/v1/test-prefix/databases/part_empty_db");
+    }
+
+    @Test
+    void testListPartitionsWithData() throws Exception {
+        createPartitionedTableWithData("part_data_db", "part_tbl");
+        String tablePath = "/v1/test-prefix/databases/part_data_db/tables/part_tbl";
+
+        String response = httpGet(tablePath + "/partitions");
+        ListPartitionsResponse result =
+                JsonSerdeUtil.fromJson(response, ListPartitionsResponse.class);
+        assertThat(result).isNotNull();
+        assertThat(result.getPartitions()).isNotEmpty();
+
+        // Clean up
+        httpDelete(tablePath);
+        httpDelete("/v1/test-prefix/databases/part_data_db");
+    }
+
+    @Test
+    void testMarkDonePartitions() throws Exception {
+        createPartitionedTableWithData("part_mark_db", "part_tbl");
+        String tablePath = "/v1/test-prefix/databases/part_mark_db/tables/part_tbl";
+
+        // markDonePartitions is a no-op on FileSystemCatalog but succeeds
+        String body = "{\"specs\":[{\"dt\":\"2024-01-01\"}]}";
+        int status = httpPostStatus(tablePath + "/partitions/mark", body);
+        assertThat(status).isEqualTo(200);
+
+        // Clean up
+        httpDelete(tablePath);
+        httpDelete("/v1/test-prefix/databases/part_mark_db");
+    }
+
+    @Test
+    void testListPartitionsByNames() throws Exception {
+        createPartitionedTableWithData("part_names_db", "part_tbl");
+        String tablePath = "/v1/test-prefix/databases/part_names_db/tables/part_tbl";
+
+        String body = "{\"specs\":[{\"dt\":\"2024-01-01\"}]}";
+        String response = httpPost(tablePath + "/partitions/list-by-names", body);
+        ListPartitionsResponse result =
+                JsonSerdeUtil.fromJson(response, ListPartitionsResponse.class);
+        assertThat(result).isNotNull();
+
+        // Clean up
+        httpDelete(tablePath);
+        httpDelete("/v1/test-prefix/databases/part_names_db");
+    }
+
     // -- Test helper methods --
 
     private void createTestTableWithData(String dbName, String tableName) throws Exception {
@@ -509,6 +703,37 @@ class RESTCatalogServerIntegrationTest {
         commit.commit(messages);
         write.close();
         commit.close();
+    }
+
+    private void createPartitionedTableWithData(String dbName, String tableName) throws Exception {
+        Catalog catalog = server.getCatalog();
+        catalog.createDatabase(dbName, false);
+        Schema schema =
+                Schema.newBuilder()
+                        .column("dt", DataTypes.STRING())
+                        .column("id", DataTypes.INT())
+                        .column("value", DataTypes.STRING())
+                        .partitionKeys("dt")
+                        .option("bucket", "-1")
+                        .option("file.format", "avro")
+                        .build();
+        Identifier id = Identifier.create(dbName, tableName);
+        catalog.createTable(id, schema, false);
+
+        Table table = catalog.getTable(id);
+        BatchWriteBuilder writeBuilder = table.newBatchWriteBuilder();
+        BatchTableWrite write = writeBuilder.newWrite();
+        BatchTableCommit batchCommit = writeBuilder.newCommit();
+        write.write(
+                GenericRow.of(
+                        BinaryString.fromString("2024-01-01"), 1, BinaryString.fromString("a")));
+        write.write(
+                GenericRow.of(
+                        BinaryString.fromString("2024-01-02"), 2, BinaryString.fromString("b")));
+        List<CommitMessage> messages = write.prepareCommit();
+        batchCommit.commit(messages);
+        write.close();
+        batchCommit.close();
     }
 
     // -- HTTP helper methods --

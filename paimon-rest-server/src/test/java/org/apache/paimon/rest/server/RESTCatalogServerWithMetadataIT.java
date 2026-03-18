@@ -245,6 +245,32 @@ class RESTCatalogServerWithMetadataIT {
     }
 
     @Test
+    void testListCommitsMaxResultsZero() throws Exception {
+        createTestTableWithData("zero_page_db", "tbl");
+        insertCommitRecord("zero_page_db", "tbl", "c1", "main", "c1", "alice", "first", 1L);
+
+        String tablePath = "/v1/test-prefix/databases/zero_page_db/tables/tbl";
+        int status = httpGetStatus(tablePath + "/commits?maxResults=0");
+        assertThat(status).isEqualTo(400);
+
+        httpDelete(tablePath);
+        httpDelete("/v1/test-prefix/databases/zero_page_db");
+    }
+
+    @Test
+    void testListCommitsMaxResultsNegative() throws Exception {
+        createTestTableWithData("neg_page_db", "tbl");
+        insertCommitRecord("neg_page_db", "tbl", "c1", "main", "c1", "alice", "first", 1L);
+
+        String tablePath = "/v1/test-prefix/databases/neg_page_db/tables/tbl";
+        int status = httpGetStatus(tablePath + "/commits?maxResults=-1");
+        assertThat(status).isEqualTo(400);
+
+        httpDelete(tablePath);
+        httpDelete("/v1/test-prefix/databases/neg_page_db");
+    }
+
+    @Test
     void testAuditLogOnCreateDatabase() throws Exception {
         // Clean op_log before test
         try (Connection conn = metadataDs.getConnection();
@@ -326,6 +352,45 @@ class RESTCatalogServerWithMetadataIT {
 
         httpDelete("/v1/test-prefix/databases/audit_tbl_db/tables/audit_tbl");
         httpDelete("/v1/test-prefix/databases/audit_tbl_db");
+    }
+
+    @Test
+    void testAuditLogOnFailedOperation() throws Exception {
+        // Clear audit log
+        try (Connection conn = metadataDs.getConnection();
+                Statement stmt = conn.createStatement()) {
+            stmt.execute("DELETE FROM paimon_op_log");
+        }
+
+        // Attempt to drop a non-existent database -> should fail and produce FAILED audit
+        int status = httpDeleteStatus("/v1/test-prefix/databases/nonexistent_db_for_audit");
+        assertThat(status).isGreaterThanOrEqualTo(400);
+
+        // Verify audit log has FAILED entry
+        try (Connection conn = metadataDs.getConnection();
+                PreparedStatement ps =
+                        conn.prepareStatement(
+                                "SELECT * FROM paimon_op_log WHERE status = 'FAILED'")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getString("operation_type")).isEqualTo("DROP_DATABASE");
+                assertThat(rs.getString("error_message")).isNotNull();
+            }
+        }
+    }
+
+    @Test
+    void testResetCommitReturns501OnFileSystemCatalog() throws Exception {
+        createTestTableWithData("reset_db", "tbl");
+        insertCommitRecord("reset_db", "tbl", "c1", "main", "c1", "alice", "first", 1L);
+
+        String tablePath = "/v1/test-prefix/databases/reset_db/tables/tbl";
+        int status = httpPostStatus(tablePath + "/commits/c1/reset", "");
+        // FileSystemCatalog does not support rollbackTo, so expect 501
+        assertThat(status).isEqualTo(501);
+
+        httpDelete(tablePath);
+        httpDelete("/v1/test-prefix/databases/reset_db");
     }
 
     // -- Test helper methods --

@@ -1005,6 +1005,74 @@ public class FileStoreCommitTest {
     }
 
     @Test
+    public void testCommitMetadataFromTableOptions() throws Exception {
+        Map<String, String> options = new HashMap<>();
+        options.put("commit.committer", "test-user");
+        options.put("commit.message", "test commit msg");
+        options.put("commit.metadata.team", "data-eng");
+        TestFileStore store = createStore(false, options);
+
+        try (FileStoreCommit fileStoreCommit = store.newCommit()) {
+            fileStoreCommit.ignoreEmptyCommit(false);
+
+            ManifestCommittable committable = new ManifestCommittable(0);
+            fileStoreCommit.commit(committable, false);
+            Snapshot snapshot = checkNotNull(store.snapshotManager().latestSnapshot());
+
+            Map<String, String> props = snapshot.properties();
+            assertThat(props).isNotNull();
+            assertThat(props.get("paimon.commit.committer")).isEqualTo("test-user");
+            assertThat(props.get("paimon.commit.message")).isEqualTo("test commit msg");
+            assertThat(props.get("paimon.commit.metadata.team")).isEqualTo("data-eng");
+        }
+    }
+
+    @Test
+    public void testCommitMetadataPrecedence() throws Exception {
+        // Table options set a default committer
+        Map<String, String> options = new HashMap<>();
+        options.put("commit.committer", "table-default");
+        TestFileStore store = createStore(false, options);
+
+        try (FileStoreCommit fileStoreCommit = store.newCommit()) {
+            fileStoreCommit.ignoreEmptyCommit(false);
+
+            // ManifestCommittable explicitly sets the same key — should take precedence
+            ManifestCommittable committable = new ManifestCommittable(0);
+            committable.addProperty("paimon.commit.committer", "per-job-override");
+            fileStoreCommit.commit(committable, false);
+            Snapshot snapshot = checkNotNull(store.snapshotManager().latestSnapshot());
+
+            assertThat(snapshot.properties().get("paimon.commit.committer"))
+                    .isEqualTo("per-job-override");
+        }
+    }
+
+    @Test
+    public void testCommitMetadataNotInjectedWithoutPrefix() throws Exception {
+        // Only commit.committer/message/merge-parent-id and commit.metadata.* should be injected
+        Map<String, String> options = new HashMap<>();
+        options.put("commit.committer", "test-user");
+        options.put("bucket", "1"); // not a commit option
+        TestFileStore store = createStore(false, options);
+
+        try (FileStoreCommit fileStoreCommit = store.newCommit()) {
+            fileStoreCommit.ignoreEmptyCommit(false);
+
+            ManifestCommittable committable = new ManifestCommittable(0);
+            fileStoreCommit.commit(committable, false);
+            Snapshot snapshot = checkNotNull(store.snapshotManager().latestSnapshot());
+
+            Map<String, String> props = snapshot.properties();
+            assertThat(props).isNotNull();
+            assertThat(props.get("paimon.commit.committer")).isEqualTo("test-user");
+            // bucket should NOT appear in snapshot.properties
+            assertThat(props.containsKey("paimon.bucket")).isFalse();
+            assertThat(props).hasSize(1);
+        }
+    }
+
+    @Test
     public void testCommitTwiceWithDifferentKind() throws Exception {
         TestFileStore store = createStore(false);
         try (FileStoreCommitImpl commit = store.newCommit()) {

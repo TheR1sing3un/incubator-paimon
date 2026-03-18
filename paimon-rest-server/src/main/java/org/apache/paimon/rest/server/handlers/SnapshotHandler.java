@@ -161,7 +161,7 @@ public class SnapshotHandler implements RouteRegistrar {
     private static final String PROP_METADATA_PREFIX =
             CoreOptions.SNAPSHOT_COMMIT_PREFIX + CoreOptions.COMMIT_METADATA_PREFIX;
 
-    private void saveCommit(Identifier identifier, CommitTableRequest request) {
+    void saveCommit(Identifier identifier, CommitTableRequest request) {
         try {
             Snapshot snapshot = request.getSnapshot();
             Map<String, String> snapshotProps = snapshot.properties();
