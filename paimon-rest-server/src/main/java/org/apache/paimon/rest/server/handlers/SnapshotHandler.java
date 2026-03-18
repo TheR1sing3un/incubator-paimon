@@ -18,6 +18,7 @@
 
 package org.apache.paimon.rest.server.handlers;
 
+import org.apache.paimon.CoreOptions;
 import org.apache.paimon.PagedList;
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.catalog.Catalog;
@@ -43,6 +44,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -150,15 +152,43 @@ public class SnapshotHandler implements RouteRegistrar {
         return new CommitTableResponse(success);
     }
 
+    private static final String PROP_COMMITTER =
+            CoreOptions.SNAPSHOT_COMMIT_PREFIX + CoreOptions.COMMIT_COMMITTER.key();
+    private static final String PROP_MESSAGE =
+            CoreOptions.SNAPSHOT_COMMIT_PREFIX + CoreOptions.COMMIT_MESSAGE.key();
+    private static final String PROP_MERGE_PARENT_ID =
+            CoreOptions.SNAPSHOT_COMMIT_PREFIX + CoreOptions.COMMIT_MERGE_PARENT_ID.key();
+    private static final String PROP_METADATA_PREFIX =
+            CoreOptions.SNAPSHOT_COMMIT_PREFIX + CoreOptions.COMMIT_METADATA_PREFIX;
+
     private void saveCommit(Identifier identifier, CommitTableRequest request) {
         try {
             Snapshot snapshot = request.getSnapshot();
+            Map<String, String> snapshotProps = snapshot.properties();
             String database = identifier.getDatabaseName();
             String table = identifier.getTableName();
             String branch = identifier.getBranchNameOrDefault();
 
-            String committer = request.getCommitter();
-            String message = request.getMessage();
+            // 1. committer: snapshot.properties > request field > "unknown"
+            String committer = getProperty(snapshotProps, PROP_COMMITTER);
+            if (committer == null || committer.isEmpty()) {
+                committer = request.getCommitter();
+            }
+            if (committer == null || committer.isEmpty()) {
+                committer = "unknown";
+            }
+
+            // 2. message: snapshot.properties > request field
+            String message = getProperty(snapshotProps, PROP_MESSAGE);
+            if (message == null) {
+                message = request.getMessage();
+            }
+
+            // 3. mergeParentId: from snapshot.properties
+            String mergeParentId = getProperty(snapshotProps, PROP_MERGE_PARENT_ID);
+
+            // 4. metadata: all paimon.commit.metadata.* keys
+            Map<String, Object> metadata = extractCommitMetadata(snapshotProps);
 
             CommitInfo parentCommit = metadataStore.getLatestCommit(database, table, branch);
             String parentId = parentCommit != null ? parentCommit.commitId() : null;
@@ -173,11 +203,11 @@ public class SnapshotHandler implements RouteRegistrar {
                             commitId,
                             branch,
                             parentId,
-                            null,
+                            mergeParentId,
                             committer,
                             message,
                             snapshot.id(),
-                            null,
+                            metadata.isEmpty() ? null : metadata,
                             "ACTIVE",
                             null);
             metadataStore.saveCommitWithLog(
@@ -190,9 +220,36 @@ public class SnapshotHandler implements RouteRegistrar {
                     commitId,
                     null,
                     JsonSerdeUtil.toJson(commitInfo));
+        } catch (RuntimeException e) {
+            LOG.error(
+                    "Failed to save commit metadata for {} (non-recoverable)",
+                    identifier.getFullName(),
+                    e);
         } catch (Exception e) {
             LOG.warn("Failed to save commit metadata for {}", identifier.getFullName(), e);
         }
+    }
+
+    @Nullable
+    static String getProperty(@Nullable Map<String, String> props, String fullKey) {
+        if (props == null) {
+            return null;
+        }
+        return props.get(fullKey);
+    }
+
+    static Map<String, Object> extractCommitMetadata(@Nullable Map<String, String> props) {
+        Map<String, Object> metadata = new HashMap<>();
+        if (props == null) {
+            return metadata;
+        }
+        for (Map.Entry<String, String> entry : props.entrySet()) {
+            if (entry.getKey().startsWith(PROP_METADATA_PREFIX)) {
+                String suffix = entry.getKey().substring(PROP_METADATA_PREFIX.length());
+                metadata.put(suffix, entry.getValue());
+            }
+        }
+        return metadata;
     }
 
     public void rollbackTable(Identifier identifier, String body) throws Exception {

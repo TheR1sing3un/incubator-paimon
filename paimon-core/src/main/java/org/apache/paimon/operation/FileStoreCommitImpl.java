@@ -961,6 +961,21 @@ public class FileStoreCommitImpl implements FileStoreCommit {
                 }
             }
 
+            // Inject commit metadata from table options into snapshot properties
+            // 1. Well-known keys: commit.committer, commit.message, commit.merge-parent-id
+            injectCommitOption(properties, CoreOptions.COMMIT_COMMITTER.key());
+            injectCommitOption(properties, CoreOptions.COMMIT_MESSAGE.key());
+            injectCommitOption(properties, CoreOptions.COMMIT_MERGE_PARENT_ID.key());
+            // 2. Arbitrary metadata: commit.metadata.* -> paimon.commit.metadata.*
+            Map<String, String> allOptions = options.toMap();
+            for (Map.Entry<String, String> entry : allOptions.entrySet()) {
+                if (entry.getKey().startsWith(CoreOptions.COMMIT_METADATA_PREFIX)
+                        && entry.getValue() != null) {
+                    String propKey = CoreOptions.SNAPSHOT_COMMIT_PREFIX + entry.getKey();
+                    properties.putIfAbsent(propKey, entry.getValue());
+                }
+            }
+
             // prepare snapshot file
             newSnapshot =
                     new Snapshot(
@@ -1157,6 +1172,14 @@ public class FileStoreCommitImpl implements FileStoreCommit {
                         latestSnapshot.nextRowId());
 
         return commitSnapshotImpl(newSnapshot, emptyList());
+    }
+
+    private void injectCommitOption(Map<String, String> properties, String optionKey) {
+        String value = options.toMap().get(optionKey);
+        if (value != null) {
+            String propKey = CoreOptions.SNAPSHOT_COMMIT_PREFIX + optionKey;
+            properties.putIfAbsent(propKey, value);
+        }
     }
 
     private boolean commitSnapshotImpl(Snapshot newSnapshot, List<PartitionEntry> deltaStatistics) {

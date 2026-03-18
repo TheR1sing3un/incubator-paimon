@@ -40,6 +40,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+import static org.apache.paimon.rest.server.handlers.HandlerUtils.getMaxResults;
 import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
 
 /**
@@ -102,15 +103,13 @@ public class CommitHandler implements RouteRegistrar {
     public RESTResponse listCommits(String database, String table, Map<String, String> params)
             throws Exception {
         String branch = params.get("branch");
-        String maxResultsStr = params.get("maxResults");
         String pageToken = params.get("pageToken");
-        Integer maxResults = maxResultsStr != null ? Integer.parseInt(maxResultsStr) : null;
+        int effectiveLimit = getMaxResults(params);
         boolean includeAbandoned = "true".equalsIgnoreCase(params.get("includeAbandoned"));
-        int effectiveLimit = maxResults != null ? maxResults : 100;
 
         List<CommitInfo> commits =
                 metadataStore.listCommits(
-                        database, table, branch, includeAbandoned, maxResults, pageToken);
+                        database, table, branch, includeAbandoned, effectiveLimit, pageToken);
         String nextToken = null;
         if (commits.size() > effectiveLimit) {
             commits = new ArrayList<>(commits.subList(0, effectiveLimit));
