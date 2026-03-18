@@ -849,6 +849,56 @@ public interface Catalog extends AutoCloseable {
     }
 
     /**
+     * Create a branch from a specific snapshot. When {@code fromSnapshotId} is provided and {@code
+     * fromTag} is null, an auto-tag named {@code _auto_branch_<branchName>} will be created on the
+     * snapshot first, then the branch will be created from that tag. This ensures the snapshot and
+     * its data files are preserved (not expired).
+     *
+     * @param identifier path of the table, cannot be system or branch name.
+     * @param branch the branch name
+     * @param fromTag from the tag
+     * @param fromSnapshotId optional snapshot id to branch from (auto-creates a tag)
+     * @throws IllegalArgumentException if both fromTag and fromSnapshotId are provided
+     * @throws TableNotExistException if the table in identifier doesn't exist
+     * @throws BranchAlreadyExistException if the branch already exists
+     * @throws TagNotExistException if the tag doesn't exist
+     * @throws SnapshotNotExistException if the snapshot doesn't exist
+     * @throws UnsupportedOperationException if the catalog does not {@link
+     *     #supportsVersionManagement()}
+     */
+    default void createBranch(
+            Identifier identifier,
+            String branch,
+            @Nullable String fromTag,
+            @Nullable Long fromSnapshotId)
+            throws TableNotExistException, BranchAlreadyExistException, TagNotExistException,
+                    SnapshotNotExistException {
+        if (fromTag != null && fromSnapshotId != null) {
+            throw new IllegalArgumentException("Cannot specify both fromTag and fromSnapshotId");
+        }
+        if (fromTag != null) {
+            createBranch(identifier, branch, fromTag);
+        } else if (fromSnapshotId != null) {
+            String autoTagName = "_auto_branch_" + branch;
+            try {
+                deleteTag(identifier, autoTagName);
+            } catch (TagNotExistException ignored) {
+                // First time creating this auto-tag, nothing to delete
+            }
+            try {
+                createTag(identifier, autoTagName, fromSnapshotId, null, false);
+            } catch (TagAlreadyExistException e) {
+                // Concurrent creation; should not happen after deleteTag
+                throw new RuntimeException(
+                        "Auto-tag " + autoTagName + " unexpectedly exists after deletion", e);
+            }
+            createBranch(identifier, branch, autoTagName);
+        } else {
+            createBranch(identifier, branch, (String) null);
+        }
+    }
+
+    /**
      * Drop the branch for this table.
      *
      * @param identifier path of the table, cannot be system or branch name.

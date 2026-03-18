@@ -27,6 +27,8 @@ import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonGet
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 
+import javax.annotation.Nullable;
+
 import java.util.List;
 
 /** Request for committing snapshot to table. */
@@ -36,6 +38,8 @@ public class CommitTableRequest implements RESTRequest {
     private static final String FIELD_TABLE_ID = "tableId";
     private static final String FIELD_SNAPSHOT = "snapshot";
     private static final String FIELD_STATISTICS = "statistics";
+    private static final String FIELD_COMMITTER = "committer";
+    private static final String FIELD_MESSAGE = "message";
 
     @JsonProperty(FIELD_TABLE_ID)
     private final String tableId;
@@ -46,14 +50,26 @@ public class CommitTableRequest implements RESTRequest {
     @JsonProperty(FIELD_STATISTICS)
     private final List<PartitionStatistics> statistics;
 
+    @JsonProperty(FIELD_COMMITTER)
+    @Nullable
+    private final String committer;
+
+    @JsonProperty(FIELD_MESSAGE)
+    @Nullable
+    private final String message;
+
     @JsonCreator
     public CommitTableRequest(
             @JsonProperty(FIELD_TABLE_ID) String tableId,
             @JsonProperty(FIELD_SNAPSHOT) Snapshot snapshot,
-            @JsonProperty(FIELD_STATISTICS) List<PartitionStatistics> statistics) {
+            @JsonProperty(FIELD_STATISTICS) List<PartitionStatistics> statistics,
+            @JsonProperty(FIELD_COMMITTER) @Nullable String committer,
+            @JsonProperty(FIELD_MESSAGE) @Nullable String message) {
         this.tableId = tableId;
         this.snapshot = snapshot;
         this.statistics = statistics;
+        this.committer = committer;
+        this.message = message;
     }
 
     @JsonGetter(FIELD_TABLE_ID)
@@ -69,5 +85,17 @@ public class CommitTableRequest implements RESTRequest {
     @JsonGetter(FIELD_STATISTICS)
     public List<PartitionStatistics> getStatistics() {
         return statistics;
+    }
+
+    @JsonGetter(FIELD_COMMITTER)
+    @Nullable
+    public String getCommitter() {
+        return committer;
+    }
+
+    @JsonGetter(FIELD_MESSAGE)
+    @Nullable
+    public String getMessage() {
+        return message;
     }
 }

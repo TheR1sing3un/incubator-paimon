@@ -665,7 +665,13 @@ public class RESTApi {
             @Nullable String tableUuid,
             Snapshot snapshot,
             List<PartitionStatistics> statistics) {
-        CommitTableRequest request = new CommitTableRequest(tableUuid, snapshot, statistics);
+        CommitTableRequest request =
+                new CommitTableRequest(
+                        tableUuid,
+                        snapshot,
+                        statistics,
+                        options.get(RESTCatalogOptions.COMMIT_COMMITTER),
+                        options.get(RESTCatalogOptions.COMMIT_MESSAGE));
         CommitTableResponse response =
                 client.post(
                         resourcePaths.commitTable(
@@ -922,8 +928,12 @@ public class RESTApi {
      * @throws ForbiddenException Exception thrown on HTTP 403 means don't have the permission for
      *     this table
      */
-    public void createBranch(Identifier identifier, String branch, @Nullable String fromTag) {
-        CreateBranchRequest request = new CreateBranchRequest(branch, fromTag);
+    public void createBranch(
+            Identifier identifier,
+            String branch,
+            @Nullable String fromTag,
+            @Nullable Long fromSnapshotId) {
+        CreateBranchRequest request = new CreateBranchRequest(branch, fromTag, fromSnapshotId);
         client.post(
                 resourcePaths.branches(identifier.getDatabaseName(), identifier.getObjectName()),
                 request,

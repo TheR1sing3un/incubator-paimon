@@ -1890,6 +1890,38 @@ public class CoreOptions implements Serializable {
                     .noDefaultValue()
                     .withDescription("Specifies the commit user prefix.");
 
+    /** Prefix for arbitrary commit metadata options in table config (commit.metadata.*). */
+    public static final String COMMIT_METADATA_PREFIX = "commit.metadata.";
+
+    /** Prefix for commit metadata keys stored in Snapshot.properties. */
+    public static final String SNAPSHOT_COMMIT_PREFIX = "paimon.";
+
+    public static final ConfigOption<String> COMMIT_COMMITTER =
+            key("commit.committer")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Committer name for audit tracking. "
+                                    + "Stored in Snapshot.properties as paimon.commit.committer. "
+                                    + "Can be set per-job via Flink SQL hints or Spark session config.");
+
+    public static final ConfigOption<String> COMMIT_MESSAGE =
+            key("commit.message")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Commit message for audit tracking. "
+                                    + "Stored in Snapshot.properties as paimon.commit.message. "
+                                    + "Can be set per-job via Flink SQL hints or Spark session config.");
+
+    public static final ConfigOption<String> COMMIT_MERGE_PARENT_ID =
+            key("commit.merge-parent-id")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Merge parent commit ID. "
+                                    + "Stored in Snapshot.properties as paimon.commit.merge-parent-id.");
+
     @Immutable
     public static final ConfigOption<Boolean> FORCE_LOOKUP =
             key("force-lookup")

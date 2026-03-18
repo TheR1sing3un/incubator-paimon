@@ -68,8 +68,6 @@ import org.apache.paimon.view.ViewChange;
 import org.apache.paimon.view.ViewImpl;
 import org.apache.paimon.view.ViewSchema;
 
-import org.apache.paimon.shade.org.apache.commons.lang3.StringUtils;
-
 import javax.annotation.Nullable;
 
 import java.io.IOException;
@@ -322,7 +320,7 @@ public class RESTCatalog implements Catalog {
         try {
             return Optional.ofNullable(api.loadSnapshot(identifier));
         } catch (NoSuchResourceException e) {
-            if (StringUtils.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_SNAPSHOT)) {
+            if (Objects.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_SNAPSHOT)) {
                 return Optional.empty();
             }
             throw new TableNotExistException(identifier);
@@ -337,7 +335,7 @@ public class RESTCatalog implements Catalog {
         try {
             return Optional.ofNullable(api.loadSnapshot(identifier, version));
         } catch (NoSuchResourceException e) {
-            if (StringUtils.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_SNAPSHOT)) {
+            if (Objects.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_SNAPSHOT)) {
                 return Optional.empty();
             }
             throw new TableNotExistException(identifier);
@@ -429,10 +427,10 @@ public class RESTCatalog implements Catalog {
         try {
             api.rollbackTo(identifier, instant, fromSnapshot);
         } catch (NoSuchResourceException e) {
-            if (StringUtils.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_SNAPSHOT)) {
+            if (Objects.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_SNAPSHOT)) {
                 throw new IllegalArgumentException(
                         String.format("Rollback snapshot '%s' doesn't exist.", e.resourceName()));
-            } else if (StringUtils.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_TAG)) {
+            } else if (Objects.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_TAG)) {
                 throw new IllegalArgumentException(
                         String.format("Rollback tag '%s' doesn't exist.", e.resourceName()));
             }
@@ -554,10 +552,9 @@ public class RESTCatalog implements Catalog {
             api.alterTable(identifier, changes);
         } catch (NoSuchResourceException e) {
             if (!ignoreIfNotExists) {
-                if (StringUtils.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_TABLE)) {
+                if (Objects.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_TABLE)) {
                     throw new TableNotExistException(identifier);
-                } else if (StringUtils.equals(
-                        e.resourceType(), ErrorResponse.RESOURCE_TYPE_COLUMN)) {
+                } else if (Objects.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_COLUMN)) {
                     throw new ColumnNotExistException(identifier, e.resourceName());
                 }
             }
@@ -692,12 +689,44 @@ public class RESTCatalog implements Catalog {
     public void createBranch(Identifier identifier, String branch, @Nullable String fromTag)
             throws TableNotExistException, BranchAlreadyExistException, TagNotExistException {
         try {
-            api.createBranch(identifier, branch, fromTag);
+            api.createBranch(identifier, branch, fromTag, null);
         } catch (NoSuchResourceException e) {
-            if (StringUtils.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_TABLE)) {
+            if (Objects.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_TABLE)) {
                 throw new TableNotExistException(identifier, e);
-            } else if (StringUtils.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_TAG)) {
+            } else if (Objects.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_TAG)) {
                 throw new TagNotExistException(identifier, fromTag, e);
+            } else {
+                throw e;
+            }
+        } catch (AlreadyExistsException e) {
+            throw new BranchAlreadyExistException(identifier, branch, e);
+        } catch (ForbiddenException e) {
+            throw new TableNoPermissionException(identifier, e);
+        } catch (BadRequestException e) {
+            throw new IllegalArgumentException(e.getMessage());
+        }
+    }
+
+    @Override
+    public void createBranch(
+            Identifier identifier,
+            String branch,
+            @Nullable String fromTag,
+            @Nullable Long fromSnapshotId)
+            throws TableNotExistException, BranchAlreadyExistException, TagNotExistException,
+                    SnapshotNotExistException {
+        try {
+            api.createBranch(identifier, branch, fromTag, fromSnapshotId);
+        } catch (NoSuchResourceException e) {
+            if (Objects.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_TABLE)) {
+                throw new TableNotExistException(identifier, e);
+            } else if (Objects.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_TAG)) {
+                throw new TagNotExistException(identifier, fromTag, e);
+            } else if (Objects.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_SNAPSHOT)) {
+                throw new SnapshotNotExistException(
+                        String.format(
+                                "Snapshot %s in table %s doesn't exist.",
+                                e.resourceName(), identifier.getFullName()));
             } else {
                 throw e;
             }
@@ -809,7 +838,7 @@ public class RESTCatalog implements Catalog {
         } catch (AlreadyExistsException e) {
             throw new DefinitionAlreadyExistException(identifier, e.resourceName());
         } catch (NoSuchResourceException e) {
-            if (StringUtils.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_DEFINITION)) {
+            if (Objects.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_DEFINITION)) {
                 throw new DefinitionNotExistException(identifier, e.resourceName());
             }
             if (!ignoreIfNotExists) {
@@ -1007,7 +1036,7 @@ public class RESTCatalog implements Catalog {
         } catch (AlreadyExistsException e) {
             throw new DialectAlreadyExistException(identifier, e.resourceName());
         } catch (NoSuchResourceException e) {
-            if (StringUtils.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_DIALECT)) {
+            if (Objects.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_DIALECT)) {
                 throw new DialectNotExistException(identifier, e.resourceName());
             }
             if (!ignoreIfNotExists) {
@@ -1034,7 +1063,7 @@ public class RESTCatalog implements Catalog {
         try {
             return api.getTag(identifier, tagName);
         } catch (NoSuchResourceException e) {
-            if (StringUtils.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_TAG)) {
+            if (Objects.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_TAG)) {
                 throw new TagNotExistException(identifier, tagName);
             }
             throw new TableNotExistException(identifier);
@@ -1071,7 +1100,7 @@ public class RESTCatalog implements Catalog {
                 throw new TagAlreadyExistException(identifier, tagName);
             }
         } catch (NoSuchResourceException e) {
-            if (StringUtils.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_SNAPSHOT)) {
+            if (Objects.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_SNAPSHOT)) {
                 throw new SnapshotNotExistException(
                         String.format(
                                 "Snapshot %s in table %s doesn't exist.",
@@ -1128,7 +1157,7 @@ public class RESTCatalog implements Catalog {
         try {
             api.deleteTag(identifier, tagName);
         } catch (NoSuchResourceException e) {
-            if (StringUtils.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_TAG)) {
+            if (Objects.equals(e.resourceType(), ErrorResponse.RESOURCE_TYPE_TAG)) {
                 throw new TagNotExistException(identifier, tagName);
             }
             throw new TableNotExistException(identifier);

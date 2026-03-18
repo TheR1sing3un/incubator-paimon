@@ -1112,6 +1112,45 @@ paths:
         "500":
           $ref: '#/components/responses/ServerErrorResponse'
   /v1/{prefix}/databases/{database}/tables/{table}/branches/{branch}:
+    get:
+      tags:
+        - branch
+      summary: Get branch detail
+      operationId: getBranch
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: database
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: branch
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetBranchResponse'
+        "401":
+          $ref: '#/components/responses/UnauthorizedErrorResponse'
+        "404":
+          $ref: '#/components/responses/BranchNotExistErrorResponse'
+        "500":
+          $ref: '#/components/responses/ServerErrorResponse'
     delete:
       tags:
         - branch
@@ -1186,6 +1225,321 @@ paths:
           $ref: '#/components/responses/UnauthorizedErrorResponse'
         "404":
           $ref: '#/components/responses/BranchNotExistErrorResponse'
+        "500":
+          $ref: '#/components/responses/ServerErrorResponse'
+  /v1/{prefix}/databases/{database}/tables/{table}/diff:
+    get:
+      tags:
+        - branch
+      summary: Diff two refs (Phase 2)
+      description: |
+        Compare two refs (branch names or commit IDs) and return the schema changes between them.
+        This endpoint is reserved for Phase 2 and currently returns 501 Not Implemented.
+      operationId: diffRefs
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: database
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: left
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Left ref (branch name or commit ID)
+        - name: right
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Right ref (branch name or commit ID)
+      responses:
+        "200":
+          description: Diff result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiffResponse'
+        "400":
+          $ref: '#/components/responses/BadRequestErrorResponse'
+        "401":
+          $ref: '#/components/responses/UnauthorizedErrorResponse'
+        "404":
+          $ref: '#/components/responses/TableNotExistErrorResponse'
+        "501":
+          description: Not yet implemented (Phase 2)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          $ref: '#/components/responses/ServerErrorResponse'
+  /v1/{prefix}/databases/{database}/tables/{table}/branches/{branch}/merge:
+    post:
+      tags:
+        - branch
+      summary: Merge branch (Phase 2)
+      description: |
+        Merge a source branch into the target branch. This endpoint is reserved for Phase 2
+        and currently returns 501 Not Implemented.
+      operationId: mergeBranch
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: database
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: branch
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The target branch to merge into
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MergeBranchRequest'
+      responses:
+        "200":
+          description: Merge completed successfully
+        "401":
+          $ref: '#/components/responses/UnauthorizedErrorResponse'
+        "404":
+          $ref: '#/components/responses/BranchNotExistErrorResponse'
+        "501":
+          description: Not yet implemented (Phase 2)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          $ref: '#/components/responses/ServerErrorResponse'
+  /v1/{prefix}/databases/{database}/tables/{table}/commits:
+    get:
+      tags:
+        - commit
+      summary: List commits
+      operationId: listCommits
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: database
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: branch
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by branch name
+        - name: maxResults
+          in: query
+          schema:
+            type: integer
+            format: int32
+        - name: pageToken
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListCommitsResponse'
+        "401":
+          $ref: '#/components/responses/UnauthorizedErrorResponse'
+        "500":
+          $ref: '#/components/responses/ServerErrorResponse'
+  /v1/{prefix}/databases/{database}/tables/{table}/commits/{commitId}:
+    get:
+      tags:
+        - commit
+      summary: Get commit by ID
+      operationId: getCommit
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: database
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: commitId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommitInfo'
+        "400":
+          $ref: '#/components/responses/BadRequestErrorResponse'
+        "401":
+          $ref: '#/components/responses/UnauthorizedErrorResponse'
+        "500":
+          $ref: '#/components/responses/ServerErrorResponse'
+  /v1/{prefix}/databases/{database}/tables/{table}/commits/{commitId}/reset:
+    post:
+      tags:
+        - commit
+      summary: Reset to a commit
+      description: Reset the table to the target commit and record a new commit.
+      operationId: resetCommit
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: database
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: commitId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Reset commit created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommitInfo'
+        "400":
+          $ref: '#/components/responses/BadRequestErrorResponse'
+        "401":
+          $ref: '#/components/responses/UnauthorizedErrorResponse'
+        "500":
+          $ref: '#/components/responses/ServerErrorResponse'
+  /v1/{prefix}/databases/{database}/tables/{table}/schemas:
+    get:
+      tags:
+        - schema
+      summary: List schema versions
+      description: List all schema versions of a table. Read directly from Paimon storage.
+      operationId: listSchemas
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: database
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListSchemasResponse'
+        "401":
+          $ref: '#/components/responses/UnauthorizedErrorResponse'
+        "404":
+          $ref: '#/components/responses/TableNotExistErrorResponse'
+        "500":
+          $ref: '#/components/responses/ServerErrorResponse'
+  /v1/{prefix}/databases/{database}/tables/{table}/schemas/{schemaId}:
+    get:
+      tags:
+        - schema
+      summary: Get schema by version ID
+      operationId: getSchema
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: database
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: schemaId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchemaInfo'
+        "401":
+          $ref: '#/components/responses/UnauthorizedErrorResponse'
+        "404":
+          $ref: '#/components/responses/TableNotExistErrorResponse'
         "500":
           $ref: '#/components/responses/ServerErrorResponse'
   /v1/{prefix}/databases/{database}/tables/{table}/tags:
@@ -2618,10 +2972,17 @@ components:
           type: string
     DataField:
       type: object
+      required:
+        - name
+        - type
       properties:
         id:
           type: integer
           format: int32
+          description: >-
+            Field id. This is ignored by the server when creating tables;
+            the server auto-assigns field ids. Present in responses for
+            informational purposes.
         name:
           type: string
         type:
@@ -3207,11 +3568,90 @@ components:
         fromTag:
           nullable: true
           type: string
+        fromSnapshotId:
+          type: integer
+          format: int64
+          nullable: true
+          description: Optional snapshot id to branch from. When provided (and fromTag is null), an auto-tag will be created to anchor the snapshot.
     ForwardBranchRequest:
       type: object
       properties:
         branch:
           type: string
+    MergeBranchRequest:
+      type: object
+      required:
+        - source_branch
+      properties:
+        source_branch:
+          type: string
+          description: The branch to merge from
+        message:
+          type: string
+          nullable: true
+          description: Merge commit message
+        strategy:
+          type: string
+          nullable: true
+          description: "Merge strategy (reserved for Phase 2, e.g. none, ours, theirs)"
+          default: "none"
+        squash:
+          type: boolean
+          description: Whether to squash commits during merge
+          default: false
+    DiffResponse:
+      type: object
+      properties:
+        left_ref:
+          type: string
+          description: Left ref as provided in the query
+        right_ref:
+          type: string
+          description: Right ref as provided in the query
+        left_commit_id:
+          type: string
+          nullable: true
+          description: Resolved commit ID for the left ref
+        right_commit_id:
+          type: string
+          nullable: true
+          description: Resolved commit ID for the right ref
+        changes:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiffChange'
+          description: List of schema changes between the two refs
+    DiffChange:
+      type: object
+      properties:
+        type:
+          type: string
+          description: "Change type (e.g. ADD_COLUMN, DROP_COLUMN, MODIFY_COLUMN, CHANGE_OPTION)"
+        column_name:
+          type: string
+          nullable: true
+          description: Column name affected by the change
+        column_type:
+          type: string
+          nullable: true
+          description: Column data type (for ADD_COLUMN or MODIFY_COLUMN)
+        nullable:
+          type: boolean
+          nullable: true
+          description: Whether the column is nullable
+    GetBranchResponse:
+      type: object
+      properties:
+        branch:
+          type: string
+        latestSnapshotId:
+          type: integer
+          format: int64
+          nullable: true
+        latestSchemaId:
+          type: integer
+          format: int64
+          nullable: true
     ListBranchesResponse:
       type: object
       properties:
@@ -3492,6 +3932,74 @@ components:
         totalBuckets:
           type: integer
           format: int32
+    #######################################
+    # Git Metadata schemas                #
+    #######################################
+    CommitInfo:
+      type: object
+      properties:
+        commitId:
+          type: string
+          description: Unique commit identifier
+        branch:
+          type: string
+        parentId:
+          type: string
+          description: "Parent commit ID (first commit points to itself)"
+        mergeParentId:
+          type: string
+          nullable: true
+          description: "Merge parent commit ID"
+        committer:
+          type: string
+        message:
+          type: string
+          nullable: true
+        snapshotId:
+          type: integer
+          format: int64
+          nullable: true
+          description: Associated Paimon snapshot ID
+        metadata:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: Arbitrary JSON metadata (matches paimon_commit.metadata_json)
+        status:
+          type: string
+          description: "Commit status: ACTIVE or ABANDONED"
+        createdAt:
+          type: string
+          description: ISO 8601 timestamp
+    ListCommitsResponse:
+      type: object
+      properties:
+        commits:
+          type: array
+          items:
+            $ref: '#/components/schemas/CommitInfo'
+        nextPageToken:
+          type: string
+          nullable: true
+    SchemaInfo:
+      type: object
+      properties:
+        schemaId:
+          type: integer
+          format: int64
+        schema:
+          $ref: '#/components/schemas/Schema'
+        timeMillis:
+          type: integer
+          format: int64
+          description: Schema creation time in Unix milliseconds
+    ListSchemasResponse:
+      type: object
+      properties:
+        schemas:
+          type: array
+          items:
+            $ref: '#/components/schemas/SchemaInfo'
   #######################################
   # Examples of different values #
   #######################################
