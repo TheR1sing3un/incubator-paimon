@@ -52,13 +52,15 @@ class CatalogEnvironment:
         """
         if self.catalog_loader is not None and self.supports_version_management:
             # Use catalog-based snapshot commit when catalog loader is available
-            # and version management is supported
+            # and version management is supported. Provide a filesystem-based
+            # fallback for REST servers whose underlying catalog (e.g. FileSystemCatalog)
+            # does not support commitSnapshot (returns 501).
             catalog = self.catalog_loader.load()
-            return CatalogSnapshotCommit(catalog, self.identifier, self.uuid)
+            fallback = RenamingSnapshotCommit(snapshot_manager)
+            return CatalogSnapshotCommit(catalog, self.identifier, self.uuid,
+                                         fallback_commit=fallback)
         else:
             # Use file renaming-based snapshot commit
-            # In a full implementation, this would use a proper lock factory
-            # to create locks based on the catalog lock context
             return RenamingSnapshotCommit(snapshot_manager)
 
     def catalog_table_rollback(self):
