@@ -18,6 +18,8 @@
 
 from typing import Optional
 
+from pypaimon.api.rest_exception import NotImplementedException
+
 
 class SnapshotLoader:
     """Loader to load latest snapshot from a catalog.
@@ -51,6 +53,10 @@ class SnapshotLoader:
             if table_snapshot is None:
                 return None
             return table_snapshot.snapshot
+        except NotImplementedException:
+            # REST server returned 501 (catalog doesn't support version management).
+            # Re-raise as NotImplementedError so SnapshotManager falls back to filesystem.
+            raise NotImplementedError("Catalog does not support loadSnapshot")
         except RuntimeError as e:
             raise e
         except Exception as e:

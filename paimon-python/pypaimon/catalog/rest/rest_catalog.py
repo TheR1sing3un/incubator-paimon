@@ -19,7 +19,8 @@ from typing import Any, Callable, Dict, List, Optional, Union
 
 from pypaimon.api.api_response import GetTableResponse, PagedList, ErrorResponse
 from pypaimon.api.rest_api import RESTApi
-from pypaimon.api.rest_exception import NoSuchResourceException, AlreadyExistsException, ForbiddenException
+from pypaimon.api.rest_exception import (NoSuchResourceException, AlreadyExistsException,
+                                         ForbiddenException, NotImplementedException)
 from pypaimon.catalog.catalog import Catalog
 from pypaimon.catalog.catalog_context import CatalogContext
 from pypaimon.catalog.catalog_environment import CatalogEnvironment
@@ -107,8 +108,11 @@ class RESTCatalog(Catalog):
             raise TableNotExistException(identifier) from e
         except ForbiddenException as e:
             raise TableNoPermissionException(identifier) from e
+        except NotImplementedException:
+            # Server returned 501: underlying catalog doesn't support commitSnapshot.
+            # Let it propagate so callers can fall back to filesystem commit.
+            raise
         except Exception as e:
-            # Handle other exceptions that might be thrown by the API
             raise RuntimeError(f"Failed to commit snapshot for table {identifier.get_full_name()}: {e}") from e
 
     def list_databases(self) -> List[str]:
