@@ -1,0 +1,86 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.paimon.rest.requests;
+
+import org.apache.paimon.rest.RESTRequest;
+
+import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonCreator;
+import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonGetter;
+import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
+
+import javax.annotation.Nullable;
+
+/** Request body for merging a branch. */
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class MergeBranchRequest implements RESTRequest {
+
+    private static final String FIELD_SOURCE_BRANCH = "source_branch";
+    private static final String FIELD_MESSAGE = "message";
+    private static final String FIELD_STRATEGY = "strategy";
+    private static final String FIELD_SQUASH = "squash";
+
+    @JsonProperty(FIELD_SOURCE_BRANCH)
+    private final String sourceBranch;
+
+    @Nullable
+    @JsonProperty(FIELD_MESSAGE)
+    private final String message;
+
+    @Nullable
+    @JsonProperty(FIELD_STRATEGY)
+    private final String strategy;
+
+    @JsonProperty(FIELD_SQUASH)
+    private final boolean squash;
+
+    @JsonCreator
+    public MergeBranchRequest(
+            @JsonProperty(FIELD_SOURCE_BRANCH) String sourceBranch,
+            @Nullable @JsonProperty(FIELD_MESSAGE) String message,
+            @Nullable @JsonProperty(FIELD_STRATEGY) String strategy,
+            @JsonProperty(FIELD_SQUASH) boolean squash) {
+        this.sourceBranch = sourceBranch;
+        this.message = message;
+        this.strategy = strategy;
+        this.squash = squash;
+    }
+
+    @JsonGetter(FIELD_SOURCE_BRANCH)
+    public String sourceBranch() {
+        return sourceBranch;
+    }
+
+    @Nullable
+    @JsonGetter(FIELD_MESSAGE)
+    public String message() {
+        return message;
+    }
+
+    @Nullable
+    @JsonGetter(FIELD_STRATEGY)
+    public String strategy() {
+        return strategy;
+    }
+
+    @JsonGetter(FIELD_SQUASH)
+    public boolean squash() {
+        return squash;
+    }
+}

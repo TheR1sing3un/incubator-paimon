@@ -665,7 +665,13 @@ public class RESTApi {
             @Nullable String tableUuid,
             Snapshot snapshot,
             List<PartitionStatistics> statistics) {
-        CommitTableRequest request = new CommitTableRequest(tableUuid, snapshot, statistics);
+        CommitTableRequest request =
+                new CommitTableRequest(
+                        tableUuid,
+                        snapshot,
+                        statistics,
+                        options.get(RESTCatalogOptions.COMMIT_COMMITTER),
+                        options.get(RESTCatalogOptions.COMMIT_MESSAGE));
         CommitTableResponse response =
                 client.post(
                         resourcePaths.commitTable(

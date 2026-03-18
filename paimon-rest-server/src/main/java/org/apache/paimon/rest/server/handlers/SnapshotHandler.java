@@ -33,7 +33,6 @@ import org.apache.paimon.rest.server.RouteRegistrar;
 import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
 import org.apache.paimon.rest.server.metadata.MetadataStore;
-import org.apache.paimon.rest.server.metadata.TimestampUtils;
 import org.apache.paimon.rest.server.metadata.model.CommitInfo;
 import org.apache.paimon.table.TableSnapshot;
 import org.apache.paimon.utils.JsonSerdeUtil;
@@ -180,7 +179,7 @@ public class SnapshotHandler implements RouteRegistrar {
                             snapshot.id(),
                             null,
                             "ACTIVE",
-                            TimestampUtils.nowUtc());
+                            null);
             metadataStore.saveCommitWithLog(
                     database,
                     table,

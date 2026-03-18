@@ -137,4 +137,20 @@ public class RESTCatalogOptions {
                                     + "`read`: cache is enabled when reading files; "
                                     + "`write`: data is also cached when writing files; "
                                     + "`none`: cache is all disabled.");
+
+    public static final ConfigOption<String> COMMIT_COMMITTER =
+            ConfigOptions.key("commit.committer")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The committer name attached to snapshot commits. "
+                                    + "Used for audit tracking in the REST catalog metadata store.");
+
+    public static final ConfigOption<String> COMMIT_MESSAGE =
+            ConfigOptions.key("commit.message")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The commit message attached to snapshot commits. "
+                                    + "Used for audit tracking in the REST catalog metadata store.");
 }
