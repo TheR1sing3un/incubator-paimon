@@ -33,6 +33,7 @@ public class CreateBranchRequest implements RESTRequest {
 
     private static final String FIELD_BRANCH = "branch";
     private static final String FIELD_FROM_TAG = "fromTag";
+    private static final String FIELD_FROM_SNAPSHOT_ID = "fromSnapshotId";
 
     @JsonProperty(FIELD_BRANCH)
     private final String branch;
@@ -41,12 +42,18 @@ public class CreateBranchRequest implements RESTRequest {
     @JsonProperty(FIELD_FROM_TAG)
     private final String fromTag;
 
+    @Nullable
+    @JsonProperty(FIELD_FROM_SNAPSHOT_ID)
+    private final Long fromSnapshotId;
+
     @JsonCreator
     public CreateBranchRequest(
             @JsonProperty(FIELD_BRANCH) String branch,
-            @Nullable @JsonProperty(FIELD_FROM_TAG) String fromTag) {
+            @Nullable @JsonProperty(FIELD_FROM_TAG) String fromTag,
+            @Nullable @JsonProperty(FIELD_FROM_SNAPSHOT_ID) Long fromSnapshotId) {
         this.branch = branch;
         this.fromTag = fromTag;
+        this.fromSnapshotId = fromSnapshotId;
     }
 
     @JsonGetter(FIELD_BRANCH)
@@ -58,5 +65,11 @@ public class CreateBranchRequest implements RESTRequest {
     @JsonGetter(FIELD_FROM_TAG)
     public String fromTag() {
         return fromTag;
+    }
+
+    @Nullable
+    @JsonGetter(FIELD_FROM_SNAPSHOT_ID)
+    public Long fromSnapshotId() {
+        return fromSnapshotId;
     }
 }

@@ -1818,11 +1818,25 @@ public class RESTCatalogServer {
                         CreateBranchRequest requestBody =
                                 RESTApi.fromJson(data, CreateBranchRequest.class);
                         branch = requestBody.branch();
-                        if (requestBody.fromTag() == null) {
-                            branchManager.createBranch(requestBody.branch());
-                        } else {
+                        if (requestBody.fromTag() != null && requestBody.fromSnapshotId() != null) {
+                            throw new IllegalArgumentException(
+                                    "Cannot specify both fromTag and fromSnapshotId");
+                        }
+                        if (requestBody.fromTag() != null) {
                             fromTag = requestBody.fromTag();
                             branchManager.createBranch(requestBody.branch(), requestBody.fromTag());
+                        } else if (requestBody.fromSnapshotId() != null) {
+                            // Auto-create a tag for the snapshot, then branch from it
+                            String autoTagName = "_auto_branch_" + requestBody.branch();
+                            try {
+                                table.deleteTag(autoTagName);
+                            } catch (Exception ignored) {
+                                // Tag may not exist yet
+                            }
+                            table.createTag(autoTagName, requestBody.fromSnapshotId());
+                            branchManager.createBranch(requestBody.branch(), autoTagName);
+                        } else {
+                            branchManager.createBranch(requestBody.branch());
                         }
                         branchIdentifier =
                                 new Identifier(
@@ -1967,6 +1981,7 @@ public class RESTCatalogServer {
                     CreateTagRequest requestBody = RESTApi.fromJson(data, CreateTagRequest.class);
                     tagName = requestBody.tagName();
 
+                    // If branch is specified, use the branch-qualified table
                     Snapshot snapshot;
                     SnapshotManager snapshotManager = table.snapshotManager();
                     if (requestBody.snapshotId() != null) {

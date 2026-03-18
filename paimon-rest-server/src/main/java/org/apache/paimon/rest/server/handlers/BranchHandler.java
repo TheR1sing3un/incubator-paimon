@@ -115,7 +115,8 @@ public class BranchHandler implements RouteRegistrar {
 
     public void createBranch(Identifier identifier, String body) throws Exception {
         CreateBranchRequest request = JsonSerdeUtil.fromJson(body, CreateBranchRequest.class);
-        catalog.createBranch(identifier, request.branch(), request.fromTag());
+        catalog.createBranch(
+                identifier, request.branch(), request.fromTag(), request.fromSnapshotId());
     }
 
     public void dropBranch(Identifier identifier, String branchName) throws Exception {

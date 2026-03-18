@@ -3568,6 +3568,11 @@ components:
         fromTag:
           nullable: true
           type: string
+        fromSnapshotId:
+          type: integer
+          format: int64
+          nullable: true
+          description: Optional snapshot id to branch from. When provided (and fromTag is null), an auto-tag will be created to anchor the snapshot.
     ForwardBranchRequest:
       type: object
       properties:
