@@ -31,6 +31,7 @@ import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Table;
+import org.apache.paimon.utils.BranchManager;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
 import javax.annotation.Nullable;
@@ -38,6 +39,7 @@ import javax.annotation.Nullable;
 import java.util.List;
 import java.util.Map;
 
+import static org.apache.paimon.rest.server.handlers.HandlerUtils.getFileStoreTable;
 import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
 
 /** Handler for branch-related REST endpoints. */
@@ -109,22 +111,46 @@ public class BranchHandler implements RouteRegistrar {
     }
 
     public RESTResponse listBranches(Identifier identifier) throws Exception {
-        List<String> branches = catalog.listBranches(identifier);
+        FileStoreTable table = getFileStoreTable(catalog, identifier);
+        List<String> branches = table.branchManager().branches();
         return new ListBranchesResponse(branches);
     }
 
     public void createBranch(Identifier identifier, String body) throws Exception {
         CreateBranchRequest request = JsonSerdeUtil.fromJson(body, CreateBranchRequest.class);
-        catalog.createBranch(
-                identifier, request.branch(), request.fromTag(), request.fromSnapshotId());
+        FileStoreTable table = getFileStoreTable(catalog, identifier);
+        BranchManager branchManager = table.branchManager();
+        String branch = request.branch();
+
+        if (request.fromTag() != null && request.fromSnapshotId() != null) {
+            throw new IllegalArgumentException("Cannot specify both fromTag and fromSnapshotId");
+        }
+
+        if (request.fromTag() != null) {
+            branchManager.createBranch(branch, request.fromTag());
+        } else if (request.fromSnapshotId() != null) {
+            // Auto-create a tag for the snapshot, then branch from it
+            String autoTagName = "_auto_branch_" + branch;
+            try {
+                table.deleteTag(autoTagName);
+            } catch (Exception ignored) {
+                // Tag may not exist yet
+            }
+            table.createTag(autoTagName, request.fromSnapshotId());
+            branchManager.createBranch(branch, autoTagName);
+        } else {
+            branchManager.createBranch(branch);
+        }
     }
 
     public void dropBranch(Identifier identifier, String branchName) throws Exception {
-        catalog.dropBranch(identifier, branchName);
+        FileStoreTable table = getFileStoreTable(catalog, identifier);
+        table.deleteBranch(branchName);
     }
 
     public void fastForward(Identifier identifier, String branchName) throws Exception {
-        catalog.fastForward(identifier, branchName);
+        FileStoreTable table = getFileStoreTable(catalog, identifier);
+        table.branchManager().fastForward(branchName);
     }
 
     /**

@@ -18,7 +18,7 @@
 
 package org.apache.paimon.rest.server.handlers;
 
-import org.apache.paimon.PagedList;
+import org.apache.paimon.Snapshot;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.rest.RESTResponse;
@@ -28,13 +28,28 @@ import org.apache.paimon.rest.responses.ListTagsResponse;
 import org.apache.paimon.rest.server.RouteRegistrar;
 import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
+import org.apache.paimon.table.FileStoreTable;
+import org.apache.paimon.tag.Tag;
 import org.apache.paimon.utils.JsonSerdeUtil;
+import org.apache.paimon.utils.SnapshotManager;
+import org.apache.paimon.utils.SnapshotNotExistException;
+import org.apache.paimon.utils.TagManager;
+import org.apache.paimon.utils.TimeUtils;
 
 import javax.annotation.Nullable;
 
+import java.io.FileNotFoundException;
+import java.time.Duration;
+import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.stream.Collectors;
 
 import static org.apache.paimon.rest.RESTApi.TAG_NAME_PREFIX;
+import static org.apache.paimon.rest.server.handlers.HandlerUtils.filterByPrefix;
+import static org.apache.paimon.rest.server.handlers.HandlerUtils.getFileStoreTable;
 import static org.apache.paimon.rest.server.handlers.HandlerUtils.parseMaxResults;
 import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
 
@@ -86,27 +101,75 @@ public class TagHandler implements RouteRegistrar {
 
     public RESTResponse listTags(Identifier identifier, Map<String, String> params)
             throws Exception {
+        FileStoreTable table = getFileStoreTable(catalog, identifier);
+        TagManager tagManager = table.tagManager();
+
         String prefix = params.get(TAG_NAME_PREFIX);
         Integer maxResults = parseMaxResults(params);
         String pageToken = HandlerUtils.getPageToken(params);
 
-        PagedList<String> pagedResult =
-                catalog.listTagsPaged(identifier, maxResults, pageToken, prefix);
-        return new ListTagsResponse(pagedResult.getElements(), pagedResult.getNextPageToken());
+        List<String> tags = new ArrayList<>(tagManager.allTagNames());
+        if (prefix != null) {
+            tags =
+                    tags.stream()
+                            .filter(tag -> filterByPrefix(tag, prefix))
+                            .collect(Collectors.toList());
+        }
+
+        return HandlerUtils.buildPagedResponse(tags, maxResults, pageToken, ListTagsResponse::new);
     }
 
     public RESTResponse getTag(Identifier identifier, String tagName) throws Exception {
-        GetTagResponse response = catalog.getTag(identifier, tagName);
-        return response;
+        FileStoreTable table = getFileStoreTable(catalog, identifier);
+        TagManager tagManager = table.tagManager();
+        Optional<Tag> tag = tagManager.get(tagName);
+        if (!tag.isPresent()) {
+            throw new Catalog.TagNotExistException(identifier, tagName);
+        }
+        Tag tagObj = tag.get();
+        Long tagCreateTimeMillis =
+                tagObj.getTagCreateTime() != null
+                        ? tagObj.getTagCreateTime()
+                                .atZone(ZoneId.systemDefault())
+                                .toInstant()
+                                .toEpochMilli()
+                        : null;
+        String timeRetainedStr =
+                tagObj.getTagTimeRetained() != null ? tagObj.getTagTimeRetained().toString() : null;
+        return new GetTagResponse(
+                tagName, tagObj.trimToSnapshot(), tagCreateTimeMillis, timeRetainedStr);
     }
 
     public void createTag(Identifier identifier, String body) throws Exception {
         CreateTagRequest request = JsonSerdeUtil.fromJson(body, CreateTagRequest.class);
-        catalog.createTag(
-                identifier, request.tagName(), request.snapshotId(), request.timeRetained(), false);
+        FileStoreTable table = getFileStoreTable(catalog, identifier);
+        SnapshotManager snapshotManager = table.snapshotManager();
+
+        Snapshot snapshot;
+        if (request.snapshotId() != null) {
+            try {
+                snapshot = snapshotManager.tryGetSnapshot(request.snapshotId());
+            } catch (FileNotFoundException e) {
+                throw new SnapshotNotExistException(
+                        "Snapshot " + request.snapshotId() + " doesn't exist.");
+            }
+        } else {
+            snapshot = snapshotManager.latestSnapshot();
+        }
+
+        if (snapshot == null) {
+            throw new SnapshotNotExistException("No snapshot found for table: " + identifier);
+        }
+
+        Duration timeRetained = null;
+        if (request.timeRetained() != null) {
+            timeRetained = TimeUtils.parseDuration(request.timeRetained());
+        }
+        table.createTag(request.tagName(), snapshot.id(), timeRetained);
     }
 
     public void deleteTag(Identifier identifier, String tagName) throws Exception {
-        catalog.deleteTag(identifier, tagName);
+        FileStoreTable table = getFileStoreTable(catalog, identifier);
+        table.deleteTag(tagName);
     }
 }
