@@ -18,12 +18,8 @@
 
 package org.apache.paimon.rest.server.handlers;
 
-import org.apache.paimon.catalog.Catalog;
-import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.rest.RESTApi;
 import org.apache.paimon.rest.RESTResponse;
-import org.apache.paimon.table.FileStoreTable;
-import org.apache.paimon.table.Table;
 
 import javax.annotation.Nullable;
 
@@ -193,15 +189,5 @@ public class HandlerUtils {
 
     public static boolean filterByPrefix(String name, @Nullable String prefix) {
         return prefix == null || name.startsWith(prefix);
-    }
-
-    public static FileStoreTable getFileStoreTable(Catalog catalog, Identifier identifier)
-            throws Catalog.TableNotExistException {
-        Table table = catalog.getTable(identifier);
-        if (!(table instanceof FileStoreTable)) {
-            throw new UnsupportedOperationException(
-                    "Table " + identifier.getFullName() + " is not a FileStoreTable");
-        }
-        return (FileStoreTable) table;
     }
 }
