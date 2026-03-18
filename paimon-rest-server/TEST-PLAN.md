@@ -13,7 +13,21 @@
 | `2d7e66954` | Branch from snapshot | RESTCatalogServerIntegrationTest |
 | (bug fix) | 分页参数校验 | HandlerUtilsTest, RESTCatalogServerWithMetadataIT, RESTCatalogServerE2ETest |
 | (bug fix) | Committer 默认值 + catch-all 收窄 | JdbcMetadataStoreTest |
+| (bug fix) | **Handlers 改用 Table-level API** | RESTCatalogServerIntegrationTest |
 | (new) | 全链路 E2E 测试 | RESTCatalogServerE2ETest |
+
+## 1.1 Handler Table-level API 修复
+
+原 BranchHandler/TagHandler/SnapshotHandler/ConsumerHandler 直接调用 `catalog.xxx()` 方法，
+但 `AbstractCatalog` (FileSystemCatalog 等) 对 branch/tag/snapshot/consumer 操作均 throw UnsupportedOperationException。
+修复后，所有 handler 通过 `catalog.getTable(identifier)` 获取 `FileStoreTable` 后，使用 Table-level API 操作：
+
+| Handler | 修复操作 | Table-level API |
+|---------|---------|-----------------|
+| BranchHandler | createBranch, dropBranch, listBranches, fastForward | `table.branchManager()`, `table.deleteBranch()` |
+| TagHandler | createTag, deleteTag, getTag, listTags | `table.tagManager()`, `table.createTag()`, `table.deleteTag()` |
+| SnapshotHandler | loadSnapshot, listSnapshots, commitSnapshot, rollbackTo | `table.snapshotManager()`, `RenamingSnapshotCommit`, `table.rollbackTo()` |
+| ConsumerHandler | listConsumers, resetConsumer | `ConsumerManager(table.fileIO(), table.location(), branch)` |
 
 ## 2. MySQL 兼容方案
 
@@ -115,15 +129,12 @@
 | HandlerUtilsTest | 17 | 路由解析、分页、过滤工具类（含 maxResults=0/-1/非数字 边界） |
 | TableHandlerValidationTest | 2 | URL path / body database 一致性校验 |
 | ViewHandlerValidationTest | 1 | URL path / body database 一致性校验 |
-| RESTCatalogServerIntegrationTest | 21 | 无 MetadataStore 的端到端测试 |
+| RESTCatalogServerIntegrationTest | 37 | 端到端测试：含 branch/tag/snapshot/consumer 完整 CRUD |
 
 ## 4. 已知测试限制
 
 | 限制 | 原因 | 影响 |
 |------|------|------|
-| POST /commit E2E 链路未覆盖 | FileSystemCatalog 不支持 commitSnapshot | SnapshotHandler.saveCommit() 的完整写入路径未测试 |
-| fromSnapshotId 创建 branch 未覆盖 | FileSystemCatalog 不支持 createBranch | _auto_branch_ 逻辑未测试 |
-| reset 成功路径未覆盖 | FileSystemCatalog 不支持 rollbackTo | rollbackTo + abandonCommitsAfter 联动未测试 |
 | RESET_COMMIT 审计日志可能未写入 | 异常传播路径可能绕过 audit | E2E 测试中做诊断性检查 |
 
 ## 5. 运行命令

@@ -18,23 +18,27 @@
 
 package org.apache.paimon.rest.server.handlers;
 
-import org.apache.paimon.PagedList;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.Identifier;
+import org.apache.paimon.consumer.Consumer;
 import org.apache.paimon.consumer.ConsumerInfo;
+import org.apache.paimon.consumer.ConsumerManager;
 import org.apache.paimon.rest.RESTResponse;
 import org.apache.paimon.rest.requests.ResetConsumerRequest;
 import org.apache.paimon.rest.responses.ListConsumersResponse;
 import org.apache.paimon.rest.server.RouteRegistrar;
 import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
+import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
 import javax.annotation.Nullable;
 
+import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
-import static org.apache.paimon.rest.server.handlers.HandlerUtils.parseMaxResults;
+import static org.apache.paimon.rest.server.handlers.HandlerUtils.getFileStoreTable;
 import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
 
 /** Handler for consumer-related REST endpoints. */
@@ -71,16 +75,30 @@ public class ConsumerHandler implements RouteRegistrar {
 
     public RESTResponse listConsumers(Identifier identifier, Map<String, String> params)
             throws Exception {
-        Integer maxResults = parseMaxResults(params);
-        String pageToken = HandlerUtils.getPageToken(params);
-
-        PagedList<ConsumerInfo> pagedResult =
-                catalog.listConsumersPaged(identifier, maxResults, pageToken);
-        return new ListConsumersResponse(pagedResult.getElements(), pagedResult.getNextPageToken());
+        FileStoreTable table = getFileStoreTable(catalog, identifier);
+        String branch = identifier.getBranchNameOrDefault();
+        ConsumerManager consumerManager =
+                new ConsumerManager(table.fileIO(), table.location(), branch);
+        Map<String, Long> consumers = consumerManager.consumers();
+        List<ConsumerInfo> consumerEntries =
+                consumers.entrySet().stream()
+                        .map(e -> new ConsumerInfo(e.getKey(), e.getValue()))
+                        .collect(Collectors.toList());
+        return new ListConsumersResponse(consumerEntries, null);
     }
 
     public void resetConsumer(Identifier identifier, String body) throws Exception {
         ResetConsumerRequest request = JsonSerdeUtil.fromJson(body, ResetConsumerRequest.class);
-        catalog.resetConsumer(identifier, request.consumerId(), request.nextSnapshotId());
+        FileStoreTable table = getFileStoreTable(catalog, identifier);
+        String branch = identifier.getBranchNameOrDefault();
+        ConsumerManager consumerManager =
+                new ConsumerManager(table.fileIO(), table.location(), branch);
+        if (request.nextSnapshotId() != null) {
+            table.snapshotManager().snapshot(request.nextSnapshotId());
+            consumerManager.resetConsumer(
+                    request.consumerId(), new Consumer(request.nextSnapshotId()));
+        } else {
+            consumerManager.deleteConsumer(request.consumerId());
+        }
     }
 }
