@@ -19,11 +19,10 @@
 package org.apache.paimon.rest.server.handlers;
 
 import org.apache.paimon.CoreOptions;
+import org.apache.paimon.PagedList;
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.Identifier;
-import org.apache.paimon.catalog.RenamingSnapshotCommit;
-import org.apache.paimon.operation.Lock;
 import org.apache.paimon.rest.RESTResponse;
 import org.apache.paimon.rest.requests.CommitTableRequest;
 import org.apache.paimon.rest.requests.RollbackTableRequest;
@@ -36,12 +35,8 @@ import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
 import org.apache.paimon.rest.server.metadata.MetadataStore;
 import org.apache.paimon.rest.server.metadata.model.CommitInfo;
-import org.apache.paimon.table.FileStoreTable;
-import org.apache.paimon.table.Instant;
 import org.apache.paimon.table.TableSnapshot;
-import org.apache.paimon.tag.Tag;
 import org.apache.paimon.utils.JsonSerdeUtil;
-import org.apache.paimon.utils.SnapshotManager;
 import org.apache.paimon.utils.SnapshotNotExistException;
 
 import org.slf4j.Logger;
@@ -49,16 +44,11 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
-import static org.apache.paimon.rest.server.handlers.HandlerUtils.getFileStoreTable;
 import static org.apache.paimon.rest.server.handlers.HandlerUtils.parseMaxResults;
 import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
 
@@ -122,80 +112,40 @@ public class SnapshotHandler implements RouteRegistrar {
     }
 
     public RESTResponse getLatestSnapshot(Identifier identifier) throws Exception {
-        FileStoreTable table = getFileStoreTable(catalog, identifier);
-        Snapshot snapshot = table.snapshotManager().latestSnapshot();
-        if (snapshot == null) {
+        Optional<TableSnapshot> snapshot = catalog.loadSnapshot(identifier);
+        if (!snapshot.isPresent()) {
             throw new SnapshotNotExistException(
                     "No snapshot found for table: " + identifier.getFullName());
         }
-        return new GetTableSnapshotResponse(new TableSnapshot(snapshot, 0, 0, 0, 0));
+        return new GetTableSnapshotResponse(snapshot.get());
     }
 
     public RESTResponse listSnapshots(Identifier identifier, Map<String, String> params)
             throws Exception {
-        FileStoreTable table = getFileStoreTable(catalog, identifier);
-        Iterator<Snapshot> snapshots = table.snapshotManager().snapshots();
-        List<Snapshot> snapshotList = new ArrayList<>();
-        while (snapshots.hasNext()) {
-            snapshotList.add(snapshots.next());
-        }
-
         Integer maxResults = parseMaxResults(params);
         String pageToken = HandlerUtils.getPageToken(params);
-        return HandlerUtils.buildPagedResponseWithKey(
-                snapshotList,
-                maxResults,
-                pageToken,
-                s -> String.valueOf(s.id()),
-                ListSnapshotsResponse::new,
-                true);
+
+        PagedList<Snapshot> pagedResult =
+                catalog.listSnapshotsPaged(identifier, maxResults, pageToken);
+        return new ListSnapshotsResponse(pagedResult.getElements(), pagedResult.getNextPageToken());
     }
 
     public RESTResponse loadSnapshot(Identifier identifier, String version) throws Exception {
-        FileStoreTable table = getFileStoreTable(catalog, identifier);
-        SnapshotManager snapshotManager = table.snapshotManager();
-        Snapshot snapshot = null;
-        try {
-            if ("EARLIEST".equals(version)) {
-                snapshot = snapshotManager.earliestSnapshot();
-            } else if ("LATEST".equals(version)) {
-                snapshot = snapshotManager.latestSnapshot();
-            } else {
-                try {
-                    long snapshotId = Long.parseLong(version);
-                    snapshot = snapshotManager.tryGetSnapshot(snapshotId);
-                } catch (NumberFormatException e) {
-                    // Try as tag name
-                    Optional<Tag> tag = table.tagManager().get(version);
-                    if (tag.isPresent()) {
-                        snapshot = tag.get().trimToSnapshot();
-                    }
-                }
-            }
-        } catch (Exception ignored) {
-        }
-
-        if (snapshot == null) {
+        Optional<Snapshot> snapshot = catalog.loadSnapshot(identifier, version);
+        if (!snapshot.isPresent()) {
             throw new SnapshotNotExistException("Snapshot not found for version: " + version);
         }
-        return new GetVersionSnapshotResponse(snapshot);
+        return new GetVersionSnapshotResponse(snapshot.get());
     }
 
     public RESTResponse commitSnapshot(Identifier identifier, String body) throws Exception {
         CommitTableRequest request = JsonSerdeUtil.fromJson(body, CommitTableRequest.class);
-        FileStoreTable table = getFileStoreTable(catalog, identifier);
-
-        if (!request.getTableId().equals(table.catalogEnvironment().uuid())) {
-            throw new Catalog.TableNotExistException(identifier);
-        }
-
-        RenamingSnapshotCommit commit =
-                new RenamingSnapshotCommit(table.snapshotManager(), Lock.empty());
-        String branchName = identifier.getBranchName();
-        if (branchName == null) {
-            branchName = "main";
-        }
-        boolean success = commit.commit(request.getSnapshot(), branchName, request.getStatistics());
+        boolean success =
+                catalog.commitSnapshot(
+                        identifier,
+                        request.getTableId(),
+                        request.getSnapshot(),
+                        request.getStatistics());
         if (success) {
             saveCommit(identifier, request);
         }
@@ -304,35 +254,6 @@ public class SnapshotHandler implements RouteRegistrar {
 
     public void rollbackTable(Identifier identifier, String body) throws Exception {
         RollbackTableRequest request = JsonSerdeUtil.fromJson(body, RollbackTableRequest.class);
-        FileStoreTable table = getFileStoreTable(catalog, identifier);
-        Instant instant = request.getInstant();
-
-        if (instant instanceof Instant.SnapshotInstant) {
-            long snapshotId = ((Instant.SnapshotInstant) instant).getSnapshotId();
-            Long fromSnapshot = request.getFromSnapshot();
-            if (fromSnapshot != null) {
-                long latestSnapshotId = table.snapshotManager().latestSnapshotId();
-                if (fromSnapshot != latestSnapshotId) {
-                    throw new IllegalStateException(
-                            String.format(
-                                    "Latest snapshot %s is not %s",
-                                    latestSnapshotId, fromSnapshot));
-                }
-            }
-            table =
-                    table.copy(
-                            Collections.singletonMap(
-                                    CoreOptions.SNAPSHOT_CLEAN_EMPTY_DIRECTORIES.key(), "true"));
-            table.rollbackTo(snapshotId);
-        } else if (instant instanceof Instant.TagInstant) {
-            String tagName = ((Instant.TagInstant) instant).getTagName();
-            table =
-                    table.copy(
-                            Collections.singletonMap(
-                                    CoreOptions.SNAPSHOT_CLEAN_EMPTY_DIRECTORIES.key(), "true"));
-            table.rollbackTo(tagName);
-        } else {
-            throw new IllegalArgumentException("Unknown instant type: " + instant);
-        }
+        catalog.rollbackTo(identifier, request.getInstant(), request.getFromSnapshot());
     }
 }

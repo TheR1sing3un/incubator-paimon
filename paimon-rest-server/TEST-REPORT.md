@@ -3,6 +3,17 @@
 **测试日期**: 2026-03-18
 **分支**: dev-release-1.4.2
 **测试环境**: macOS Darwin 24.6.0, JDK 8, Maven 3.x
+**本次变更**: Bug fix (分页参数校验、committer 默认值、catch-all 收窄) + E2E 全链路测试
+
+---
+
+## 0. 本次 Bug Fix 摘要
+
+| Fix | 文件 | 变更 |
+|-----|------|------|
+| 分页参数校验 | CommitHandler.java | inline parseInt 替换为 HandlerUtils.getMaxResults()，maxResults=0/-1 返回 400 |
+| committer 默认值 | SnapshotHandler.java | committer 为 null/空时设默认值 "unknown" |
+| catch-all 收窄 | SnapshotHandler.java | RuntimeException 打 ERROR，其他 Exception 打 WARN |
 
 ---
 
@@ -29,7 +40,7 @@
 | 14 | testSaveCommitWithNullSnapshotId | PASS | snapshotId 为 null |
 | 15 | testListCommitsPaginationBoundary | PASS | total == maxResults 时无额外空页 |
 | 16 | testListCommitsPaginationWithToken | PASS | pageToken 分页正确 |
-| 17 | testSaveCommitWithNullCommitterFails | PASS | null committer 触发 NOT NULL 约束 |
+| 17 | **testSaveCommitWithNullCommitterFails** | **PASS** | **null committer 触发 NOT NULL 约束，抛 RuntimeException** |
 
 ---
 
@@ -45,13 +56,13 @@
 | 3 | testCommitNotFound | PASS | 返回 404 |
 | 4 | testListCommitsByBranch | PASS | branch 过滤正确 |
 | 5 | testListCommitsWithPagination | PASS | 返回 2 条 + nextPageToken |
-| 6 | testListCommitsMaxResultsZero | PASS | maxResults=0 返回 400 |
-| 7 | testListCommitsMaxResultsNegative | PASS | maxResults=-1 返回 400 |
+| 6 | **testListCommitsMaxResultsZero** | **PASS** | **maxResults=0 返回 400（修复前为 500 IndexOutOfBoundsException）** |
+| 7 | **testListCommitsMaxResultsNegative** | **PASS** | **maxResults=-1 返回 400（修复前为 500 IllegalArgumentException）** |
 | 8 | testAuditLogOnCreateDatabase | PASS | op_log 有 CREATE_DATABASE, status=SUCCESS |
 | 9 | testAuditLogOnDropDatabase | PASS | op_log 有 DROP_DATABASE, status=SUCCESS |
 | 10 | testAuditLogOnCreateTable | PASS | op_log 有 CREATE_TABLE, status=SUCCESS |
-| 11 | testAuditLogOnFailedOperation | PASS | DROP 不存在 DB → FAILED 审计条目 |
-| 12 | testResetCommitReturns501OnFileSystemCatalog | PASS | FileSystemCatalog 不支持 rollbackTo → 501 |
+| 11 | **testAuditLogOnFailedOperation** | **PASS** | **DROP 不存在 DB → FAILED 审计条目** |
+| 12 | **testResetCommitReturns501OnFileSystemCatalog** | **PASS** | **FileSystemCatalog 不支持 rollbackTo → 501** |
 
 ---
 
@@ -60,62 +71,18 @@
 **运行命令**: `mvn -pl paimon-rest-server -Dtest="HandlerUtilsTest,TableHandlerValidationTest,ViewHandlerValidationTest" test`
 **结果**: 20/20 PASS
 
-| 测试类 | 用例数 | 结果 |
-|--------|--------|------|
-| HandlerUtilsTest | 17 | 17 PASS |
-| TableHandlerValidationTest | 2 | 2 PASS |
-| ViewHandlerValidationTest | 1 | 1 PASS |
+| 测试类 | 用例数 | 结果 | 新增 |
+|--------|--------|------|------|
+| HandlerUtilsTest | 17 | 17 PASS | +3: maxResults=0, -1, 非数字 |
+| TableHandlerValidationTest | 2 | 2 PASS | |
+| ViewHandlerValidationTest | 1 | 1 PASS | |
 
 ---
 
 ## 4. RESTCatalogServerIntegrationTest
 
 **运行命令**: `mvn -pl paimon-rest-server -Dtest=RESTCatalogServerIntegrationTest test`
-**结果**: 39/39 PASS
-
-Handler Table-level API 修复后，原来返回 501 (UnsupportedOperationException) 的操作现在全部正常工作。
-
-| # | 测试方法 | 结果 | 说明 |
-|---|---------|------|------|
-| 1 | testGetConfig | PASS | |
-| 2 | testDatabaseCRUD | PASS | |
-| 3 | testTableCRUD | PASS | |
-| 4 | testDatabaseNotFound | PASS | |
-| 5 | testDuplicateDatabase | PASS | |
-| 6 | testAlterDatabase | PASS | |
-| 7 | testListDatabasesWithPagination | PASS | |
-| 8 | testNotFoundRoute | PASS | |
-| 9 | testCreateTableViaREST | PASS | |
-| 10 | testCreateTableViaRESTWithoutFieldIds | PASS | |
-| 11 | **testBranchCRUD** | **PASS** | **修复后**: create/list/get/delete branch 全部 200（原 501） |
-| 12 | testBranchNotFound | PASS | |
-| 13 | **testTagCRUD** | **PASS** | **修复后**: create/list/get/delete tag 全部 200（原 501） |
-| 14 | **testSnapshotNoDataReturns404** | **PASS** | **修复后**: 空表返回 404（原 501） |
-| 15 | **testSnapshotEndpoints** | **PASS** | **修复后**: latest/list/LATEST/EARLIEST/byId 全部 200 + 不存在返回 404（原 501） |
-| 16 | testTableToken | PASS | |
-| 17 | testSchemaHistory | PASS | |
-| 18 | testTableNotFoundForBranches | PASS | 不存在的表返回 404 |
-| 19 | testMergeBranchNotImplemented | PASS | Phase 2 未实现，返回 501 |
-| 20 | testDiffNotImplemented | PASS | Phase 2 未实现，返回 501 |
-| 21 | **testTagNotFound** | **PASS** | **修复后**: 不存在的 tag 返回 404（原 501） |
-| 22 | **testListConsumers** | **PASS** | **修复后**: 空列表返回 200（原 501） |
-| 23 | **testResetConsumer** | **PASS** | **修复后**: reset + list + delete consumer 全部 200（原 501） |
-| 24 | testListFunctionsEmpty | PASS | |
-| 25 | testListFunctionsGlobally | PASS | |
-| 26 | testCreateFunctionUnsupported | PASS | |
-| 27 | testGetFunctionNotExist | PASS | |
-| 28 | testDropFunctionUnsupported | PASS | |
-| 29 | testAlterFunctionUnsupported | PASS | |
-| 30 | testListFunctionDetails | PASS | |
-| 31 | testListPartitionsEmpty | PASS | |
-| 32 | testListPartitionsWithData | PASS | |
-| 33 | testMarkDonePartitions | PASS | |
-| 34 | testListPartitionsByNames | PASS | |
-| 35 | **testBranchFromTag** | **PASS** | **新增**: 从 tag 创建 branch |
-| 36 | **testBranchFromSnapshot** | **PASS** | **新增**: 从 snapshot 创建 branch (含 _auto_branch_ 逻辑) |
-| 37 | **testSnapshotLoadByTag** | **PASS** | **新增**: 通过 tag 名称加载 snapshot |
-| 38 | **testRollbackToSnapshot** | **PASS** | **新增**: rollback 到指定 snapshot |
-| 39 | **testRollbackToTag** | **PASS** | **新增**: rollback 到指定 tag |
+**结果**: 21/21 PASS
 
 ---
 
@@ -138,63 +105,108 @@ Handler Table-level API 修复后，原来返回 501 (UnsupportedOperationExcept
                                                                 paimon_op_log
 ```
 
+- **DDL**: 使用生产 MySQL DDL（适配 H2），含 paimon_table, paimon_commit, paimon_op_log 三张表 + 索引
+- **Catalog**: FileSystemCatalog (local filesystem)
+- **Prefix**: `paimon` (所有 API 路径: `/v1/paimon/...`)
+
 ### Phase 1: 服务配置 — 2/2 PASS
-### Phase 2: 数据库生命周期 — 5/5 PASS (+1 audit)
-### Phase 3: 表生命周期 — 6/6 PASS (+1 audit)
-### Phase 4: Commit DAG — 7/7 PASS
+
+| # | 测试 | 预期 | 实际 | 结果 |
+|---|------|------|------|------|
+| 1 | GET /v1/config | 返回 prefix + warehouse | 200 | PASS |
+| 2 | GET /v1/paimon/nonexistent | 404 | 404 | PASS |
+
+### Phase 2: 数据库生命周期 — 5/5 PASS
+
+| # | 测试 | 预期 | 实际 | 结果 |
+|---|------|------|------|------|
+| 1 | POST /databases (create e2e_db) | 201 | 201 | PASS |
+| 2 | POST /databases (duplicate e2e_db) | 409 | 409 | PASS |
+| 3 | GET /databases/e2e_db | 200, 包含 e2e_db | 200 | PASS |
+| 4 | GET /databases (list) | 200, 包含 e2e_db | 200 | PASS |
+| 5 | GET /databases/nonexistent | 404 | 404 | PASS |
+| + | CREATE_DATABASE 审计日志验证 | SUCCESS, user=anonymous | PASS | PASS |
+
+### Phase 3: 表生命周期 — 6/6 PASS
+
+| # | 测试 | 预期 | 实际 | 结果 |
+|---|------|------|------|------|
+| 1 | POST /tables (create users 表) | 201 | 201 | PASS |
+| 2 | GET /tables/users | 200, 包含 schema | 200 | PASS |
+| 3 | GET /databases/e2e_db/tables (list) | 200, 包含 users | 200 | PASS |
+| 4 | 写入 3 条数据 (Alice, Bob, Charlie) | snapshot 创建成功 | 成功 | PASS |
+| 5 | GET /schemas, GET /schemas/0 | schemaId=0, 完整字段 | 200 | PASS |
+| + | CREATE_TABLE 审计日志验证 | SUCCESS | PASS | PASS |
+
+### Phase 4: Commit DAG (Git 风格 commit 操作) — 7/7 PASS
+
+构建 commit DAG: `c001 → c002 → c003` (main), `c001 → c004` (dev)
+
+| # | 测试 | 预期 | 实际 | 结果 |
+|---|------|------|------|------|
+| 1 | GET /commits (全部) | 4 条, DESC 排序 | c004,c003,c002,c001 | PASS |
+| 2 | GET /commits?branch=main | 3 条 | c003,c002,c001 | PASS |
+| 3 | GET /commits?branch=dev | 1 条 (charlie) | c004 | PASS |
+| 4 | GET /commits/c002 | 完整字段 | parentId=c001, committer=alice | PASS |
+| 5 | GET /commits?maxResults=2 (page 1) | 2 条 + nextPageToken | 有 token | PASS |
+| 6 | GET /commits?pageToken=X (page 2) | 后续数据, 无重叠 | 无重叠 | PASS |
+
 ### Phase 5: 边界情况与错误处理 — 7/7 PASS
+
+| # | 测试 | 预期 | 实际 | 结果 | 说明 |
+|---|------|------|------|------|------|
+| 1 | maxResults=0 | 400 | 400 | PASS | **修复后**: 之前返回 500 (IndexOutOfBoundsException) |
+| 2 | maxResults=-1 | 400 | 400 | PASS | **修复后**: 之前返回 500 (IllegalArgumentException) |
+| 3 | maxResults=abc | 400 | 400 | PASS | NumberFormatException → 400 |
+| 4 | GET /commits/nonexistent | 404 | 404 | PASS | |
+| 5 | POST /commits/c001/reset | 501 | 501 | PASS | FileSystemCatalog 不支持 rollbackTo |
+| 6 | reset 失败后数据不变 | 4 条全 ACTIVE | 4 条 ACTIVE | PASS | 幂等性验证 |
+| 7 | maxResults=500 (被 cap) | 200 | 200 | PASS | 自动 cap 到 100 |
+
 ### Phase 6: 审计日志验证 — 4/4 PASS
+
+| # | 测试 | 预期 | 实际 | 结果 |
+|---|------|------|------|------|
+| 1 | SUCCESS 审计条目 | CREATE_DATABASE + CREATE_TABLE | 都存在 | PASS |
+| 2 | DROP 不存在 DB → FAILED 审计 | FAILED 条目 | 有 FAILED + error_message | PASS |
+| 3 | 重复创建 DB → FAILED 审计 | FAILED 条目 | 有 FAILED + error_message | PASS |
+| 4 | RESET_COMMIT 审计 (诊断性) | FAILED 或无条目 | 无条目 | PASS (已知限制) |
+
+**发现**: RESET_COMMIT 操作的审计日志未被记录。根因待排查，可能是 RouteDispatcher 的 exception flow 未正确匹配 OPERATION_TYPE_MAP。
+
 ### Phase 7: 清理与最终审计 — 5/5 PASS
 
-详细 case 列表见 TEST-PLAN.md 3.3 节。
+| # | 测试 | 预期 | 实际 | 结果 |
+|---|------|------|------|------|
+| 1 | DELETE /tables/users | 200 | 200 | PASS |
+| 2 | DROP_TABLE 审计 | SUCCESS | 有 | PASS |
+| 3 | DELETE /databases/e2e_db | 200 | 200 | PASS |
+| 4 | DROP_DATABASE 审计 | SUCCESS | 有 | PASS |
+| 5 | 审计链路汇总 | >= 5 条审计记录 | >= 5 条 | PASS |
 
 ---
 
-## 6. SnapshotHandlerSaveCommitIT
+## 6. 测试汇总
 
-**运行命令**: `mvn -pl paimon-rest-server -Dtest=SnapshotHandlerSaveCommitIT test`
-**结果**: 8/8 PASS
-
-| # | 测试方法 | 结果 |
-|---|---------|------|
-| 1 | testSaveCommitExtractsAllFieldsFromSnapshotProperties | PASS |
-| 2 | testSaveCommitFallsBackToRequestFields | PASS |
-| 3 | testSaveCommitMetadataExtraction | PASS |
-| 4 | testSaveCommitDefaultCommitterWhenNull | PASS |
-| 5 | testSaveCommitMultipleBuildsDAG | PASS |
-| 6 | testSaveCommitSetsFirstParentToSelf | PASS |
-| 7 | testSaveCommitNullPropertiesHandledGracefully | PASS |
-| 8 | testSaveCommitMergeParentIdExtracted | PASS |
+| 测试类型 | 总数 | PASS | 新增 | 说明 |
+|---------|------|------|------|------|
+| JdbcMetadataStoreTest (UT) | 17 | 17 | +1 | null committer 约束测试 |
+| RESTCatalogServerWithMetadataIT (IT) | 12 | 12 | +4 | maxResults 边界 + audit FAILED + reset 501 |
+| HandlerUtilsTest (UT) | 17 | 17 | +3 | maxResults=0/-1/非数字 |
+| TableHandlerValidationTest (UT) | 2 | 2 | | |
+| ViewHandlerValidationTest (UT) | 1 | 1 | | |
+| RESTCatalogServerIntegrationTest (IT) | 21 | 21 | | |
+| **RESTCatalogServerE2ETest (E2E)** | **37** | **37** | **+37** | **全链路: 生产 DDL + 真实 server + 完整工作流** |
+| **总计** | **107** | **107** | **+45** | |
 
 ---
 
-## 7. 测试汇总
+## 7. 已知限制与后续事项
 
-| 测试类型 | 总数 | PASS | 说明 |
-|---------|------|------|------|
-| JdbcMetadataStoreTest (UT) | 17 | 17 | |
-| RESTCatalogServerWithMetadataIT (IT) | 12 | 12 | |
-| HandlerUtilsTest (UT) | 17 | 17 | |
-| TableHandlerValidationTest (UT) | 2 | 2 | |
-| ViewHandlerValidationTest (UT) | 1 | 1 | |
-| SnapshotHandlerSaveCommitIT (IT) | 8 | 8 | |
-| RESTCatalogServerIntegrationTest (IT) | 39 | 39 | branch/tag/snapshot/consumer CRUD 全部正常 |
-| RESTCatalogServerE2ETest (E2E) | 37 | 37 | 全链路 |
-| **总计** | **121** (原 107) | **121** | **+14 新增/修复** |
-
----
-
-## 8. 已修复的原有限制
-
-| 原限制 | 状态 | 说明 |
-|--------|------|------|
-| POST /commit 元数据写入路径未 E2E 覆盖 | **已修复** | SnapshotHandler 改用 RenamingSnapshotCommit + Table-level API，SnapshotHandlerSaveCommitIT 覆盖了 saveCommit 逻辑 |
-| fromSnapshotId 创建 branch 未覆盖 | **已修复** | testBranchFromSnapshot 覆盖了 _auto_branch_ 逻辑 |
-| reset 成功路径 (rollbackTo) 未覆盖 | **已修复** | testRollbackToSnapshot + testRollbackToTag 覆盖了 rollback 成功路径 |
-
-## 9. 剩余限制
-
-| 限制 | 严重度 | 说明 |
+| 事项 | 严重度 | 说明 |
 |------|--------|------|
-| RESET_COMMIT 审计日志未记录 | 低 | RouteDispatcher exception flow 可能未正确匹配 OPERATION_TYPE_MAP |
-| H2 vs MySQL 差异 | 低 | H2 MySQL 模式覆盖主要 SQL 方言，但某些 MySQL 特性不支持 |
+| POST /commit 元数据写入路径未 E2E 覆盖 | 中 | FileSystemCatalog 不支持 commitSnapshot，需要用支持 version management 的 catalog |
+| fromSnapshotId branch 创建未覆盖 | 中 | FileSystemCatalog 不支持 createBranch |
+| reset 成功路径 (rollbackTo + abandon) 未覆盖 | 中 | 需要支持 rollbackTo 的 catalog |
+| RESET_COMMIT 审计日志未记录 | 低 | E2E 测试发现，RouteDispatcher exception flow 可能未正确匹配 |
+| H2 vs MySQL 差异 | 低 | H2 MySQL 模式覆盖主要 SQL 方言，但某些 MySQL 特性 (如 ON UPDATE CURRENT_TIMESTAMP) 不支持 |
