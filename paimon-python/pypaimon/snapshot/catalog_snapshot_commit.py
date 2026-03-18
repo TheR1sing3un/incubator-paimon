@@ -59,9 +59,9 @@ class CatalogSnapshotCommit(SnapshotCommit):
         Raises:
             Exception: If commit fails
         """
-        new_identifier = Identifier(
+        new_identifier = Identifier.create(
             database=self.identifier.get_database_name(),
-            object=self.identifier.get_table_name(),
+            table=self.identifier.get_table_name(),
             branch=branch
         )
 

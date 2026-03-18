@@ -470,9 +470,4 @@ class RESTApi:
         if not table_name or not table_name.strip():
             raise ValueError("Table name cannot be None")
 
-        table_name = table_name.strip()
-        branch = identifier.get_branch_name()
-        if branch and branch != "main":
-            table_name = "{}.{}".format(table_name, branch)
-
-        return database_name.strip(), table_name
+        return database_name.strip(), table_name.strip()
