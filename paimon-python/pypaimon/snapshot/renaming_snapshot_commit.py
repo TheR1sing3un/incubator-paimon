@@ -48,14 +48,13 @@ class RenamingSnapshotCommit(SnapshotCommit):
         self.snapshot_manager = snapshot_manager
         self.file_io: FileIO = snapshot_manager.file_io
 
-    def commit(self, snapshot: Snapshot, branch: str, statistics: List[PartitionStatistics]) -> bool:
+    def commit(self, snapshot: Snapshot, statistics: List[PartitionStatistics]) -> bool:
         """
         Commit the snapshot using file renaming.
 
         Args:
             snapshot: The snapshot to commit
-            branch: The branch name to commit to
-            statistics: List of partition statistics (currently unused but kept for interface compatibility)
+            statistics: List of partition statistics
 
         Returns:
             True if commit was successful, False otherwise

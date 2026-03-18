@@ -20,9 +20,9 @@ import logging
 from typing import List
 
 from pypaimon.catalog.catalog import Catalog
+from pypaimon.common.identifier import Identifier
 
 logger = logging.getLogger(__name__)
-from pypaimon.common.identifier import Identifier
 from pypaimon.snapshot.snapshot import Snapshot
 from pypaimon.snapshot.snapshot_commit import (PartitionStatistics,
                                                SnapshotCommit)
@@ -44,13 +44,12 @@ class CatalogSnapshotCommit(SnapshotCommit):
         self.identifier = identifier
         self.uuid = uuid
 
-    def commit(self, snapshot: Snapshot, branch: str, statistics: List[PartitionStatistics]) -> bool:
+    def commit(self, snapshot: Snapshot, statistics: List[PartitionStatistics]) -> bool:
         """
         Commit the snapshot using the catalog.
 
         Args:
             snapshot: The snapshot to commit
-            branch: The branch name to commit to
             statistics: List of partition statistics
 
         Returns:
@@ -59,17 +58,11 @@ class CatalogSnapshotCommit(SnapshotCommit):
         Raises:
             Exception: If commit fails
         """
-        new_identifier = Identifier.create(
-            database=self.identifier.get_database_name(),
-            table=self.identifier.get_table_name(),
-            branch=branch
-        )
-
         # Call catalog's commit_snapshot method
         if hasattr(self.catalog, 'commit_snapshot'):
-            success = self.catalog.commit_snapshot(new_identifier, self.uuid, snapshot, statistics)
+            success = self.catalog.commit_snapshot(self.identifier, self.uuid, snapshot, statistics)
             if success:
-                logger.info("Catalog snapshot commit succeeded for %s, snapshot id %d", new_identifier, snapshot.id)
+                logger.info("Catalog snapshot commit succeeded for %s, snapshot id %d", self.identifier, snapshot.id)
             return success
         else:
             # Fallback for catalogs that don't support snapshot commits

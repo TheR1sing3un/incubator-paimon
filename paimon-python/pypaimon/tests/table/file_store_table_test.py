@@ -108,23 +108,26 @@ class FileStoreTableTest(unittest.TestCase):
         self.assertEqual(min_snapshot, 5)
 
     def test_consumer_manager_with_branch(self):
-        """Test consumer_manager with branch option."""
-        # Create table with branch option
+        """Test consumer_manager with branch encoded in identifier."""
         branch_name = "feature_branch"
+
+        # Create a table first, then access it with branch-encoded identifier
         schema = Schema.from_pyarrow_schema(
             self.pa_schema,
             partition_keys=['dt'],
-            options={
-                CoreOptions.BUCKET.key(): "2",
-                "branch": branch_name
-            }
+            options={CoreOptions.BUCKET.key(): "2"}
         )
-        self.catalog.create_table('default.test_branch_table', schema, False)
-        branch_table = self.catalog.get_table('default.test_branch_table')
+        self.catalog.create_table('default.test_branch_table', schema, True)
+
+        # Get the table using branch-encoded identifier
+        branch_table = self.catalog.get_table(
+            'default.test_branch_table$branch_{}'.format(branch_name))
+
+        # Verify current_branch reads from identifier
+        self.assertEqual(branch_table.current_branch(), branch_name)
 
         # Get consumer_manager and verify it has correct branch
         branch_consumer_manager = branch_table.consumer_manager()
-        self.assertEqual(branch_table.current_branch(), branch_name)
 
         # Test consumer operations on branch
         from pypaimon.consumer.consumer import Consumer
