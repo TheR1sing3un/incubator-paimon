@@ -45,7 +45,7 @@ long_description = "See Apache Paimon Python API \
 [Doc](https://paimon.apache.org/docs/master/pypaimon/python-api/) for usage."
 
 setup(
-    name="pypaimon",
+    name="ks-pypaimon",
     version=VERSION,
     packages=PACKAGES,
     include_package_data=True,
