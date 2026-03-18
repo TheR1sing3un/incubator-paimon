@@ -380,14 +380,14 @@ class RESTCatalogServerWithMetadataIT {
     }
 
     @Test
-    void testResetCommitReturns501OnFileSystemCatalog() throws Exception {
+    void testResetCommitSucceedsOnFileSystemCatalog() throws Exception {
         createTestTableWithData("reset_db", "tbl");
         insertCommitRecord("reset_db", "tbl", "c1", "main", "c1", "alice", "first", 1L);
 
         String tablePath = "/v1/test-prefix/databases/reset_db/tables/tbl";
         int status = httpPostStatus(tablePath + "/commits/c1/reset", "");
-        // FileSystemCatalog does not support rollbackTo, so expect 501
-        assertThat(status).isEqualTo(501);
+        // FileSystemCatalog now supports rollbackTo via version management
+        assertThat(status).isEqualTo(200);
 
         httpDelete(tablePath);
         httpDelete("/v1/test-prefix/databases/reset_db");

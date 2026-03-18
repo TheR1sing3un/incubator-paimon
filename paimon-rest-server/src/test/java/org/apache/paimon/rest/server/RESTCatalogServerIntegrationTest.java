@@ -269,26 +269,26 @@ class RESTCatalogServerIntegrationTest {
         createTestTableWithData("branch_db", "branch_tbl");
         String tablePath = "/v1/test-prefix/databases/branch_db/tables/branch_tbl";
 
-        // FileSystemCatalog does not support catalog-level branch operations (listBranches,
-        // createBranch), so they return 501. getBranch works through getTable fallback.
-
-        // List branches - unsupported by FileSystemCatalog
+        // List branches (empty initially)
         int listStatus = httpGetStatus(tablePath + "/branches");
-        assertThat(listStatus).isIn(200, 501);
+        assertThat(listStatus).isEqualTo(200);
 
-        // Create branch - unsupported by FileSystemCatalog
+        // Create branch (empty, no tag)
         String createBody = "{\"branch\":\"feature-1\",\"fromTag\":null}";
         int createStatus = httpPostStatus(tablePath + "/branches", createBody);
-        assertThat(createStatus).isIn(200, 501);
+        assertThat(createStatus).isEqualTo(200);
 
-        if (createStatus == 200) {
-            // Branch was created, test further operations
-            int branchStatus = httpGetStatus(tablePath + "/branches/feature-1");
-            assertThat(branchStatus).isEqualTo(200);
+        // Get branch
+        int branchStatus = httpGetStatus(tablePath + "/branches/feature-1");
+        assertThat(branchStatus).isEqualTo(200);
 
-            int deleteStatus = httpDeleteStatus(tablePath + "/branches/feature-1");
-            assertThat(deleteStatus).isEqualTo(200);
-        }
+        // List branches again (should contain feature-1)
+        String listResponse = httpGet(tablePath + "/branches");
+        assertThat(listResponse).contains("feature-1");
+
+        // Delete branch
+        int deleteStatus = httpDeleteStatus(tablePath + "/branches/feature-1");
+        assertThat(deleteStatus).isEqualTo(200);
 
         // Clean up
         httpDelete(tablePath);
@@ -309,26 +309,128 @@ class RESTCatalogServerIntegrationTest {
     }
 
     @Test
+    void testBranchFromTag() throws Exception {
+        createTestTableWithData("branch_tag_db", "tbl");
+        String tablePath = "/v1/test-prefix/databases/branch_tag_db/tables/tbl";
+
+        // Create a tag first
+        String tagBody = "{\"tagName\":\"base-tag\",\"snapshotId\":1,\"timeRetained\":null}";
+        int tagStatus = httpPostStatus(tablePath + "/tags", tagBody);
+        assertThat(tagStatus).isEqualTo(200);
+
+        // Create branch from tag
+        String branchBody = "{\"branch\":\"release-1\",\"fromTag\":\"base-tag\"}";
+        int branchStatus = httpPostStatus(tablePath + "/branches", branchBody);
+        assertThat(branchStatus).isEqualTo(200);
+
+        // Verify branch exists
+        String branches = httpGet(tablePath + "/branches");
+        assertThat(branches).contains("release-1");
+
+        // Clean up
+        httpDelete(tablePath + "/branches/release-1");
+        httpDelete(tablePath + "/tags/base-tag");
+        httpDelete(tablePath);
+        httpDelete("/v1/test-prefix/databases/branch_tag_db");
+    }
+
+    @Test
+    void testBranchFromSnapshotId() throws Exception {
+        createTestTableWithData("branch_snap_db", "tbl");
+        String tablePath = "/v1/test-prefix/databases/branch_snap_db/tables/tbl";
+
+        // Create branch from snapshotId (uses auto-tag _auto_branch_ internally)
+        String branchBody = "{\"branch\":\"snap-branch\",\"fromTag\":null,\"fromSnapshotId\":1}";
+        int branchStatus = httpPostStatus(tablePath + "/branches", branchBody);
+        assertThat(branchStatus).isEqualTo(200);
+
+        // Verify branch exists
+        String branches = httpGet(tablePath + "/branches");
+        assertThat(branches).contains("snap-branch");
+
+        // Clean up
+        httpDelete(tablePath + "/branches/snap-branch");
+        httpDelete(tablePath);
+        httpDelete("/v1/test-prefix/databases/branch_snap_db");
+    }
+
+    @Test
+    void testRollbackToSnapshot() throws Exception {
+        // Create table and write data twice to get 2 snapshots
+        Catalog catalog = server.getCatalog();
+        catalog.createDatabase("rollback_db", false);
+        Schema schema =
+                Schema.newBuilder()
+                        .column("id", DataTypes.INT())
+                        .column("name", DataTypes.STRING())
+                        .primaryKey("id")
+                        .option("bucket", "1")
+                        .option("file.format", "avro")
+                        .build();
+        Identifier id = Identifier.create("rollback_db", "tbl");
+        catalog.createTable(id, schema, false);
+
+        // Write batch 1
+        Table table = catalog.getTable(id);
+        BatchWriteBuilder wb1 = table.newBatchWriteBuilder();
+        BatchTableWrite w1 = wb1.newWrite();
+        BatchTableCommit c1 = wb1.newCommit();
+        w1.write(GenericRow.of(1, BinaryString.fromString("Alice")));
+        c1.commit(w1.prepareCommit());
+        w1.close();
+        c1.close();
+
+        // Write batch 2
+        table = catalog.getTable(id);
+        BatchWriteBuilder wb2 = table.newBatchWriteBuilder();
+        BatchTableWrite w2 = wb2.newWrite();
+        BatchTableCommit c2 = wb2.newCommit();
+        w2.write(GenericRow.of(2, BinaryString.fromString("Bob")));
+        c2.commit(w2.prepareCommit());
+        w2.close();
+        c2.close();
+
+        String tablePath = "/v1/test-prefix/databases/rollback_db/tables/tbl";
+
+        // Verify snapshot 2 exists
+        int snap2Status = httpGetStatus(tablePath + "/snapshots/2");
+        assertThat(snap2Status).isEqualTo(200);
+
+        // Rollback to snapshot 1
+        String rollbackBody = "{\"instant\":{\"type\":\"snapshot\",\"snapshotId\":1}}";
+        int rollbackStatus = httpPostStatus(tablePath + "/rollback", rollbackBody);
+        assertThat(rollbackStatus).isEqualTo(200);
+
+        // Verify latest snapshot is now 1
+        String latestSnap = httpGet(tablePath + "/snapshots/LATEST");
+        assertThat(latestSnap).contains("\"id\" : 1");
+
+        // Clean up
+        httpDelete(tablePath);
+        httpDelete("/v1/test-prefix/databases/rollback_db");
+    }
+
+    @Test
     void testTagCRUD() throws Exception {
         createTestTableWithData("tag_db", "tag_tbl");
         String tablePath = "/v1/test-prefix/databases/tag_db/tables/tag_tbl";
 
-        // FileSystemCatalog does not support catalog-level tag operations, returns 501.
+        // Create tag on snapshot 1
         String createBody = "{\"tagName\":\"v1.0\",\"snapshotId\":1,\"timeRetained\":null}";
         int createStatus = httpPostStatus(tablePath + "/tags", createBody);
-        assertThat(createStatus).isIn(200, 501);
+        assertThat(createStatus).isEqualTo(200);
 
-        if (createStatus == 200) {
-            // Tag was created, test further operations
-            String listResponse = httpGet(tablePath + "/tags");
-            assertThat(listResponse).contains("v1.0");
+        // List tags
+        String listResponse = httpGet(tablePath + "/tags");
+        assertThat(listResponse).contains("v1.0");
 
-            int tagStatus = httpGetStatus(tablePath + "/tags/v1.0");
-            assertThat(tagStatus).isEqualTo(200);
+        // Get tag
+        int tagStatus = httpGetStatus(tablePath + "/tags/v1.0");
+        assertThat(tagStatus).isEqualTo(200);
 
-            int deleteStatus = httpDeleteStatus(tablePath + "/tags/v1.0");
-            assertThat(deleteStatus).isEqualTo(200);
-        }
+        // Delete tag
+        int deleteStatus = httpDeleteStatus(tablePath + "/tags/v1.0");
+        assertThat(deleteStatus).isEqualTo(200);
 
         // Clean up
         httpDelete(tablePath);
@@ -349,8 +451,8 @@ class RESTCatalogServerIntegrationTest {
 
         String tablePath = "/v1/test-prefix/databases/snap_empty_db/tables/empty_tbl";
         int status = httpGetStatus(tablePath + "/snapshot");
-        // FileSystemCatalog returns 501 for loadSnapshot (not supported), other catalogs 404
-        assertThat(status).isIn(404, 501);
+        // No data written, so no snapshot exists -> 404
+        assertThat(status).isEqualTo(404);
 
         // Clean up
         httpDelete(tablePath);
@@ -362,12 +464,17 @@ class RESTCatalogServerIntegrationTest {
         createTestTableWithData("snap_db", "snap_tbl");
         String tablePath = "/v1/test-prefix/databases/snap_db/tables/snap_tbl";
 
-        // FileSystemCatalog does not support catalog-level snapshot operations, returns 501.
+        // Get latest snapshot
         int snapshotStatus = httpGetStatus(tablePath + "/snapshot");
-        assertThat(snapshotStatus).isIn(200, 501);
+        assertThat(snapshotStatus).isEqualTo(200);
 
+        // List snapshots
         int listStatus = httpGetStatus(tablePath + "/snapshots");
-        assertThat(listStatus).isIn(200, 501);
+        assertThat(listStatus).isEqualTo(200);
+
+        // Get snapshot by version
+        int versionStatus = httpGetStatus(tablePath + "/snapshots/LATEST");
+        assertThat(versionStatus).isEqualTo(200);
 
         // Clean up
         httpDelete(tablePath);
@@ -431,8 +538,7 @@ class RESTCatalogServerIntegrationTest {
 
         int status =
                 httpGetStatus("/v1/test-prefix/databases/sub_404_db/tables/nonexistent/branches");
-        // FileSystemCatalog returns 501 for listBranches (not supported), other catalogs 404
-        assertThat(status).isIn(404, 501);
+        assertThat(status).isEqualTo(404);
 
         // Clean up
         httpDelete("/v1/test-prefix/databases/sub_404_db");
@@ -476,9 +582,8 @@ class RESTCatalogServerIntegrationTest {
         createTestTableWithData("tag_404_db", "tbl");
         String tablePath = "/v1/test-prefix/databases/tag_404_db/tables/tbl";
 
-        // FileSystemCatalog returns 501 for getTag (not supported), other catalogs 404
         int status = httpGetStatus(tablePath + "/tags/nonexistent");
-        assertThat(status).isIn(404, 501);
+        assertThat(status).isEqualTo(404);
 
         // Clean up
         httpDelete(tablePath);

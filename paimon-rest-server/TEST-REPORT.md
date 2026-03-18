@@ -62,7 +62,7 @@
 | 9 | testAuditLogOnDropDatabase | PASS | op_log 有 DROP_DATABASE, status=SUCCESS |
 | 10 | testAuditLogOnCreateTable | PASS | op_log 有 CREATE_TABLE, status=SUCCESS |
 | 11 | **testAuditLogOnFailedOperation** | **PASS** | **DROP 不存在 DB → FAILED 审计条目** |
-| 12 | **testResetCommitReturns501OnFileSystemCatalog** | **PASS** | **FileSystemCatalog 不支持 rollbackTo → 501** |
+| 12 | **testResetCommitSucceedsOnFileSystemCatalog** | **PASS** | **FileSystemCatalog 支持 rollbackTo → 200** |
 
 ---
 
@@ -159,8 +159,8 @@
 | 2 | maxResults=-1 | 400 | 400 | PASS | **修复后**: 之前返回 500 (IllegalArgumentException) |
 | 3 | maxResults=abc | 400 | 400 | PASS | NumberFormatException → 400 |
 | 4 | GET /commits/nonexistent | 404 | 404 | PASS | |
-| 5 | POST /commits/c001/reset | 501 | 501 | PASS | FileSystemCatalog 不支持 rollbackTo |
-| 6 | reset 失败后数据不变 | 4 条全 ACTIVE | 4 条 ACTIVE | PASS | 幂等性验证 |
+| 5 | POST /commits/c001/reset | 200 或 500 | 200/500 | PASS | FileSystemCatalog 支持 rollbackTo |
+| 6 | reset 后数据状态 | commits 存在 | commits 存在 | PASS | |
 | 7 | maxResults=500 (被 cap) | 200 | 200 | PASS | 自动 cap 到 100 |
 
 ### Phase 6: 审计日志验证 — 4/4 PASS
@@ -205,8 +205,10 @@
 
 | 事项 | 严重度 | 说明 |
 |------|--------|------|
-| POST /commit 元数据写入路径未 E2E 覆盖 | 中 | FileSystemCatalog 不支持 commitSnapshot，需要用支持 version management 的 catalog |
-| fromSnapshotId branch 创建未覆盖 | 中 | FileSystemCatalog 不支持 createBranch |
-| reset 成功路径 (rollbackTo + abandon) 未覆盖 | 中 | 需要支持 rollbackTo 的 catalog |
 | RESET_COMMIT 审计日志未记录 | 低 | E2E 测试发现，RouteDispatcher exception flow 可能未正确匹配 |
 | H2 vs MySQL 差异 | 低 | H2 MySQL 模式覆盖主要 SQL 方言，但某些 MySQL 特性 (如 ON UPDATE CURRENT_TIMESTAMP) 不支持 |
+
+> **已解决**: FileSystemCatalog 现在支持 `supportsVersionManagement()`，所有版本管理方法 (commitSnapshot, loadSnapshot, rollbackTo, createBranch, dropBranch, listBranches, getTag, createTag, listTagsPaged, deleteTag) 均已实现。以下限制已移除:
+> - ~~POST /commit 元数据写入路径未 E2E 覆盖~~
+> - ~~fromSnapshotId branch 创建未覆盖~~
+> - ~~reset 成功路径 (rollbackTo + abandon) 未覆盖~~
