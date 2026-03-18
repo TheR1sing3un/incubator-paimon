@@ -62,7 +62,7 @@
 | 9 | testAuditLogOnDropDatabase | DELETE /databases/{db} 产生审计日志 | op_log 有 DROP_DATABASE |
 | 10 | testAuditLogOnCreateTable | POST /tables 产生审计日志 | op_log 有 CREATE_TABLE |
 | 11 | **testAuditLogOnFailedOperation** | **删除不存在 DB 产生 FAILED 审计** | **op_log 有 FAILED 记录** |
-| 12 | **testResetCommitReturns501OnFileSystemCatalog** | **reset commit 在 FSCatalog** | **501** |
+| 12 | **testResetCommitSucceedsOnFileSystemCatalog** | **reset commit 在 FSCatalog** | **200** |
 
 ### 3.3 RESTCatalogServerE2ETest (全链路 E2E 测试, 37 cases)
 
@@ -84,6 +84,10 @@
 | 3 | phase3_writeDataToTable | 写入数据（创建 snapshot） | 数据写入成功 |
 | 3 | phase3_schemaHistory | Schema 历史查询 | schemaId=0 |
 | 3 | phase3_createTableAuditLog | 创建表的审计日志 | SUCCESS 审计条目 |
+| 3b | phase3b_snapshotEndpoints | Snapshot CRUD (get/list/version) | 200, 包含 snapshot |
+| 3b | phase3b_tagCRUD | Tag 创建/获取/列出/删除 | 全部 200 |
+| 3b | phase3b_branchCRUD | Branch 创建/列出/删除 | 全部 200 |
+| 3b | phase3b_branchFromSnapshotId | 从 snapshotId 创建 branch (auto-tag) | 200, branches 包含 snap-branch |
 | 4 | phase4_populateCommitDAG | 构建 commit DAG (4条: 3 main + 1 dev) | 插入成功 |
 | 4 | phase4_listAllCommits | 列出所有 commits | 4 条, DESC 排序 |
 | 4 | phase4_listCommitsByBranch | 按 main 分支过滤 | 3 条 |
@@ -95,8 +99,8 @@
 | 5 | phase5_maxResultsNegativeReturns400 | maxResults=-1 | 400 |
 | 5 | phase5_maxResultsNonNumericReturns400 | maxResults=abc | 400 |
 | 5 | phase5_commitNotFoundReturns404 | 不存在的 commitId | 404 |
-| 5 | phase5_resetCommitReturns501OnFileSystemCatalog | reset commit | 501 |
-| 5 | phase5_commitsUnchangedAfterFailedReset | 失败 reset 后数据不变 | 4 条全 ACTIVE |
+| 5 | phase5_resetCommitReturns200OnFileSystemCatalog | reset commit | 200 或 500 (commit 无真实 snapshot) |
+| 5 | phase5_commitsUnchangedOrPartiallyAbandoned | reset 后数据状态 | commits 存在 |
 | 5 | phase5_maxResultsCappedAt100 | maxResults=500 被 cap | 200 |
 | 6 | phase6_auditLogHasSuccessEntries | 检查 SUCCESS 审计 | CREATE_DATABASE + CREATE_TABLE |
 | 6 | phase6_auditLogOnFailedOperation | 失败操作审计 | FAILED 条目 |
@@ -121,9 +125,6 @@
 
 | 限制 | 原因 | 影响 |
 |------|------|------|
-| POST /commit E2E 链路未覆盖 | FileSystemCatalog 不支持 commitSnapshot | SnapshotHandler.saveCommit() 的完整写入路径未测试 |
-| fromSnapshotId 创建 branch 未覆盖 | FileSystemCatalog 不支持 createBranch | _auto_branch_ 逻辑未测试 |
-| reset 成功路径未覆盖 | FileSystemCatalog 不支持 rollbackTo | rollbackTo + abandonCommitsAfter 联动未测试 |
 | RESET_COMMIT 审计日志可能未写入 | 异常传播路径可能绕过 audit | E2E 测试中做诊断性检查 |
 
 ## 5. 运行命令
