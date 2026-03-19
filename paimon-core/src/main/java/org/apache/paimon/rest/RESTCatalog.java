@@ -1094,7 +1094,7 @@ public class RESTCatalog implements Catalog {
             boolean ignoreIfExists)
             throws TableNotExistException, SnapshotNotExistException, TagAlreadyExistException {
         try {
-            api.createTag(identifier, tagName, snapshotId, timeRetained);
+            api.createTag(identifier, tagName, snapshotId, timeRetained, ignoreIfExists);
         } catch (AlreadyExistsException e) {
             if (!ignoreIfExists) {
                 throw new TagAlreadyExistException(identifier, tagName);
