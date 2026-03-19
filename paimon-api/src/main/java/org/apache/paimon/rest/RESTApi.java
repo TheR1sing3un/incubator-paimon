@@ -1022,6 +1022,7 @@ public class RESTApi {
      * @param tagName tag name
      * @param snapshotId optional snapshot id, if not provided uses latest snapshot
      * @param timeRetained optional time retained as string (e.g., "1d", "12h", "30m")
+     * @param ignoreIfExists optional flag to indicate whether to ignore the request if the tag already exists, default is false
      * @throws NoSuchResourceException Exception thrown on HTTP 404 means the table or snapshot not
      *     exists
      * @throws AlreadyExistsException Exception thrown on HTTP 409 means the tag already exists
@@ -1032,8 +1033,9 @@ public class RESTApi {
             Identifier identifier,
             String tagName,
             @Nullable Long snapshotId,
-            @Nullable String timeRetained) {
-        CreateTagRequest request = new CreateTagRequest(tagName, snapshotId, timeRetained);
+            @Nullable String timeRetained,
+            @Nullable boolean ignoreIfExists) {
+        CreateTagRequest request = new CreateTagRequest(tagName, snapshotId, timeRetained, ignoreIfExists);
         client.post(
                 resourcePaths.tags(identifier.getDatabaseName(), identifier.getObjectName()),
                 request,
