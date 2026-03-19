@@ -60,6 +60,26 @@ public class RESTCatalogServerOptions {
                     .defaultValue(10 * 1024 * 1024)
                     .withDescription("Maximum allowed content length for HTTP requests in bytes.");
 
+    public static final ConfigOption<String> METADATA_RESOURCE_ID =
+            ConfigOptions.key("rest-server.metadata.resource-id")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "KsDataSource resource ID for the metadata store. "
+                                    + "When set, uses KsDataSourceFactory.getDataSource(resourceId) "
+                                    + "instead of HikariCP with JDBC URL. "
+                                    + "Takes priority over rest-server.metadata.jdbc-url.");
+
+    public static final ConfigOption<String> METADATA_JDBC_CATALOG =
+            ConfigOptions.key("rest-server.metadata.jdbc-catalog")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The MySQL database (catalog) name for the metadata store. "
+                                    + "When set, each connection will execute USE <catalog> "
+                                    + "before any SQL. Required when using resource-id mode "
+                                    + "where the default database may differ.");
+
     public static final ConfigOption<String> METADATA_JDBC_URL =
             ConfigOptions.key("rest-server.metadata.jdbc-url")
                     .stringType()

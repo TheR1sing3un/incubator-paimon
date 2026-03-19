@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<configuration>
+    <!-- 指定默认的文件系统为本地文件系统 -->
+    <property>
+        <name>fs.defaultFS</name>
+        <value>file:///</value>
+    </property>
+
+    <!-- 禁用 ViewFS（如果不需要） -->
+    <property>
+        <name>fs.viewfs.mounttable.default.linkFallback</name>
+        <value>true</value>
+    </property>
+
+    <!-- 设置 Hadoop 临时目录 -->
+    <property>
+        <name>hadoop.tmp.dir</name>
+        <value>/tmp/hadoop-${user.name}</value>
+    </property>
+
+    <!-- 使用本地文件系统实现 -->
+    <property>
+        <name>fs.file.impl</name>
+        <value>org.apache.hadoop.fs.LocalFileSystem</value>
+    </property>
+</configuration>

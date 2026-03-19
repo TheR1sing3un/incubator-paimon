@@ -90,7 +90,7 @@ public class RouteDispatcher {
         registrars.add(new TableHandler(catalog));
         registrars.add(new ViewHandler(catalog));
         registrars.add(new FunctionHandler(catalog));
-        registrars.add(new DatabaseHandler(catalog));
+        registrars.add(new DatabaseHandler(catalog, metadataStore));
         registrars.add(new SnapshotHandler(catalog));
         registrars.add(new PartitionHandler(catalog));
         registrars.add(new BranchHandler(catalog));

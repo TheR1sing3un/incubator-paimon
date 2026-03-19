@@ -106,6 +106,18 @@ class RESTCatalogServerE2ETest {
         // Execute the production DDL (adapted for H2 MySQL mode)
         try (Connection conn = metadataDs.getConnection();
                 Statement stmt = conn.createStatement()) {
+            // paimon_database (database registry)
+            stmt.execute(
+                    "CREATE TABLE IF NOT EXISTS paimon_database ("
+                            + "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
+                            + "database_name VARCHAR(256) NOT NULL, "
+                            + "properties CLOB NULL, "
+                            + "created_by VARCHAR(64) NOT NULL, "
+                            + "created_at BIGINT NOT NULL, "
+                            + "updated_at BIGINT NOT NULL, "
+                            + "UNIQUE (database_name)"
+                            + ")");
+
             // paimon_table (table registry)
             stmt.execute(
                     "CREATE TABLE IF NOT EXISTS paimon_table ("
@@ -251,6 +263,22 @@ class RESTCatalogServerE2ETest {
                 assertThat(rs.next()).isTrue();
                 assertThat(rs.getString("user_id")).isEqualTo("anonymous");
                 assertThat(rs.getString("target_type")).isEqualTo("DATABASE");
+            }
+        }
+    }
+
+    @Test
+    @Order(16)
+    void phase2_databaseMetadataPersisted() throws Exception {
+        try (Connection conn = metadataDs.getConnection();
+                PreparedStatement ps =
+                        conn.prepareStatement(
+                                "SELECT * FROM paimon_database "
+                                        + "WHERE database_name = 'e2e_db'")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getString("created_by")).isEqualTo("anonymous");
+                assertThat(rs.getLong("created_at")).isGreaterThan(0);
             }
         }
     }
@@ -495,26 +523,18 @@ class RESTCatalogServerE2ETest {
     @Test
     @Order(44)
     void phase5_resetCommitReturns200OnFileSystemCatalog() throws Exception {
-        // FileSystemCatalog now supports rollbackTo via version management
-        // Reset commit c001 should succeed (rollback to snapshot)
-        int status =
-                httpPostStatus("/v1/paimon/databases/e2e_db/tables/users/commits/c001/reset", "");
-        // May return 200 (success) or 500 (if commit c001 doesn't have a real snapshot)
-        // The commit records are inserted directly into DB without real snapshots,
-        // so rollbackTo may fail at the filesystem level
-        assertThat(status).isIn(200, 500);
+        // Reset to snapshot 1 (real snapshot created by phase3_writeDataToTable)
+        int status = httpPostStatus("/v1/paimon/databases/e2e_db/tables/users/commits/1/reset", "");
+        assertThat(status).isEqualTo(200);
     }
 
     @Test
     @Order(45)
-    void phase5_commitsUnchangedOrPartiallyAbandoned() throws Exception {
-        // After reset attempt, commits may still be ACTIVE (if reset failed)
-        // or some may be ABANDONED (if reset succeeded)
-        String response =
-                httpGet("/v1/paimon/databases/e2e_db/tables/users/commits?includeAbandoned=true");
-        CommitHandler.ListCommitsResponse result =
-                JsonSerdeUtil.fromJson(response, CommitHandler.ListCommitsResponse.class);
-        assertThat(result.commits()).isNotEmpty();
+    void phase5_commitsStillAvailableAfterReset() throws Exception {
+        // After reset, snapshots (commits) should still be available
+        String response = httpGet("/v1/paimon/databases/e2e_db/tables/users/commits");
+        assertThat(response).contains("\"commits\"");
+        assertThat(response).contains("\"snapshotId\"");
     }
 
     @Test

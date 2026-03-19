@@ -29,10 +29,13 @@ import org.apache.paimon.rest.server.auth.TokenAuthenticator;
 import org.apache.paimon.rest.server.metadata.JdbcMetadataStore;
 import org.apache.paimon.rest.server.metadata.MetadataStore;
 
+import com.kuaishou.infra.framework.datasource.KsDataSourceFactory;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import javax.sql.DataSource;
 
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -150,6 +153,17 @@ public class RESTCatalogServer {
     }
 
     private MetadataStore createMetadataStore() {
+        String jdbcCatalog = options.getString(RESTCatalogServerOptions.METADATA_JDBC_CATALOG);
+
+        // Priority 1: KsDataSource resource ID
+        String resourceId = options.getString(RESTCatalogServerOptions.METADATA_RESOURCE_ID);
+        if (resourceId != null && !resourceId.isEmpty()) {
+            LOG.info("Metadata store enabled with KsDataSource resource ID: {}", resourceId);
+            DataSource dataSource = KsDataSourceFactory.getDataSource(resourceId);
+            return new JdbcMetadataStore(dataSource, jdbcCatalog);
+        }
+
+        // Priority 2: JDBC URL with HikariCP (for local dev / testing)
         String jdbcUrl = options.getString(RESTCatalogServerOptions.METADATA_JDBC_URL);
         if (jdbcUrl == null || jdbcUrl.isEmpty()) {
             return null;
@@ -171,7 +185,7 @@ public class RESTCatalogServer {
         config.setPoolName("paimon-metadata");
 
         LOG.info("Metadata store enabled with JDBC URL: {}", jdbcUrl);
-        return new JdbcMetadataStore(new HikariDataSource(config));
+        return new JdbcMetadataStore(new HikariDataSource(config), jdbcCatalog);
     }
 
     public static void main(String[] args) throws Exception {
