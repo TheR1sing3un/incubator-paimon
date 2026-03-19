@@ -58,9 +58,8 @@ import java.util.Map;
  * <p>Each handler registers its own routes via {@link RouteRegistrar#registerRoutes}, keeping
  * routing logic decentralized and easy to extend.
  *
- * <p>When a {@link MetadataStore} is provided, Git-style metadata endpoints (commits, schemas,
- * diff) are additionally registered alongside the standard Paimon REST API. All mutating operations
- * (POST, DELETE) are automatically audit-logged.
+ * <p>When a {@link MetadataStore} is provided, all mutating operations (POST, DELETE) are
+ * automatically audit-logged.
  */
 public class RouteDispatcher {
 
@@ -92,21 +91,19 @@ public class RouteDispatcher {
         registrars.add(new ViewHandler(catalog));
         registrars.add(new FunctionHandler(catalog));
         registrars.add(new DatabaseHandler(catalog));
-        registrars.add(new SnapshotHandler(catalog, metadataStore));
+        registrars.add(new SnapshotHandler(catalog));
         registrars.add(new PartitionHandler(catalog));
         registrars.add(new BranchHandler(catalog));
         registrars.add(new TagHandler(catalog));
         registrars.add(new ConsumerHandler(catalog));
         registrars.add(new TableTokenHandler(catalog));
 
-        // Extended handlers (schema requires AbstractCatalog, commits require MetadataStore)
+        // Extended handlers
         Catalog rootCatalog = DelegateCatalog.rootCatalog(catalog);
         if (rootCatalog instanceof AbstractCatalog) {
             registrars.add(new SchemaHandler((AbstractCatalog) rootCatalog));
         }
-        if (metadataStore != null) {
-            registrars.add(new CommitHandler(catalog, metadataStore));
-        }
+        registrars.add(new CommitHandler(catalog));
 
         for (RouteRegistrar registrar : registrars) {
             registrar.registerRoutes(router, prefix);
@@ -126,9 +123,7 @@ public class RouteDispatcher {
         }
 
         boolean shouldAudit =
-                metadataStore != null
-                        && isMutatingMethod(method)
-                        && !isSnapshotCommitEndpoint(match.matchedPattern());
+                metadataStore != null && isMutatingMethod(method);
 
         RouteResult result;
         try {
@@ -153,14 +148,6 @@ public class RouteDispatcher {
 
     private static boolean isMutatingMethod(String method) {
         return "POST".equals(method) || "DELETE".equals(method);
-    }
-
-    /**
-     * Snapshot commit endpoint handles its own transactional audit via saveCommitWithLog. Only
-     * excludes the exact snapshot commit path, NOT the Git-style /commits/* metadata endpoints.
-     */
-    private static boolean isSnapshotCommitEndpoint(String pattern) {
-        return pattern.endsWith("/commit");
     }
 
     private void auditLog(
@@ -243,9 +230,6 @@ public class RouteDispatcher {
         if (pattern.contains("/tags")) {
             return "TAG";
         }
-        if (pattern.contains("/commits")) {
-            return "COMMIT";
-        }
         if (pattern.contains("/views")) {
             return "VIEW";
         }
@@ -257,6 +241,9 @@ public class RouteDispatcher {
         }
         if (pattern.contains("/consumers")) {
             return "CONSUMER";
+        }
+        if (pattern.contains("/commits")) {
+            return "COMMIT";
         }
         if (pattern.contains("/tables")
                 || pattern.contains("/commit")
@@ -274,9 +261,9 @@ public class RouteDispatcher {
         String table = vars.get("table");
         String branch = vars.get("branch");
         String tag = vars.get("tag");
+        String commitId = vars.get("commitId");
         String view = vars.get("view");
         String function = vars.get("function");
-        String commitId = vars.get("commitId");
 
         StringBuilder sb = new StringBuilder();
         if (database != null) {

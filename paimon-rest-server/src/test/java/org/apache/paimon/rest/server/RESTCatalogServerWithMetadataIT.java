@@ -20,22 +20,9 @@ package org.apache.paimon.rest.server;
 
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.FileSystemCatalog;
-import org.apache.paimon.catalog.Identifier;
-import org.apache.paimon.data.BinaryString;
-import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.fs.local.LocalFileIO;
 import org.apache.paimon.options.CatalogOptions;
 import org.apache.paimon.options.Options;
-import org.apache.paimon.rest.server.metadata.handlers.CommitHandler;
-import org.apache.paimon.rest.server.metadata.model.CommitInfo;
-import org.apache.paimon.schema.Schema;
-import org.apache.paimon.table.Table;
-import org.apache.paimon.table.sink.BatchTableCommit;
-import org.apache.paimon.table.sink.BatchTableWrite;
-import org.apache.paimon.table.sink.BatchWriteBuilder;
-import org.apache.paimon.table.sink.CommitMessage;
-import org.apache.paimon.types.DataTypes;
-import org.apache.paimon.utils.JsonSerdeUtil;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
@@ -55,13 +42,12 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
-import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Integration tests for {@link RESTCatalogServer} with MetadataStore enabled. Tests commit
- * endpoints and audit logging using H2 in MySQL compatibility mode.
+ * Integration tests for {@link RESTCatalogServer} with MetadataStore enabled. Tests audit logging
+ * using H2 in MySQL compatibility mode.
  */
 class RESTCatalogServerWithMetadataIT {
 
@@ -88,24 +74,6 @@ class RESTCatalogServerWithMetadataIT {
         try (Connection conn = metadataDs.getConnection();
                 Statement stmt = conn.createStatement()) {
             stmt.execute(
-                    "CREATE TABLE IF NOT EXISTS paimon_commit ("
-                            + "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
-                            + "database_name VARCHAR(256) NOT NULL, "
-                            + "table_name VARCHAR(256) NOT NULL, "
-                            + "commit_id VARCHAR(64) NOT NULL, "
-                            + "branch_name VARCHAR(128) NOT NULL, "
-                            + "parent_id VARCHAR(64) NOT NULL, "
-                            + "merge_parent_id VARCHAR(64) NULL, "
-                            + "committer VARCHAR(256) NOT NULL, "
-                            + "message VARCHAR(2048) NULL, "
-                            + "snapshot_id BIGINT NULL, "
-                            + "metadata_json CLOB NULL, "
-                            + "status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE', "
-                            + "created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3), "
-                            + "updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3), "
-                            + "UNIQUE (database_name, table_name, commit_id)"
-                            + ")");
-            stmt.execute(
                     "CREATE TABLE IF NOT EXISTS paimon_op_log ("
                             + "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
                             + "database_name VARCHAR(256) NOT NULL, "
@@ -119,7 +87,7 @@ class RESTCatalogServerWithMetadataIT {
                             + "result_json CLOB NULL, "
                             + "status VARCHAR(16) NOT NULL, "
                             + "error_message VARCHAR(2048) NULL, "
-                            + "created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)"
+                            + "created_at BIGINT NOT NULL"
                             + ")");
         }
 
@@ -151,123 +119,6 @@ class RESTCatalogServerWithMetadataIT {
         if (metadataDs != null && !metadataDs.isClosed()) {
             metadataDs.close();
         }
-    }
-
-    @Test
-    void testCommitEndpointsWithPrepopulatedData() throws Exception {
-        // Create a table and write data via Catalog API
-        createTestTableWithData("commit_db", "commit_tbl");
-
-        // Insert commit records directly into metadata store
-        insertCommitRecord("commit_db", "commit_tbl", "c001", "main", "c001", "alice", "first", 1L);
-
-        // GET /commits should return the commit
-        String tablePath = "/v1/test-prefix/databases/commit_db/tables/commit_tbl";
-        String listResponse = httpGet(tablePath + "/commits");
-        CommitHandler.ListCommitsResponse listResult =
-                JsonSerdeUtil.fromJson(listResponse, CommitHandler.ListCommitsResponse.class);
-        assertThat(listResult.commits()).hasSize(1);
-        assertThat(listResult.commits().get(0).commitId()).isEqualTo("c001");
-
-        // Clean up
-        httpDelete(tablePath);
-        httpDelete("/v1/test-prefix/databases/commit_db");
-    }
-
-    @Test
-    void testGetCommitEndpoint() throws Exception {
-        createTestTableWithData("get_commit_db", "tbl");
-        insertCommitRecord(
-                "get_commit_db", "tbl", "c100", "main", "c100", "alice", "test commit", 1L);
-
-        String tablePath = "/v1/test-prefix/databases/get_commit_db/tables/tbl";
-        String response = httpGet(tablePath + "/commits/c100");
-        CommitInfo commit = JsonSerdeUtil.fromJson(response, CommitInfo.class);
-        assertThat(commit).isNotNull();
-        assertThat(commit.commitId()).isEqualTo("c100");
-        assertThat(commit.branch()).isEqualTo("main");
-        assertThat(commit.committer()).isEqualTo("alice");
-        assertThat(commit.message()).isEqualTo("test commit");
-        assertThat(commit.snapshotId()).isEqualTo(1L);
-
-        httpDelete(tablePath);
-        httpDelete("/v1/test-prefix/databases/get_commit_db");
-    }
-
-    @Test
-    void testCommitNotFound() throws Exception {
-        createTestTableWithData("cnf_db", "tbl");
-        String tablePath = "/v1/test-prefix/databases/cnf_db/tables/tbl";
-
-        int status = httpGetStatus(tablePath + "/commits/nonexistent");
-        assertThat(status).isEqualTo(404);
-
-        httpDelete(tablePath);
-        httpDelete("/v1/test-prefix/databases/cnf_db");
-    }
-
-    @Test
-    void testListCommitsByBranch() throws Exception {
-        createTestTableWithData("branch_commit_db", "tbl");
-        insertCommitRecord(
-                "branch_commit_db", "tbl", "c1", "main", "c1", "alice", "main commit", 1L);
-        insertCommitRecord("branch_commit_db", "tbl", "c2", "dev", "c2", "bob", "dev commit", 1L);
-
-        String tablePath = "/v1/test-prefix/databases/branch_commit_db/tables/tbl";
-        String response = httpGet(tablePath + "/commits?branch=main");
-        CommitHandler.ListCommitsResponse listResult =
-                JsonSerdeUtil.fromJson(response, CommitHandler.ListCommitsResponse.class);
-        assertThat(listResult.commits()).hasSize(1);
-        assertThat(listResult.commits().get(0).commitId()).isEqualTo("c1");
-
-        httpDelete(tablePath);
-        httpDelete("/v1/test-prefix/databases/branch_commit_db");
-    }
-
-    @Test
-    void testListCommitsWithPagination() throws Exception {
-        createTestTableWithData("page_commit_db", "tbl");
-        insertCommitRecord("page_commit_db", "tbl", "c1", "main", "c1", "alice", "first", 1L);
-        Thread.sleep(10);
-        insertCommitRecord("page_commit_db", "tbl", "c2", "main", "c1", "alice", "second", 1L);
-        Thread.sleep(10);
-        insertCommitRecord("page_commit_db", "tbl", "c3", "main", "c2", "alice", "third", 1L);
-
-        String tablePath = "/v1/test-prefix/databases/page_commit_db/tables/tbl";
-        String response = httpGet(tablePath + "/commits?maxResults=2");
-        CommitHandler.ListCommitsResponse listResult =
-                JsonSerdeUtil.fromJson(response, CommitHandler.ListCommitsResponse.class);
-        assertThat(listResult.commits()).hasSize(2);
-        assertThat(listResult.nextPageToken()).isNotNull();
-
-        httpDelete(tablePath);
-        httpDelete("/v1/test-prefix/databases/page_commit_db");
-    }
-
-    @Test
-    void testListCommitsMaxResultsZero() throws Exception {
-        createTestTableWithData("zero_page_db", "tbl");
-        insertCommitRecord("zero_page_db", "tbl", "c1", "main", "c1", "alice", "first", 1L);
-
-        String tablePath = "/v1/test-prefix/databases/zero_page_db/tables/tbl";
-        int status = httpGetStatus(tablePath + "/commits?maxResults=0");
-        assertThat(status).isEqualTo(400);
-
-        httpDelete(tablePath);
-        httpDelete("/v1/test-prefix/databases/zero_page_db");
-    }
-
-    @Test
-    void testListCommitsMaxResultsNegative() throws Exception {
-        createTestTableWithData("neg_page_db", "tbl");
-        insertCommitRecord("neg_page_db", "tbl", "c1", "main", "c1", "alice", "first", 1L);
-
-        String tablePath = "/v1/test-prefix/databases/neg_page_db/tables/tbl";
-        int status = httpGetStatus(tablePath + "/commits?maxResults=-1");
-        assertThat(status).isEqualTo(400);
-
-        httpDelete(tablePath);
-        httpDelete("/v1/test-prefix/databases/neg_page_db");
     }
 
     @Test

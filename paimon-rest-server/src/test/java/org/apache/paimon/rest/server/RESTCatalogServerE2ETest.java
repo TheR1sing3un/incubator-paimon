@@ -26,14 +26,13 @@ import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.fs.local.LocalFileIO;
 import org.apache.paimon.options.CatalogOptions;
 import org.apache.paimon.options.Options;
-import org.apache.paimon.rest.server.metadata.handlers.CommitHandler;
-import org.apache.paimon.rest.server.metadata.model.CommitInfo;
+import org.apache.paimon.schema.Schema;
 import org.apache.paimon.table.Table;
 import org.apache.paimon.table.sink.BatchTableCommit;
 import org.apache.paimon.table.sink.BatchTableWrite;
 import org.apache.paimon.table.sink.BatchWriteBuilder;
 import org.apache.paimon.table.sink.CommitMessage;
-import org.apache.paimon.utils.JsonSerdeUtil;
+import org.apache.paimon.types.DataTypes;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
@@ -74,10 +73,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>Phase 1: Server config & health check
  *   <li>Phase 2: Database lifecycle (create, list, get, alter, drop)
  *   <li>Phase 3: Table lifecycle (create via REST, list, get, write data, schema history)
- *   <li>Phase 4: Commit metadata (pre-populate, list, get, pagination, filter)
- *   <li>Phase 5: Commit edge cases (maxResults=0/-1, nonexistent commit, reset)
- *   <li>Phase 6: Audit log verification (success + failure entries)
- *   <li>Phase 7: Cleanup & final audit trail
+ *   <li>Phase 4: Commit endpoints (list, get, pagination, error handling)
+ *   <li>Phase 5: Audit log verification (success + failure entries)
+ *   <li>Phase 6: Cleanup & final audit trail
  * </ol>
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
@@ -118,37 +116,10 @@ class RESTCatalogServerE2ETest {
                             + "state VARCHAR(16) NOT NULL DEFAULT 'ACTIVE', "
                             + "properties CLOB NULL, "
                             + "created_by VARCHAR(64) NOT NULL, "
-                            + "created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3), "
-                            + "updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3), "
+                            + "created_at BIGINT NOT NULL, "
+                            + "updated_at BIGINT NOT NULL, "
                             + "UNIQUE (database_name, table_name)"
                             + ")");
-
-            // paimon_commit (commit DAG)
-            stmt.execute(
-                    "CREATE TABLE IF NOT EXISTS paimon_commit ("
-                            + "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
-                            + "database_name VARCHAR(256) NOT NULL, "
-                            + "table_name VARCHAR(256) NOT NULL, "
-                            + "commit_id VARCHAR(64) NOT NULL, "
-                            + "branch_name VARCHAR(128) NOT NULL, "
-                            + "parent_id VARCHAR(64) NOT NULL, "
-                            + "merge_parent_id VARCHAR(64) NULL, "
-                            + "committer VARCHAR(256) NOT NULL, "
-                            + "message VARCHAR(2048) NULL, "
-                            + "snapshot_id BIGINT NULL, "
-                            + "metadata_json CLOB NULL, "
-                            + "status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE', "
-                            + "created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3), "
-                            + "updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3), "
-                            + "UNIQUE (database_name, table_name, commit_id)"
-                            + ")");
-            // Indexes (H2 supports CREATE INDEX)
-            stmt.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_tbl_branch_time "
-                            + "ON paimon_commit (database_name, table_name, branch_name, created_at)");
-            stmt.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_snapshot "
-                            + "ON paimon_commit (database_name, table_name, snapshot_id)");
 
             // paimon_op_log (audit log)
             stmt.execute(
@@ -165,7 +136,7 @@ class RESTCatalogServerE2ETest {
                             + "result_json CLOB NULL, "
                             + "status VARCHAR(16) NOT NULL, "
                             + "error_message VARCHAR(2048) NULL, "
-                            + "created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)"
+                            + "created_at BIGINT NOT NULL"
                             + ")");
             stmt.execute(
                     "CREATE INDEX IF NOT EXISTS idx_tbl_time "
@@ -454,123 +425,53 @@ class RESTCatalogServerE2ETest {
     }
 
     // ====================================================================
-    // Phase 4: Commit Metadata (Git-style commit DAG)
+    // Phase 4: Commit Endpoints (backed by Catalog snapshots)
     // ====================================================================
 
     @Test
     @Order(30)
-    void phase4_populateCommitDAG() throws Exception {
-        // Simulate a commit DAG: c001 -> c002 -> c003 on main, c004 on dev
-        insertCommitRecord(
-                "e2e_db", "users", "c001", "main", "c001", "alice", "initial commit", 1L);
-        Thread.sleep(10);
-        insertCommitRecord("e2e_db", "users", "c002", "main", "c001", "alice", "add index", 1L);
-        Thread.sleep(10);
-        insertCommitRecord("e2e_db", "users", "c003", "main", "c002", "bob", "add age column", 1L);
-        Thread.sleep(10);
-        insertCommitRecord("e2e_db", "users", "c004", "dev", "c001", "charlie", "dev feature", 1L);
+    void phase4_listCommits() throws Exception {
+        // After phase3_writeDataToTable, there should be at least 1 snapshot
+        String response = httpGet("/v1/paimon/databases/e2e_db/tables/users/commits");
+        assertThat(response).contains("\"commits\"");
+        assertThat(response).contains("\"snapshotId\"");
+        assertThat(response).contains("\"committer\"");
     }
 
     @Test
     @Order(31)
-    void phase4_listAllCommits() throws Exception {
-        String response = httpGet("/v1/paimon/databases/e2e_db/tables/users/commits");
-        CommitHandler.ListCommitsResponse result =
-                JsonSerdeUtil.fromJson(response, CommitHandler.ListCommitsResponse.class);
-        assertThat(result.commits()).hasSize(4);
-        // Should be ordered by created_at DESC
-        assertThat(result.commits().get(0).commitId()).isEqualTo("c004");
-        assertThat(result.commits().get(3).commitId()).isEqualTo("c001");
+    void phase4_getCommitBySnapshotId() throws Exception {
+        // Snapshot ID 1 should exist after the data write
+        String response = httpGet("/v1/paimon/databases/e2e_db/tables/users/commits/1");
+        assertThat(response).contains("\"snapshotId\"");
+        assertThat(response).contains("\"commitKind\"");
+        assertThat(response).contains("\"timeMillis\"");
     }
 
     @Test
     @Order(32)
-    void phase4_listCommitsByBranch() throws Exception {
-        String response = httpGet("/v1/paimon/databases/e2e_db/tables/users/commits?branch=main");
-        CommitHandler.ListCommitsResponse result =
-                JsonSerdeUtil.fromJson(response, CommitHandler.ListCommitsResponse.class);
-        assertThat(result.commits()).hasSize(3);
-        for (CommitInfo c : result.commits()) {
-            assertThat(c.branch()).isEqualTo("main");
-        }
+    void phase4_commitNotFoundReturns404() throws Exception {
+        int status = httpGetStatus("/v1/paimon/databases/e2e_db/tables/users/commits/99999");
+        assertThat(status).isEqualTo(404);
     }
 
     @Test
     @Order(33)
-    void phase4_listCommitsDevBranch() throws Exception {
-        String response = httpGet("/v1/paimon/databases/e2e_db/tables/users/commits?branch=dev");
-        CommitHandler.ListCommitsResponse result =
-                JsonSerdeUtil.fromJson(response, CommitHandler.ListCommitsResponse.class);
-        assertThat(result.commits()).hasSize(1);
-        assertThat(result.commits().get(0).commitId()).isEqualTo("c004");
-        assertThat(result.commits().get(0).committer()).isEqualTo("charlie");
+    void phase4_listCommitsWithPagination() throws Exception {
+        String response = httpGet("/v1/paimon/databases/e2e_db/tables/users/commits?maxResults=1");
+        assertThat(response).contains("\"commits\"");
     }
 
     @Test
     @Order(34)
-    void phase4_getSpecificCommit() throws Exception {
-        String response = httpGet("/v1/paimon/databases/e2e_db/tables/users/commits/c002");
-        CommitInfo commit = JsonSerdeUtil.fromJson(response, CommitInfo.class);
-        assertThat(commit.commitId()).isEqualTo("c002");
-        assertThat(commit.parentId()).isEqualTo("c001");
-        assertThat(commit.branch()).isEqualTo("main");
-        assertThat(commit.committer()).isEqualTo("alice");
-        assertThat(commit.message()).isEqualTo("add index");
-        assertThat(commit.status()).isEqualTo("ACTIVE");
-    }
-
-    @Test
-    @Order(35)
-    void phase4_paginationPage1() throws Exception {
-        String response = httpGet("/v1/paimon/databases/e2e_db/tables/users/commits?maxResults=2");
-        CommitHandler.ListCommitsResponse result =
-                JsonSerdeUtil.fromJson(response, CommitHandler.ListCommitsResponse.class);
-        assertThat(result.commits()).hasSize(2);
-        assertThat(result.nextPageToken()).isNotNull();
-    }
-
-    @Test
-    @Order(36)
-    void phase4_paginationPage2() throws Exception {
-        // Get first page
-        String page1Response =
-                httpGet("/v1/paimon/databases/e2e_db/tables/users/commits?maxResults=2");
-        CommitHandler.ListCommitsResponse page1 =
-                JsonSerdeUtil.fromJson(page1Response, CommitHandler.ListCommitsResponse.class);
-        String nextToken = page1.nextPageToken();
-        assertThat(nextToken).isNotNull();
-
-        // Get second page
-        String page2Response =
-                httpGet(
-                        "/v1/paimon/databases/e2e_db/tables/users/commits?maxResults=2&pageToken="
-                                + nextToken);
-        CommitHandler.ListCommitsResponse page2 =
-                JsonSerdeUtil.fromJson(page2Response, CommitHandler.ListCommitsResponse.class);
-        assertThat(page2.commits()).isNotEmpty();
-
-        // Verify no overlap between pages
-        for (CommitInfo c2 : page2.commits()) {
-            for (CommitInfo c1 : page1.commits()) {
-                assertThat(c2.commitId()).isNotEqualTo(c1.commitId());
-            }
-        }
-    }
-
-    // ====================================================================
-    // Phase 5: Commit Edge Cases & Error Handling
-    // ====================================================================
-
-    @Test
-    @Order(40)
-    void phase5_maxResultsZeroReturns400() throws Exception {
+    void phase4_maxResultsZeroReturns400() throws Exception {
         int status = httpGetStatus("/v1/paimon/databases/e2e_db/tables/users/commits?maxResults=0");
         assertThat(status).isEqualTo(400);
     }
 
     @Test
-    @Order(41)
-    void phase5_maxResultsNegativeReturns400() throws Exception {
+    @Order(35)
+    void phase4_maxResultsNegativeReturns400() throws Exception {
         int status =
                 httpGetStatus("/v1/paimon/databases/e2e_db/tables/users/commits?maxResults=-1");
         assertThat(status).isEqualTo(400);
@@ -626,12 +527,12 @@ class RESTCatalogServerE2ETest {
     }
 
     // ====================================================================
-    // Phase 6: Audit Log Verification
+    // Phase 5: Audit Log Verification
     // ====================================================================
 
     @Test
     @Order(50)
-    void phase6_auditLogHasSuccessEntries() throws Exception {
+    void phase5_auditLogHasSuccessEntries() throws Exception {
         try (Connection conn = metadataDs.getConnection();
                 PreparedStatement ps =
                         conn.prepareStatement(
@@ -659,7 +560,7 @@ class RESTCatalogServerE2ETest {
 
     @Test
     @Order(51)
-    void phase6_auditLogOnFailedOperation() throws Exception {
+    void phase5_auditLogOnFailedOperation() throws Exception {
         // Clear audit log for clean test
         try (Connection conn = metadataDs.getConnection();
                 Statement stmt = conn.createStatement()) {
@@ -688,7 +589,7 @@ class RESTCatalogServerE2ETest {
 
     @Test
     @Order(52)
-    void phase6_auditLogDuplicateDbCreate() throws Exception {
+    void phase5_auditLogDuplicateDbCreate() throws Exception {
         // Duplicate database creation should produce FAILED audit
         try (Connection conn = metadataDs.getConnection();
                 Statement stmt = conn.createStatement()) {
@@ -735,19 +636,19 @@ class RESTCatalogServerE2ETest {
     }
 
     // ====================================================================
-    // Phase 7: Cleanup & Final Verification
+    // Phase 6: Cleanup & Final Verification
     // ====================================================================
 
     @Test
     @Order(60)
-    void phase7_dropTable() throws Exception {
+    void phase6_dropTable() throws Exception {
         int status = httpDeleteStatus("/v1/paimon/databases/e2e_db/tables/users");
         assertThat(status).isEqualTo(200);
     }
 
     @Test
     @Order(61)
-    void phase7_dropTableAuditLog() throws Exception {
+    void phase6_dropTableAuditLog() throws Exception {
         try (Connection conn = metadataDs.getConnection();
                 PreparedStatement ps =
                         conn.prepareStatement(
@@ -763,14 +664,14 @@ class RESTCatalogServerE2ETest {
 
     @Test
     @Order(62)
-    void phase7_dropDatabase() throws Exception {
+    void phase6_dropDatabase() throws Exception {
         int status = httpDeleteStatus("/v1/paimon/databases/e2e_db");
         assertThat(status).isEqualTo(200);
     }
 
     @Test
     @Order(63)
-    void phase7_dropDatabaseAuditLog() throws Exception {
+    void phase6_dropDatabaseAuditLog() throws Exception {
         try (Connection conn = metadataDs.getConnection();
                 PreparedStatement ps =
                         conn.prepareStatement(
@@ -785,7 +686,7 @@ class RESTCatalogServerE2ETest {
 
     @Test
     @Order(64)
-    void phase7_fullAuditTrailSummary() throws Exception {
+    void phase6_fullAuditTrailSummary() throws Exception {
         try (Connection conn = metadataDs.getConnection();
                 PreparedStatement ps =
                         conn.prepareStatement(
@@ -807,35 +708,6 @@ class RESTCatalogServerE2ETest {
     // ====================================================================
     // Helper Methods
     // ====================================================================
-
-    private void insertCommitRecord(
-            String database,
-            String table,
-            String commitId,
-            String branch,
-            String parentId,
-            String committer,
-            String message,
-            Long snapshotId)
-            throws Exception {
-        try (Connection conn = metadataDs.getConnection();
-                PreparedStatement ps =
-                        conn.prepareStatement(
-                                "INSERT INTO paimon_commit "
-                                        + "(database_name, table_name, commit_id, branch_name, "
-                                        + "parent_id, committer, message, snapshot_id, status) "
-                                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')")) {
-            ps.setString(1, database);
-            ps.setString(2, table);
-            ps.setString(3, commitId);
-            ps.setString(4, branch);
-            ps.setString(5, parentId);
-            ps.setString(6, committer);
-            ps.setString(7, message);
-            ps.setLong(8, snapshotId);
-            ps.executeUpdate();
-        }
-    }
 
     // -- HTTP helpers --
 
