@@ -18,7 +18,6 @@
 
 package org.apache.paimon.rest.server.handlers;
 
-import org.apache.paimon.CoreOptions;
 import org.apache.paimon.PagedList;
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.catalog.Catalog;
@@ -33,21 +32,14 @@ import org.apache.paimon.rest.responses.ListSnapshotsResponse;
 import org.apache.paimon.rest.server.RouteRegistrar;
 import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
-import org.apache.paimon.rest.server.metadata.MetadataStore;
-import org.apache.paimon.rest.server.metadata.model.CommitInfo;
 import org.apache.paimon.table.TableSnapshot;
 import org.apache.paimon.utils.JsonSerdeUtil;
 import org.apache.paimon.utils.SnapshotNotExistException;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import javax.annotation.Nullable;
 
-import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
-import java.util.UUID;
 
 import static org.apache.paimon.rest.server.handlers.HandlerUtils.parseMaxResults;
 import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
@@ -55,14 +47,10 @@ import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
 /** Handler for snapshot-related REST endpoints. */
 public class SnapshotHandler implements RouteRegistrar {
 
-    private static final Logger LOG = LoggerFactory.getLogger(SnapshotHandler.class);
-
     private final Catalog catalog;
-    private final MetadataStore metadataStore;
 
-    public SnapshotHandler(Catalog catalog, MetadataStore metadataStore) {
+    public SnapshotHandler(Catalog catalog) {
         this.catalog = catalog;
-        this.metadataStore = metadataStore;
     }
 
     @Override
@@ -146,110 +134,7 @@ public class SnapshotHandler implements RouteRegistrar {
                         request.getTableId(),
                         request.getSnapshot(),
                         request.getStatistics());
-        if (success) {
-            saveCommit(identifier, request);
-        }
         return new CommitTableResponse(success);
-    }
-
-    private static final String PROP_COMMITTER =
-            CoreOptions.SNAPSHOT_COMMIT_PREFIX + CoreOptions.COMMIT_COMMITTER.key();
-    private static final String PROP_MESSAGE =
-            CoreOptions.SNAPSHOT_COMMIT_PREFIX + CoreOptions.COMMIT_MESSAGE.key();
-    private static final String PROP_MERGE_PARENT_ID =
-            CoreOptions.SNAPSHOT_COMMIT_PREFIX + CoreOptions.COMMIT_MERGE_PARENT_ID.key();
-    private static final String PROP_METADATA_PREFIX =
-            CoreOptions.SNAPSHOT_COMMIT_PREFIX + CoreOptions.COMMIT_METADATA_PREFIX;
-
-    void saveCommit(Identifier identifier, CommitTableRequest request) {
-        try {
-            Snapshot snapshot = request.getSnapshot();
-            Map<String, String> snapshotProps = snapshot.properties();
-            String database = identifier.getDatabaseName();
-            String table = identifier.getTableName();
-            String branch = identifier.getBranchNameOrDefault();
-
-            // 1. committer: snapshot.properties > request field > "unknown"
-            String committer = getProperty(snapshotProps, PROP_COMMITTER);
-            if (committer == null || committer.isEmpty()) {
-                committer = request.getCommitter();
-            }
-            if (committer == null || committer.isEmpty()) {
-                committer = "unknown";
-            }
-
-            // 2. message: snapshot.properties > request field
-            String message = getProperty(snapshotProps, PROP_MESSAGE);
-            if (message == null) {
-                message = request.getMessage();
-            }
-
-            // 3. mergeParentId: from snapshot.properties
-            String mergeParentId = getProperty(snapshotProps, PROP_MERGE_PARENT_ID);
-
-            // 4. metadata: all paimon.commit.metadata.* keys
-            Map<String, Object> metadata = extractCommitMetadata(snapshotProps);
-
-            CommitInfo parentCommit = metadataStore.getLatestCommit(database, table, branch);
-            String parentId = parentCommit != null ? parentCommit.commitId() : null;
-
-            String commitId = UUID.randomUUID().toString().replace("-", "");
-            // First commit's parentId is itself
-            if (parentId == null) {
-                parentId = commitId;
-            }
-            CommitInfo commitInfo =
-                    new CommitInfo(
-                            commitId,
-                            branch,
-                            parentId,
-                            mergeParentId,
-                            committer,
-                            message,
-                            snapshot.id(),
-                            metadata.isEmpty() ? null : metadata,
-                            "ACTIVE",
-                            null);
-            metadataStore.saveCommitWithLog(
-                    database,
-                    table,
-                    commitInfo,
-                    committer,
-                    committer,
-                    "COMMIT",
-                    commitId,
-                    null,
-                    JsonSerdeUtil.toJson(commitInfo));
-        } catch (RuntimeException e) {
-            LOG.error(
-                    "Failed to save commit metadata for {} (non-recoverable)",
-                    identifier.getFullName(),
-                    e);
-        } catch (Exception e) {
-            LOG.warn("Failed to save commit metadata for {}", identifier.getFullName(), e);
-        }
-    }
-
-    @Nullable
-    static String getProperty(@Nullable Map<String, String> props, String fullKey) {
-        if (props == null) {
-            return null;
-        }
-        return props.get(fullKey);
-    }
-
-    static Map<String, Object> extractCommitMetadata(@Nullable Map<String, String> props) {
-        Map<String, Object> metadata = new HashMap<>();
-        if (props == null) {
-            return metadata;
-        }
-        for (Map.Entry<String, String> entry : props.entrySet()) {
-            if (entry.getKey().startsWith(PROP_METADATA_PREFIX)) {
-                String suffix = entry.getKey().substring(PROP_METADATA_PREFIX.length());
-                metadata.put(suffix, entry.getValue());
-            }
-        }
-        return metadata;
     }
 
     public void rollbackTable(Identifier identifier, String body) throws Exception {

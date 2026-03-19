@@ -18,13 +18,14 @@
 
 package org.apache.paimon.rest.server.metadata.handlers;
 
+import org.apache.paimon.PagedList;
+import org.apache.paimon.Snapshot;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.rest.RESTResponse;
 import org.apache.paimon.rest.server.RouteRegistrar;
 import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
-import org.apache.paimon.rest.server.metadata.MetadataStore;
 import org.apache.paimon.rest.server.metadata.model.CommitInfo;
 import org.apache.paimon.table.Instant;
 
@@ -39,24 +40,25 @@ import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.stream.Collectors;
 
 import static org.apache.paimon.rest.server.handlers.HandlerUtils.getMaxResults;
+import static org.apache.paimon.rest.server.handlers.HandlerUtils.getPageToken;
 import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
 
 /**
- * Handler for Git-style commit endpoints.
+ * Handler for commit endpoints backed by the {@link Catalog} API.
  *
- * <p>Commits wrap Paimon snapshots with additional Git metadata (message, parents, committer)
- * stored in MySQL via {@link MetadataStore}.
+ * <p>Commits are derived from Paimon snapshots. The snapshot ID serves as the commit identifier.
+ * Committer, message, and custom metadata are extracted from Snapshot.properties.
  */
 public class CommitHandler implements RouteRegistrar {
 
     private final Catalog catalog;
-    private final MetadataStore metadataStore;
 
-    public CommitHandler(Catalog catalog, MetadataStore metadataStore) {
+    public CommitHandler(Catalog catalog) {
         this.catalog = catalog;
-        this.metadataStore = metadataStore;
     }
 
     @Override
@@ -77,72 +79,61 @@ public class CommitHandler implements RouteRegistrar {
         router.get(
                 commitByIdPath,
                 (auth, vars, params, body) -> {
-                    CommitInfo result =
-                            getCommit(
-                                    vars.get("database"), vars.get("table"), vars.get("commitId"));
+                    Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
+                    CommitInfo result = getCommit(id, vars.get("commitId"));
                     return new RouteResult(200, result);
                 });
         router.get(
                 commitsPath,
                 (auth, vars, params, body) -> {
-                    RESTResponse response =
-                            listCommits(vars.get("database"), vars.get("table"), params);
+                    Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
+                    RESTResponse response = listCommits(id, params);
                     return new RouteResult(200, response);
                 });
     }
 
-    public CommitInfo getCommit(String database, String table, String commitId) throws Exception {
-        CommitInfo commit = metadataStore.getCommit(database, table, commitId);
-        if (commit == null) {
+    public CommitInfo getCommit(Identifier identifier, String commitId) throws Exception {
+        Optional<Snapshot> snapshot = catalog.loadSnapshot(identifier, commitId);
+        if (!snapshot.isPresent()) {
             throw new CommitNotExistException(
-                    "Commit not found: " + commitId + " in " + database + "." + table);
+                    "Commit not found: " + commitId + " in " + identifier.getFullName());
         }
-        return commit;
+        return CommitInfo.fromSnapshot(snapshot.get());
     }
 
-    public RESTResponse listCommits(String database, String table, Map<String, String> params)
+    public RESTResponse listCommits(Identifier identifier, Map<String, String> params)
             throws Exception {
-        String branch = params.get("branch");
-        String pageToken = params.get("pageToken");
         int effectiveLimit = getMaxResults(params);
-        boolean includeAbandoned = "true".equalsIgnoreCase(params.get("includeAbandoned"));
+        String pageToken = getPageToken(params);
+
+        PagedList<Snapshot> pagedResult =
+                catalog.listSnapshotsPaged(identifier, effectiveLimit, pageToken);
 
         List<CommitInfo> commits =
-                metadataStore.listCommits(
-                        database, table, branch, includeAbandoned, effectiveLimit, pageToken);
-        String nextToken = null;
-        if (commits.size() > effectiveLimit) {
-            commits = new ArrayList<>(commits.subList(0, effectiveLimit));
-            nextToken = commits.get(commits.size() - 1).commitId();
-        }
-        return new ListCommitsResponse(commits, nextToken);
+                pagedResult.getElements().stream()
+                        .map(CommitInfo::fromSnapshot)
+                        .collect(Collectors.toList());
+
+        return new ListCommitsResponse(commits, pagedResult.getNextPageToken());
     }
 
     public CommitInfo resetCommit(Identifier identifier, String commitId) throws Exception {
-        String database = identifier.getDatabaseName();
-        String table = identifier.getObjectName();
-
-        // Look up the target commit to reset to
-        CommitInfo targetCommit = metadataStore.getCommit(database, table, commitId);
-        if (targetCommit == null) {
+        // Look up the target snapshot
+        Optional<Snapshot> snapshot = catalog.loadSnapshot(identifier, commitId);
+        if (!snapshot.isPresent()) {
             throw new CommitNotExistException("Commit not found: " + commitId);
         }
 
-        // Rollback Paimon table to the snapshot associated with this commit
-        if (targetCommit.snapshotId() != null) {
-            Instant instant = new Instant.SnapshotInstant(targetCommit.snapshotId());
-            catalog.rollbackTo(identifier, instant, null);
-        }
+        // Rollback Paimon table to this snapshot
+        Instant instant = new Instant.SnapshotInstant(snapshot.get().id());
+        catalog.rollbackTo(identifier, instant, null);
 
-        // Mark all commits after the target as ABANDONED
-        metadataStore.abandonCommitsAfter(database, table, targetCommit.branch(), commitId);
-
-        return targetCommit;
+        return CommitInfo.fromSnapshot(snapshot.get());
     }
 
     // ----- Request / Response types -----
 
-    /** Exception thrown when a commit does not exist. */
+    /** Exception thrown when a commit (snapshot) does not exist. */
     public static class CommitNotExistException extends RuntimeException {
         public CommitNotExistException(String message) {
             super(message);
