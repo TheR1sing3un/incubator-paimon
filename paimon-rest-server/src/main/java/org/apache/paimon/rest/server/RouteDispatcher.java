@@ -122,8 +122,7 @@ public class RouteDispatcher {
             return new RouteResult(404, null);
         }
 
-        boolean shouldAudit =
-                metadataStore != null && isMutatingMethod(method);
+        boolean shouldAudit = metadataStore != null && isMutatingMethod(method);
 
         RouteResult result;
         try {
