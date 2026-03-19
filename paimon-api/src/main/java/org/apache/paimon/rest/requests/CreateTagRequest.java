@@ -34,6 +34,7 @@ public class CreateTagRequest implements RESTRequest {
     private static final String FIELD_TAG_NAME = "tagName";
     private static final String FIELD_SNAPSHOT_ID = "snapshotId";
     private static final String FIELD_TIME_RETAINED = "timeRetained";
+    private static final String FIELD_IGNORE_IF_EXISTS = "ignoreIfExists";
 
     @JsonProperty(FIELD_TAG_NAME)
     private final String tagName;
@@ -46,14 +47,19 @@ public class CreateTagRequest implements RESTRequest {
     @JsonProperty(FIELD_TIME_RETAINED)
     private final String timeRetained;
 
+    @JsonProperty(FIELD_IGNORE_IF_EXISTS)
+    private final boolean ignoreIfExists;
+
     @JsonCreator
     public CreateTagRequest(
             @JsonProperty(FIELD_TAG_NAME) String tagName,
             @Nullable @JsonProperty(FIELD_SNAPSHOT_ID) Long snapshotId,
-            @Nullable @JsonProperty(FIELD_TIME_RETAINED) String timeRetained) {
+            @Nullable @JsonProperty(FIELD_TIME_RETAINED) String timeRetained,
+            @JsonProperty(FIELD_IGNORE_IF_EXISTS) boolean ignoreIfExists) {
         this.tagName = tagName;
         this.snapshotId = snapshotId;
         this.timeRetained = timeRetained;
+        this.ignoreIfExists = ignoreIfExists;
     }
 
     @JsonGetter(FIELD_TAG_NAME)
@@ -71,5 +77,10 @@ public class CreateTagRequest implements RESTRequest {
     @JsonGetter(FIELD_TIME_RETAINED)
     public String timeRetained() {
         return timeRetained;
+    }
+
+    @JsonGetter(FIELD_IGNORE_IF_EXISTS)
+    public boolean ignoreIfExists() {
+        return ignoreIfExists;
     }
 }

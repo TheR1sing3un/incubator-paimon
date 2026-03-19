@@ -384,8 +384,9 @@ class RESTCatalog(Catalog):
                 identifier, tag_name, snapshot_id,
                 time_retained, ignore_if_exists)
         except AlreadyExistsException as e:
-            raise ValueError(
-                "Tag '{}' already exists.".format(tag_name)) from e
+            if not ignore_if_exists:
+                raise ValueError(
+                    "Tag '{}' already exists.".format(tag_name)) from e
         except NoSuchResourceException as e:
             raise TableNotExistException(identifier) from e
         except ForbiddenException as e:

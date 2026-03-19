@@ -121,10 +121,6 @@ class TestTagManagement:
         with pytest.raises(Exception):
             catalog.create_tag(tbl_id, "dup_tag")
 
-    @pytest.mark.xfail(
-        reason="REST server does not support ignore_if_exists for createTag",
-        raises=ValueError,
-    )
     def test_create_tag_ignore_if_exists(self, catalog, unique_db, pa_schema):
         """Creating a tag with ignore_if_exists should not raise."""
         tbl_id, _ = self._create_table_with_data(catalog, unique_db, pa_schema)

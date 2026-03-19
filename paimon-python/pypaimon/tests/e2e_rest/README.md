@@ -62,9 +62,9 @@ pytest session start
 
 ## 测试结果总览
 
-**71 个测试: 69 passed, 2 xfailed, 0 failed** (3.58s)
+**71 个测试: 70 passed, 1 xfailed, 0 failed** (3.58s)
 
-### 已通过的测试 (69 passed)
+### 已通过的测试 (70 passed)
 
 | 测试文件 | 测试数量 | 覆盖能力 |
 |---------|---------|---------|
@@ -77,14 +77,13 @@ pytest session start
 | `test_error_handling.py` | 5 | 不存在的 database/table、在不存在的 db 下建表、drop/rename 不存在的 table |
 | `test_data_types.py` | 8 | int32/int64/float32/float64、string/boolean、date/timestamp、decimal、nullable、parquet/orc/avro 三种格式 |
 | `test_snapshot_management.py` | 3 | load_latest_snapshot、rollback_to_snapshot、rollback_to_tag |
-| `test_tag_management.py` | 4 | tag CRUD、从指定 snapshot 创建 tag、通过 tag 进行 time travel 读取、重复创建 tag 报错 |
+| `test_tag_management.py` | 5 | tag CRUD、从指定 snapshot 创建 tag、通过 tag 进行 time travel 读取、重复创建 tag 报错、ignore_if_exists 幂等创建 |
 | `test_branch_management.py` | 12 | branch CRUD、从 tag 创建 branch、无 tag 空白分支写入与隔离、从 tag 创建分支继承数据、快照隔离（空白 / 从 tag）、删除不存在的 branch 报错、多分支隔离、删除有数据的 branch、分支继承 schema、PK 表分支 merge engine 独立 |
 
-### 未通过的测试 (2 xfail)
+### 未通过的测试 (1 xfail)
 
 | 测试 | 失败原因 | 所在文件 |
 |------|---------|---------|
-| `test_create_tag_ignore_if_exists` | REST server 的 `createTag` API 不支持 `ignore_if_exists` 参数，重复创建总是返回 409 Conflict | `test_tag_management.py` |
 | `test_alter_database` | `FileSystemCatalog` 不支持 `alterDatabase` 操作，返回 HTTP 501 | `test_database_lifecycle.py` |
 
 ## E2E 测试发现并修复的 SDK Bug
@@ -123,17 +122,9 @@ pytest session start
 
 **修复**: 在 `except Exception` 之前添加 `except NotImplementedException: raise`，让 501 异常透传。
 
-## TODO: 解决剩余 2 个 xfail 测试
+## TODO: 解决剩余 1 个 xfail 测试
 
-### TODO-1: REST Server 支持 createTag 的 `ignore_if_exists` 参数 (`test_create_tag_ignore_if_exists`)
-
-**问题**: Python SDK 传入 `ignore_if_exists=True` 时，REST server 的 `createTag` handler 未处理该参数，直接抛出 409 Conflict。
-
-**修复方向**:
-- [ ] 在 `paimon-rest-server` 的 `TagHandler.createTag()` 中增加 `ignoreIfExists` 参数支持
-- [ ] 或在 `CreateTagRequest` DTO 中添加 `ignoreIfExists` 字段，handler 据此决定是否忽略 409
-
-### TODO-2: FileSystemCatalog 支持 `alterDatabase` (`test_alter_database`)
+### TODO-1: FileSystemCatalog 支持 `alterDatabase` (`test_alter_database`)
 
 **问题**: `FileSystemCatalog` 不支持 `alterDatabase` 操作，返回 501。
 
@@ -141,7 +132,7 @@ pytest session start
 - [ ] 在 `FileSystemCatalog` 中实现 `alterDatabase()`，更新 database 目录下的 properties 文件
 - [ ] 或在 REST server handler 层 fallback 到直接文件操作
 
-### TODO-3: 补充其他未覆盖的测试场景
+### TODO-2: 补充其他未覆盖的测试场景
 
 当前 E2E 测试未覆盖但对生产可用性重要的场景：
 
@@ -158,6 +149,5 @@ pytest session start
 
 | 优先级 | TODO | 理由 |
 |-------|------|------|
-| P1 | TODO-1 | createTag ignore_if_exists 是常用的幂等操作 |
-| P2 | TODO-2 | alterDatabase 使用频率较低 |
-| P2 | TODO-3 | 补充覆盖面，提升生产信心 |
+| P2 | TODO-1 | alterDatabase 使用频率较低 |
+| P2 | TODO-2 | 补充覆盖面，提升生产信心 |
