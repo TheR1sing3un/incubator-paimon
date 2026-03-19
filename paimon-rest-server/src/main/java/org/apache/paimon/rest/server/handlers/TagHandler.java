@@ -103,7 +103,11 @@ public class TagHandler implements RouteRegistrar {
     public void createTag(Identifier identifier, String body) throws Exception {
         CreateTagRequest request = JsonSerdeUtil.fromJson(body, CreateTagRequest.class);
         catalog.createTag(
-                identifier, request.tagName(), request.snapshotId(), request.timeRetained(), false);
+                identifier,
+                request.tagName(),
+                request.snapshotId(),
+                request.timeRetained(),
+                request.ignoreIfExists());
     }
 
     public void deleteTag(Identifier identifier, String tagName) throws Exception {

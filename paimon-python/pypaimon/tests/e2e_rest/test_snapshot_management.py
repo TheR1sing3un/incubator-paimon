@@ -43,10 +43,6 @@ def _read_all(table):
     return reader.to_arrow(splits)
 
 
-@pytest.mark.xfail(
-    reason="FileSystemCatalog backend does not support this via REST API (501)",
-    raises=Exception,
-)
 class TestSnapshotManagement:
 
     def test_load_latest_snapshot(self, catalog, unique_db, pa_schema):
@@ -64,9 +60,9 @@ class TestSnapshotManagement:
         }, schema=pa_schema)
         _write_data(table, data)
 
-        snapshot = catalog.load_snapshot(tbl_id)
-        assert snapshot is not None
-        assert snapshot.id >= 1
+        table_snapshot = catalog.load_snapshot(tbl_id)
+        assert table_snapshot is not None
+        assert table_snapshot.snapshot.id >= 1
 
     def test_rollback_to_snapshot(self, catalog, unique_db, pa_schema):
         """Write multiple times, rollback to an earlier snapshot."""
@@ -85,7 +81,7 @@ class TestSnapshotManagement:
         _write_data(table, data1)
 
         snap1 = catalog.load_snapshot(tbl_id)
-        snap1_id = snap1.id
+        snap1_id = snap1.snapshot.id
 
         # Write 2: 2 more rows
         data2 = pa.Table.from_pydict({
