@@ -90,7 +90,7 @@ public class RouteDispatcher {
         registrars.add(new TableHandler(catalog));
         registrars.add(new ViewHandler(catalog));
         registrars.add(new FunctionHandler(catalog));
-        registrars.add(new DatabaseHandler(catalog));
+        registrars.add(new DatabaseHandler(catalog, metadataStore));
         registrars.add(new SnapshotHandler(catalog));
         registrars.add(new PartitionHandler(catalog));
         registrars.add(new BranchHandler(catalog));
@@ -122,8 +122,7 @@ public class RouteDispatcher {
             return new RouteResult(404, null);
         }
 
-        boolean shouldAudit =
-                metadataStore != null && isMutatingMethod(method);
+        boolean shouldAudit = metadataStore != null && isMutatingMethod(method);
 
         RouteResult result;
         try {

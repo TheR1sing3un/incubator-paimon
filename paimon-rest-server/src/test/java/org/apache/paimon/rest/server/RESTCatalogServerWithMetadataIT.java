@@ -20,9 +20,19 @@ package org.apache.paimon.rest.server;
 
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.FileSystemCatalog;
+import org.apache.paimon.catalog.Identifier;
+import org.apache.paimon.data.BinaryString;
+import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.fs.local.LocalFileIO;
 import org.apache.paimon.options.CatalogOptions;
 import org.apache.paimon.options.Options;
+import org.apache.paimon.schema.Schema;
+import org.apache.paimon.table.Table;
+import org.apache.paimon.table.sink.BatchTableCommit;
+import org.apache.paimon.table.sink.BatchTableWrite;
+import org.apache.paimon.table.sink.BatchWriteBuilder;
+import org.apache.paimon.table.sink.CommitMessage;
+import org.apache.paimon.types.DataTypes;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
@@ -42,6 +52,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -73,6 +84,16 @@ class RESTCatalogServerWithMetadataIT {
 
         try (Connection conn = metadataDs.getConnection();
                 Statement stmt = conn.createStatement()) {
+            stmt.execute(
+                    "CREATE TABLE IF NOT EXISTS paimon_database ("
+                            + "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
+                            + "database_name VARCHAR(256) NOT NULL, "
+                            + "properties CLOB NULL, "
+                            + "created_by VARCHAR(64) NOT NULL, "
+                            + "created_at BIGINT NOT NULL, "
+                            + "updated_at BIGINT NOT NULL, "
+                            + "UNIQUE (database_name)"
+                            + ")");
             stmt.execute(
                     "CREATE TABLE IF NOT EXISTS paimon_op_log ("
                             + "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
@@ -233,15 +254,111 @@ class RESTCatalogServerWithMetadataIT {
     @Test
     void testResetCommitSucceedsOnFileSystemCatalog() throws Exception {
         createTestTableWithData("reset_db", "tbl");
-        insertCommitRecord("reset_db", "tbl", "c1", "main", "c1", "alice", "first", 1L);
 
         String tablePath = "/v1/test-prefix/databases/reset_db/tables/tbl";
-        int status = httpPostStatus(tablePath + "/commits/c1/reset", "");
-        // FileSystemCatalog now supports rollbackTo via version management
+        // Use snapshot ID "1" which was created by createTestTableWithData
+        int status = httpPostStatus(tablePath + "/commits/1/reset", "");
         assertThat(status).isEqualTo(200);
 
         httpDelete(tablePath);
         httpDelete("/v1/test-prefix/databases/reset_db");
+    }
+
+    @Test
+    void testListCommitsReturnsSnapshots() throws Exception {
+        createTestTableWithData("commit_list_db", "tbl");
+
+        String tablePath = "/v1/test-prefix/databases/commit_list_db/tables/tbl";
+        String response = httpGet(tablePath + "/commits");
+        assertThat(response).contains("\"commits\"");
+        assertThat(response).contains("\"snapshotId\"");
+        assertThat(response).contains("\"committer\"");
+
+        httpDelete(tablePath);
+        httpDelete("/v1/test-prefix/databases/commit_list_db");
+    }
+
+    @Test
+    void testGetCommitBySnapshotId() throws Exception {
+        createTestTableWithData("commit_get_db", "tbl");
+
+        String tablePath = "/v1/test-prefix/databases/commit_get_db/tables/tbl";
+        String response = httpGet(tablePath + "/commits/1");
+        assertThat(response).contains("\"snapshotId\"");
+        assertThat(response).contains("\"commitKind\"");
+        assertThat(response).contains("\"timeMillis\"");
+
+        httpDelete(tablePath);
+        httpDelete("/v1/test-prefix/databases/commit_get_db");
+    }
+
+    @Test
+    void testGetCommitNotFound() throws Exception {
+        createTestTableWithData("commit_404_db", "tbl");
+
+        String tablePath = "/v1/test-prefix/databases/commit_404_db/tables/tbl";
+        int status = httpGetStatus(tablePath + "/commits/99999");
+        assertThat(status).isEqualTo(404);
+
+        httpDelete(tablePath);
+        httpDelete("/v1/test-prefix/databases/commit_404_db");
+    }
+
+    @Test
+    void testDatabaseMetadataPersistedOnCreate() throws Exception {
+        String createBody = "{\"name\": \"meta_db\", \"options\": {\"key1\": \"val1\"}}";
+        int status = httpPostStatus("/v1/test-prefix/databases", createBody);
+        assertThat(status).isEqualTo(201);
+
+        // Verify metadata was persisted in paimon_database
+        try (Connection conn = metadataDs.getConnection();
+                PreparedStatement ps =
+                        conn.prepareStatement(
+                                "SELECT * FROM paimon_database WHERE database_name = 'meta_db'")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getString("created_by")).isEqualTo("anonymous");
+                assertThat(rs.getLong("created_at")).isGreaterThan(0);
+            }
+        }
+
+        // Verify GET returns the metadata timestamps
+        String getResponse = httpGet("/v1/test-prefix/databases/meta_db");
+        assertThat(getResponse).contains("meta_db");
+        assertThat(getResponse).contains("\"createdAt\"");
+
+        httpDelete("/v1/test-prefix/databases/meta_db");
+    }
+
+    @Test
+    void testDatabaseMetadataDeletedOnDrop() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"drop_meta_db\", \"options\": {}}");
+
+        // Verify exists
+        try (Connection conn = metadataDs.getConnection();
+                PreparedStatement ps =
+                        conn.prepareStatement(
+                                "SELECT COUNT(*) FROM paimon_database "
+                                        + "WHERE database_name = 'drop_meta_db'")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                assertThat(rs.getInt(1)).isEqualTo(1);
+            }
+        }
+
+        httpDelete("/v1/test-prefix/databases/drop_meta_db");
+
+        // Verify deleted
+        try (Connection conn = metadataDs.getConnection();
+                PreparedStatement ps =
+                        conn.prepareStatement(
+                                "SELECT COUNT(*) FROM paimon_database "
+                                        + "WHERE database_name = 'drop_meta_db'")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                assertThat(rs.getInt(1)).isEqualTo(0);
+            }
+        }
     }
 
     // -- Test helper methods --
@@ -270,35 +387,6 @@ class RESTCatalogServerWithMetadataIT {
         commit.commit(messages);
         write.close();
         commit.close();
-    }
-
-    private void insertCommitRecord(
-            String database,
-            String table,
-            String commitId,
-            String branch,
-            String parentId,
-            String committer,
-            String message,
-            Long snapshotId)
-            throws Exception {
-        try (Connection conn = metadataDs.getConnection();
-                PreparedStatement ps =
-                        conn.prepareStatement(
-                                "INSERT INTO paimon_commit "
-                                        + "(database_name, table_name, commit_id, branch_name, "
-                                        + "parent_id, committer, message, snapshot_id, status) "
-                                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')")) {
-            ps.setString(1, database);
-            ps.setString(2, table);
-            ps.setString(3, commitId);
-            ps.setString(4, branch);
-            ps.setString(5, parentId);
-            ps.setString(6, committer);
-            ps.setString(7, message);
-            ps.setLong(8, snapshotId);
-            ps.executeUpdate();
-        }
     }
 
     // -- HTTP helper methods --

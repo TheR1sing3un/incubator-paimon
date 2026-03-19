@@ -1,0 +1,14 @@
+<configuration>
+  <property>
+    <name>fs.viewfs.mounttable.hadoop-lt-cluster.link./home</name>
+    <value>hdfs://lt-router.sy/home</value>
+  </property>
+  <property>
+    <name>fs.viewfs.mounttable.hadoop-lt-cluster.link./user</name>
+    <value>hdfs://lt-router.sy/user</value>
+  </property>
+  <property>
+    <name>fs.viewfs.mounttable.hadoop-lt-cluster.link./tmp</name>
+    <value>hdfs://lt-router.sy/tmp</value>
+  </property>
+</configuration>

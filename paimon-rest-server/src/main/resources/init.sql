@@ -1,6 +1,20 @@
 create database paimon_catalog;
 
 -- ============================================================
+-- paimon_database: Paimon Database 元信息
+-- 存储 Paimon Catalog 管理的 Database 元信息，用于快速查询及扩展属性存储
+-- ============================================================
+CREATE TABLE `paimon_catalog`.`paimon_database` (
+                                                    id              BIGINT        PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+                                                    database_name   VARCHAR(256)  NOT NULL COMMENT 'Paimon database 名',
+                                                    properties      JSON          NULL     COMMENT 'Database 扩展属性（JSON）',
+                                                    created_by      VARCHAR(64)   NOT NULL COMMENT '创建者',
+                                                    created_at      BIGINT        NOT NULL COMMENT '创建时间（epoch millis）',
+                                                    updated_at      BIGINT        NOT NULL COMMENT '更新时间（epoch millis）',
+                                                    UNIQUE KEY uniq_database (database_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin COMMENT='Paimon Database 元信息';
+
+-- ============================================================
 -- paimon_table: Paimon 表注册信息
 -- 存储 Paimon Catalog 管理的表元信息，用于快速查询表是否存在及其基本配置
 -- ============================================================
