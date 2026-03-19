@@ -88,6 +88,18 @@ under the License.
             <version>${spark.version}</version>
             <scope>test</scope>
         </dependency>
+      <dependency>
+        <groupId>org.apache.paimon</groupId>
+        <artifactId>paimon-rest-server</artifactId>
+        <version>1.4-SNAPSHOT</version>
+        <scope>test</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.paimon</groupId>
+        <artifactId>paimon-shade-netty-4</artifactId>
+        <version>${paimon.shade.netty.version}-${paimon.shade.version}</version>
+        <scope>test</scope>
+      </dependency>
     </dependencies>
 
     <build>
