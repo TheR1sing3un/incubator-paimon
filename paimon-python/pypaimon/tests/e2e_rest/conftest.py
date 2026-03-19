@@ -26,6 +26,30 @@ from pypaimon.tests.e2e_rest.server_manager import RESTServerManager
 
 
 # ---------------------------------------------------------------------------
+# Ray cluster: session-scoped, lazy init
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session")
+def ray_cluster():
+    """Initialize a local Ray cluster for the test session."""
+    import ray
+    if not ray.is_initialized():
+        ray.init(ignore_reinit_error=True, num_cpus=2)
+    yield
+    try:
+        if ray.is_initialized():
+            ray.shutdown()
+    except Exception:
+        pass
+
+
+@pytest.fixture(scope="session")
+def catalog_options(rest_server):
+    """Expose REST server catalog options dict for read_paimon/write_paimon."""
+    return rest_server.catalog_options
+
+
+# ---------------------------------------------------------------------------
 # Session-scoped: server starts once for the entire test session
 # ---------------------------------------------------------------------------
 

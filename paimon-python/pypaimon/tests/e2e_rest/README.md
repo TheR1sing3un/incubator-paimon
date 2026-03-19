@@ -62,13 +62,13 @@ pytest session start
 
 ## 测试结果总览
 
-**71 个测试: 70 passed, 1 xfailed, 0 failed** (3.58s)
+**124 个测试: 123 passed, 1 xfailed, 0 failed** (23.27s)
 
-### 已通过的测试 (70 passed)
+### Arrow 读写测试 (70 passed, 1 xfailed)
 
 | 测试文件 | 测试数量 | 覆盖能力 |
 |---------|---------|---------|
-| `test_database_lifecycle.py` | 8 | create / get / list / drop / ignore_if_exists / not_exists 异常 / cascade drop |
+| `test_database_lifecycle.py` | 8 (含 1 xfail) | create / get / list / drop / ignore_if_exists / not_exists 异常 / cascade drop |
 | `test_table_lifecycle.py` | 11 | 创建 append-only / PK / 分区表、get schema、list、drop、rename、table options |
 | `test_data_read_write.py` | 8 | 基本写读 roundtrip、多次写入、空表读取、全量 overwrite、overwrite 分区、投影、过滤、limit |
 | `test_primary_key_tables.py` | 3 | PK 去重（跨 commit merge）、PK 更新、PK + 分区 |
@@ -79,6 +79,49 @@ pytest session start
 | `test_snapshot_management.py` | 3 | load_latest_snapshot、rollback_to_snapshot、rollback_to_tag |
 | `test_tag_management.py` | 5 | tag CRUD、从指定 snapshot 创建 tag、通过 tag 进行 time travel 读取、重复创建 tag 报错、ignore_if_exists 幂等创建 |
 | `test_branch_management.py` | 12 | branch CRUD、从 tag 创建 branch、无 tag 空白分支写入与隔离、从 tag 创建分支继承数据、快照隔离（空白 / 从 tag）、删除不存在的 branch 报错、多分支隔离、删除有数据的 branch、分支继承 schema、PK 表分支 merge engine 独立 |
+
+### Ray 读写测试 (53 passed)
+
+| 测试文件 | 测试数量 | 覆盖能力 |
+|---------|---------|---------|
+| `test_ray_read_write.py` | 9 | Ray 基本写读 roundtrip、多次写入、空表读取、overwrite (`write_paimon`)、投影、过滤、limit、`read_paimon()` / `write_paimon()` 高阶 API |
+| `test_ray_primary_key.py` | 3 | PK 去重 via Ray、PK merge/upsert、PK + 分区 |
+| `test_ray_partitioned.py` | 2 | 多分区 Ray 写入、分区谓词 Ray 读取 |
+| `test_ray_branch.py` | 5 | 空分支 Ray 写入隔离、main/branch 双向快照隔离、从 tag 创建分支继承数据 + Ray 追加、多分支 Ray 隔离、PK 表分支 Ray merge |
+| `test_ray_tag_snapshot.py` | 4 | Ray 写入 + tag 时间旅行读取、按 snapshot ID 回滚、按 tag 回滚、从标记快照 Ray 读取 |
+| `test_ray_advanced.py` | 5 | Ray `.map()` / `.filter()` 算子、`read_paimon()` + 谓词、`write_paimon(overwrite=True)`、`read_paimon()` + PK 表 upsert |
+| `test_ray_data_types.py` | 8 | int32/int64/float32/float64、boolean、date32/timestamp、decimal128、nullable、parquet/orc/avro 三种格式 |
+| `test_ray_schema_evolution.py` | 3 | Ray 写入 → add column → Ray 读取 (旧数据 NULL)、drop column、rename column |
+| `test_ray_api_params.py` | 8 | `override_num_blocks>1`、`concurrency`、`read_paimon(projection)`、`read_paimon(limit)`、filter+projection+limit 组合、低阶 `write_ray(overwrite=True)`、分区表 Ray 覆写、Ray 写 PK → Arrow 读跨 API 互操作 |
+| `test_ray_merge_engine.py` | 2 | partial-update merge engine 兼容性、first-row merge engine 兼容性 |
+| `test_ray_error_handling.py` | 4 | `read_paimon()` 不存在的表、`write_paimon()` 不存在的表、schema 不匹配写入、`override_num_blocks=0/-1` ValueError |
+
+### Ray API 覆盖矩阵
+
+| API | 低阶 (`write_ray`/`to_ray`) | 高阶 (`read_paimon`/`write_paimon`) |
+|-----|:---:|:---:|
+| 基础写入 | ✅ | ✅ |
+| 基础读取 | ✅ | ✅ |
+| 覆盖写入 (overwrite) | ✅ | ✅ |
+| 谓词过滤 (filter) | ✅ | ✅ |
+| 列投影 (projection) | ✅ | ✅ |
+| 行数限制 (limit) | ✅ | ✅ |
+| 多参数组合 (filter+projection+limit) | — | ✅ |
+| 并发控制 (concurrency) | ✅ | — |
+| 多 block 分发 (override_num_blocks>1) | ✅ | — |
+| 主键去重/Upsert | ✅ | ✅ |
+| 分区表 | ✅ | — |
+| 分区表覆写 | ✅ | — |
+| 分支隔离 | ✅ | — |
+| 标签/时间旅行 | ✅ | — |
+| 快照回滚 | ✅ | — |
+| Ray map/filter 算子 | ✅ | — |
+| 数据类型 (int/float/bool/date/decimal/nullable) | ✅ | — |
+| 文件格式 (parquet/orc/avro) | ✅ | — |
+| Schema Evolution (add/drop/rename column) | ✅ | — |
+| Merge Engine (partial-update/first-row) | ✅ | — |
+| 跨 API 互操作 (Ray 写 → Arrow 读) | ✅ | — |
+| 错误处理 (不存在的表/schema 不匹配/invalid params) | ✅ | ✅ |
 
 ### 未通过的测试 (1 xfail)
 
