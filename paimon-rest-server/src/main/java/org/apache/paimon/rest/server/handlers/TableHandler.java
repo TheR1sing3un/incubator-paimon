@@ -106,7 +106,7 @@ public class TableHandler implements RouteRegistrar {
                 tablesPath,
                 (auth, vars, params, body) -> {
                     createTable(vars.get("database"), body);
-                    return new RouteResult(201, null);
+                    return new RouteResult(200, null);
                 });
         router.get(
                 tableDetailsPath,

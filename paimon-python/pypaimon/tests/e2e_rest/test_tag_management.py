@@ -42,10 +42,6 @@ def _read_all(table):
     return reader.to_arrow(splits)
 
 
-@pytest.mark.xfail(
-    reason="FileSystemCatalog backend does not support this via REST API (501)",
-    raises=Exception,
-)
 class TestTagManagement:
 
     def _create_table_with_data(self, catalog, unique_db, pa_schema):
