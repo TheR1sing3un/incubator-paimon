@@ -68,7 +68,7 @@ public class DatabaseHandler implements RouteRegistrar {
                 dbsPath,
                 (auth, vars, params, body) -> {
                     createDatabase(body);
-                    return new RouteResult(201, null);
+                    return new RouteResult(200, null);
                 });
         router.get(
                 dbPath,
