@@ -60,13 +60,15 @@ pytest session start
 - **Port 0 + 日志解析**：避免端口冲突，支持并行执行
 - **无认证模式**：不配置 `rest-server.auth.url`，Python 端使用 dummy bearer token
 
-## 测试覆盖
+## 测试结果总览
 
-### 已通过的测试 (50 passed)
+**64 个测试: 60 passed, 4 xfailed, 0 failed** (4.21s)
+
+### 已通过的测试 (60 passed)
 
 | 测试文件 | 测试数量 | 覆盖能力 |
 |---------|---------|---------|
-| `test_database_lifecycle.py` | 8 | create / get / list / drop / ignore_if_exists / not_exists 异常 |
+| `test_database_lifecycle.py` | 8 | create / get / list / drop / ignore_if_exists / not_exists 异常 / cascade drop |
 | `test_table_lifecycle.py` | 11 | 创建 append-only / PK / 分区表、get schema、list、drop、rename、table options |
 | `test_data_read_write.py` | 8 | 基本写读 roundtrip、多次写入、空表读取、全量 overwrite、overwrite 分区、投影、过滤、limit |
 | `test_primary_key_tables.py` | 3 | PK 去重（跨 commit merge）、PK 更新、PK + 分区 |
@@ -74,61 +76,22 @@ pytest session start
 | `test_schema_evolution.py` | 4 | 添加列、删除列、重命名列、已有数据 + schema 变更 |
 | `test_error_handling.py` | 5 | 不存在的 database/table、在不存在的 db 下建表、drop/rename 不存在的 table |
 | `test_data_types.py` | 8 | int32/int64/float32/float64、string/boolean、date/timestamp、decimal、nullable、parquet/orc/avro 三种格式 |
-| `test_database_lifecycle.py` (cascade) | 1 | cascade drop（先手动删表再删库，因 REST server 不支持原生 cascade） |
+| `test_snapshot_management.py` | 3 | load_latest_snapshot、rollback_to_snapshot、rollback_to_tag |
+| `test_tag_management.py` | 4 | tag CRUD、从指定 snapshot 创建 tag、通过 tag 进行 time travel 读取、重复创建 tag 报错 |
+| `test_branch_management.py` | 3 | branch CRUD、从 tag 创建 branch、重复创建 branch 报错 |
 
-### 未通过的测试 (14 xfail)
+### 未通过的测试 (4 xfail)
 
-这些测试标记为 `xfail`，代表 **已知的能力缺失**，不是测试 bug。根因是当 REST server 后端为 `FileSystemCatalog` 时，以下版本管理操作返回 HTTP 501 (Not Implemented)。
+| 测试 | 失败原因 | 所在文件 |
+|------|---------|---------|
+| `test_write_to_branch` | Python SDK `table.copy({"branch": ...})` 读取分支数据时不包含从 main 继承的历史数据，branch 表只能看到分支上的新写入 | `test_branch_management.py` |
+| `test_branch_snapshot_isolation` | 同上，分支表的 snapshot 读取逻辑未正确 fallback 到 main 分支的基线数据 | `test_branch_management.py` |
+| `test_create_tag_ignore_if_exists` | REST server 的 `createTag` API 不支持 `ignore_if_exists` 参数，重复创建总是返回 409 Conflict | `test_tag_management.py` |
+| `test_alter_database` | `FileSystemCatalog` 不支持 `alterDatabase` 操作，返回 HTTP 501 | `test_database_lifecycle.py` |
 
-#### 1. 分支管理 — 5 个测试 (`test_branch_management.py`)
+## E2E 测试发现并修复的 SDK Bug
 
-| 测试 | 预期行为 | 失败原因 |
-|-----|---------|---------|
-| `test_branch_crud` | create / list / delete 分支 | `FileSystemCatalog.createBranch()` → `UnsupportedOperationException` → 501 |
-| `test_create_branch_from_tag` | 从 tag 创建分支 | 同上 |
-| `test_write_to_branch` | 写入分支数据，main 不受影响 | 同上 |
-| `test_branch_snapshot_isolation` | 分支和 main 独立快照 | 同上 |
-| `test_duplicate_branch_error` | 重复创建分支应报错 | 同上 |
-
-#### 2. 标签管理 — 5 个测试 (`test_tag_management.py`)
-
-| 测试 | 预期行为 | 失败原因 |
-|-----|---------|---------|
-| `test_tag_crud` | create / list / delete 标签 | `FileSystemCatalog.createTag()` → `UnsupportedOperationException` → 501 |
-| `test_create_tag_from_snapshot` | 从指定 snapshot ID 创建 tag | 同上 |
-| `test_read_from_tag` | 通过 tag 进行 time travel 读取 | 同上 |
-| `test_duplicate_tag_error` | 重复创建 tag 应报错 | 同上 |
-| `test_create_tag_ignore_if_exists` | ignore_if_exists 不报错 | 同上 |
-
-#### 3. 快照管理 — 3 个测试 (`test_snapshot_management.py`)
-
-| 测试 | 预期行为 | 失败原因 |
-|-----|---------|---------|
-| `test_load_latest_snapshot` | 通过 REST API 加载最新快照 | `FileSystemCatalog.loadSnapshot()` → `UnsupportedOperationException` → 501 |
-| `test_rollback_to_snapshot` | 回滚到指定 snapshot ID | `FileSystemCatalog.rollbackTo()` → `UnsupportedOperationException` → 501 |
-| `test_rollback_to_tag` | 通过 tag 名称回滚 | 同上 |
-
-#### 4. Alter Database — 1 个测试 (`test_database_lifecycle.py`)
-
-| 测试 | 预期行为 | 失败原因 |
-|-----|---------|---------|
-| `test_alter_database` | 修改 database 属性 | `FileSystemCatalog.alterDatabase()` → `UnsupportedOperationException` → 501 |
-
-### 未通过根因总结
-
-所有 14 个 xfail 测试的根因相同：
-
-```
-Python SDK → REST API → Java REST Server → FileSystemCatalog → UnsupportedOperationException
-                                                                      ↓
-                                                           ExceptionMapper → HTTP 501
-```
-
-`FileSystemCatalog` 继承自 `AbstractCatalog`，后者对版本管理方法（`loadSnapshot`、`commitSnapshot`、`rollbackTo`、`createBranch`、`createTag`、`alterDatabase` 等）的默认实现都是 `throw new UnsupportedOperationException()`。
-
-## 本次 E2E 测试发现并修复的 SDK Bug
-
-在编写测试过程中发现了 4 个 Python SDK 的真实兼容性问题，已一并修复：
+在编写和运行测试过程中，发现了 4 个 Python SDK 的真实兼容性问题，已一并修复：
 
 ### Bug 1: SnapshotLoader 未正确处理 501 响应
 
@@ -142,7 +105,7 @@ Python SDK → REST API → Java REST Server → FileSystemCatalog → Unsupport
 
 **文件**: `pypaimon/snapshot/catalog_snapshot_commit.py`
 
-**问题**: REST catalog 总是使用 `CatalogSnapshotCommit`（通过 REST API 提交 snapshot），但当服务端后端是 `FileSystemCatalog` 时，`commitSnapshot` 返回 501，导致所有数据写入失败。
+**问题**: REST catalog 总是使用 `CatalogSnapshotCommit`（通过 REST API 提交 snapshot），但当服务端后端不支持 `commitSnapshot` 时返回 501，导致所有数据写入失败。
 
 **修复**: 新增 `fallback_commit` 参数（`RenamingSnapshotCommit`），遇到 501 时自动降级为基于文件系统 rename 的原子提交。
 
@@ -162,59 +125,53 @@ Python SDK → REST API → Java REST Server → FileSystemCatalog → Unsupport
 
 **修复**: 在 `except Exception` 之前添加 `except NotImplementedException: raise`，让 501 异常透传。
 
-## TODO: 使全部 14 个 xfail 测试通过
+## TODO: 解决剩余 4 个 xfail 测试
 
-### 方案一：在 REST Server 端实现 FileSystemCatalog 的版本管理（推荐）
+### TODO-1: 修复 Python SDK 分支数据读取 (`test_write_to_branch`, `test_branch_snapshot_isolation`)
 
-在 `paimon-rest-server` 侧，为 `FileSystemCatalog` 后端实现以下操作，使其直接操作文件系统上的 snapshot/branch/tag 文件，而非依赖 `Catalog` 接口：
+**问题**: `table.copy({"branch": "feature"})` 创建的分支表对象在读取时，只能看到分支上新写入的数据，看不到从 main 分支继承的历史数据。
 
-- [ ] **TODO-1**: 实现 `loadSnapshot` — 读取 `{warehouse}/{db}/{table}/snapshot/LATEST` 文件，解析对应的 snapshot JSON
-- [ ] **TODO-2**: 实现 `commitSnapshot` — 在 server 侧执行 snapshot 原子提交（rename），取代客户端直接写文件
-- [ ] **TODO-3**: 实现 `rollbackTo` — 更新 LATEST 文件指向目标 snapshot，或通过 tag manager 解析 tag 名
-- [ ] **TODO-4**: 实现 `createBranch` / `deleteBranch` / `listBranches` — 操作 `{table}/branch/` 目录下的分支元数据
-- [ ] **TODO-5**: 实现 `createTag` / `deleteTag` / `listTags` — 操作 `{table}/tag/` 目录下的标签文件
-- [ ] **TODO-6**: 实现 `alterDatabase` — 更新 database properties 文件
+**根因分析**: `table.copy()` 切换分支后，`SnapshotManager` 在分支目录下查找 snapshot，但分支创建时 main 的数据文件在分支的 snapshot 中可能没有被正确引用。
 
-**实现路径**: 在 `paimon-rest-server` 的 handler 层，当 catalog 不支持对应操作时（catch `UnsupportedOperationException`），fallback 到直接操作文件系统。或者在 paimon-core 中为 `FileSystemCatalog` 实现这些方法。
+**修复方向**:
+- [ ] 排查 `FileStoreTable.copy()` 在设置 `branch` option 后，`SnapshotManager` 是否正确读取了分支目录下的 snapshot 文件
+- [ ] 确认分支创建时（`FileSystemCatalog.createBranch()`）是否正确拷贝了 main 分支的 snapshot 引用到分支目录
+- [ ] 对比 mock server 测试中分支读写的实现方式（`rest_branch_tag_test.py` 使用 `CoreOptions.BRANCH.key()`）
 
-**预期效果**: 移除所有 14 个 `xfail` 标记，测试直接通过。
+### TODO-2: REST Server 支持 createTag 的 `ignore_if_exists` 参数 (`test_create_tag_ignore_if_exists`)
 
-### 方案二：切换 REST Server 后端为支持版本管理的 Catalog
+**问题**: Python SDK 传入 `ignore_if_exists=True` 时，REST server 的 `createTag` handler 未处理该参数，直接抛出 409 Conflict。
 
-使用 JDBC Catalog 或 Hive Catalog 作为 REST server 后端，这些 catalog 原生支持版本管理。
+**修复方向**:
+- [ ] 在 `paimon-rest-server` 的 `TagHandler.createTag()` 中增加 `ignoreIfExists` 参数支持
+- [ ] 或在 `CreateTagRequest` DTO 中添加 `ignoreIfExists` 字段，handler 据此决定是否忽略 409
 
-- [ ] **TODO-7**: 在 E2E 测试中支持可配置的 REST server 后端（通过环境变量 `PAIMON_REST_METASTORE=jdbc`）
-- [ ] **TODO-8**: 添加 JDBC Catalog 后端的 E2E 测试配置（需要内嵌 H2 数据库或 Docker MySQL）
-- [ ] **TODO-9**: 在 `conftest.py` 中根据后端类型动态标记 xfail（FileSystem 后端 xfail，JDBC 后端不 xfail）
+### TODO-3: FileSystemCatalog 支持 `alterDatabase` (`test_alter_database`)
 
-### 方案三：扩展 Python SDK 的 fallback 能力
+**问题**: `FileSystemCatalog` 不支持 `alterDatabase` 操作，返回 501。
 
-让 Python SDK 在 REST server 不支持某些操作时，通过直接操作文件系统来补齐能力：
+**修复方向**:
+- [ ] 在 `FileSystemCatalog` 中实现 `alterDatabase()`，更新 database 目录下的 properties 文件
+- [ ] 或在 REST server handler 层 fallback 到直接文件操作
 
-- [ ] **TODO-10**: 为 `RESTCatalog` 增加 branch/tag 的文件系统 fallback（类似 `CatalogSnapshotCommit` 的 fallback 模式）
-- [ ] **TODO-11**: 检测 REST server 能力（可通过在 `/v1/config` 响应中返回 `capabilities` 字段）
-- [ ] **TODO-12**: 在 `CatalogEnvironment` 中根据 server capabilities 选择使用 REST API 或文件系统操作
-
-### 方案四：补充其他未覆盖的测试场景
+### TODO-4: 补充其他未覆盖的测试场景
 
 当前 E2E 测试未覆盖但对生产可用性重要的场景：
 
-- [ ] **TODO-13**: 动态分区 overwrite 测试 — 当前降级为全量 overwrite，需要修复 Python SDK 的 `overwrite(static_partition)` 在 REST 模式下的行为
-- [ ] **TODO-14**: `with_limit` 精确行数测试 — 当前只验证 `1 <= rows <= total`，需要确认 limit 语义在 SDK 层是 split-level 还是 row-level
-- [ ] **TODO-15**: 流式写入测试（`new_stream_write_builder()`）
-- [ ] **TODO-16**: 并发写入测试（多线程/多进程同时写入同一张表）
-- [ ] **TODO-17**: 大数据量压力测试（百万行级写入/读取）
-- [ ] **TODO-18**: REST server 故障恢复测试（server 重启后客户端自动重连）
-- [ ] **TODO-19**: 分页列表测试（创建 > 100 个 database/table，验证分页遍历）
-- [ ] **TODO-20**: 认证集成测试（配置 REST server 认证后，验证 token 传递和权限控制）
+- [ ] 动态分区 overwrite 测试 — 当前降级为全量 overwrite，需要修复 Python SDK 的 `overwrite(static_partition)` 在 REST 模式下的行为
+- [ ] `with_limit` 精确行数测试 — 当前只验证 `1 <= rows <= total`，需要确认 limit 语义在 SDK 层是 split-level 还是 row-level
+- [ ] 流式写入测试（`new_stream_write_builder()`）
+- [ ] 并发写入测试（多线程/多进程同时写入同一张表）
+- [ ] 大数据量压力测试（百万行级写入/读取）
+- [ ] REST server 故障恢复测试（server 重启后客户端自动重连）
+- [ ] 分页列表测试（创建 > 100 个 database/table，验证分页遍历）
+- [ ] 认证集成测试（配置 REST server 认证后，验证 token 传递和权限控制）
 
 ### 建议优先级
 
 | 优先级 | TODO | 理由 |
 |-------|------|------|
-| P0 | TODO-1 ~ TODO-6 | 核心版本管理能力缺失，影响生产使用 |
-| P1 | TODO-13, TODO-14 | 数据操作语义不一致，可能导致用户困惑 |
-| P1 | TODO-7 ~ TODO-9 | 支持 JDBC 后端可立即解锁所有测试 |
-| P2 | TODO-15, TODO-16 | 流式和并发是生产常见场景 |
-| P2 | TODO-10 ~ TODO-12 | SDK 侧 fallback 是长期架构改进 |
-| P3 | TODO-17 ~ TODO-20 | 压力测试和边缘场景 |
+| P0 | TODO-1 | 分支读写是核心版本管理能力，影响生产使用 |
+| P1 | TODO-2 | createTag ignore_if_exists 是常用的幂等操作 |
+| P2 | TODO-3 | alterDatabase 使用频率较低 |
+| P2 | TODO-4 | 补充覆盖面，提升生产信心 |

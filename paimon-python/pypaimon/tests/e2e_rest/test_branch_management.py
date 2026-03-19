@@ -42,10 +42,6 @@ def _read_all(table):
     return reader.to_arrow(splits)
 
 
-@pytest.mark.xfail(
-    reason="FileSystemCatalog backend does not support this via REST API (501)",
-    raises=Exception,
-)
 class TestBranchManagement:
 
     def _create_table_with_data(self, catalog, unique_db, pa_schema):
@@ -86,6 +82,10 @@ class TestBranchManagement:
         branches = catalog.list_branches(tbl_id)
         assert "release-1" in branches
 
+    @pytest.mark.xfail(
+        reason="Python SDK table.copy({'branch': ...}) does not inherit main branch data for reads",
+        raises=AssertionError,
+    )
     def test_write_to_branch(self, catalog, unique_db, pa_schema):
         """Write data on a branch; main should not see it."""
         tbl_id, table = self._create_table_with_data(catalog, unique_db, pa_schema)
@@ -110,6 +110,10 @@ class TestBranchManagement:
         main_result = _read_all(table)
         assert main_result.num_rows == 2
 
+    @pytest.mark.xfail(
+        reason="Python SDK table.copy({'branch': ...}) does not inherit main branch data for reads",
+        raises=AssertionError,
+    )
     def test_branch_snapshot_isolation(self, catalog, unique_db, pa_schema):
         """Writes on main after branch creation are not visible on branch."""
         tbl_id, table = self._create_table_with_data(catalog, unique_db, pa_schema)
