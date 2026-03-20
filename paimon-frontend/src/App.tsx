@@ -53,6 +53,27 @@ function CatalogProvider({ children }: { children: ReactNode }) {
 
   const active = catalogs.find((c) => c.name === activeName) ?? null;
 
+  // Auto-detect local REST server on first visit (no catalogs configured)
+  useEffect(() => {
+    if (catalogs.length > 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const resp = await fetch('/v1/config');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (cancelled) return;
+        const prefix = data?.defaults?.prefix || '';
+        const config: CatalogConfig = { name: 'Local', baseUrl: '', prefix };
+        setCatalogs([config]);
+        saveCatalogs([config]);
+        setActiveName('Local');
+        saveActiveName('Local');
+      } catch { /* no local server available */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+
   // Sync current catalog to api client, auto-detect prefix if missing
   useEffect(() => {
     setCurrentCatalog(active);
