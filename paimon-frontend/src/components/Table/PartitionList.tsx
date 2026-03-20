@@ -6,12 +6,13 @@ import { formatNumber, formatBytes, formatTimestamp } from '../../utils/format';
 interface Props {
   database: string;
   table: string;
+  branch?: string;
 }
 
-export default function PartitionList({ database, table }: Props) {
+export default function PartitionList({ database, table, branch }: Props) {
   const { data = [], isLoading } = useQuery({
-    queryKey: ['partitions', database, table],
-    queryFn: () => listPartitions(database, table),
+    queryKey: ['partitions', database, table, branch ?? 'main'],
+    queryFn: () => listPartitions(database, table, branch),
   });
 
   return (

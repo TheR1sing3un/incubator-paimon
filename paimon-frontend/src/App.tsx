@@ -53,9 +53,33 @@ function CatalogProvider({ children }: { children: ReactNode }) {
 
   const active = catalogs.find((c) => c.name === activeName) ?? null;
 
-  // Sync current catalog to api client
+  // Sync current catalog to api client, auto-detect prefix if missing
   useEffect(() => {
     setCurrentCatalog(active);
+
+    if (active && !active.prefix) {
+      const fetchPrefix = async () => {
+        try {
+          const baseUrl = active.baseUrl.replace(/\/+$/, '');
+          const url = baseUrl
+            ? `/proxy?target=${encodeURIComponent(`${baseUrl}/v1/config`)}`
+            : '/v1/config';
+          const resp = await fetch(url);
+          const data = await resp.json();
+          if (data?.defaults?.prefix) {
+            const detectedPrefix = data.defaults.prefix;
+            setCatalogs((prev) => {
+              const next = prev.map((c) =>
+                c.name === active.name ? { ...c, prefix: detectedPrefix } : c
+              );
+              saveCatalogs(next);
+              return next;
+            });
+          }
+        } catch { /* ignore */ }
+      };
+      fetchPrefix();
+    }
   }, [active]);
 
   const handleSetActive = useCallback(

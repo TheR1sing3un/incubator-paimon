@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 interface PagedResult<T> {
@@ -16,6 +16,18 @@ export function usePagedData<T>({ queryKey, fetcher, enabled = true }: UsePagedD
   const [pageToken, setPageToken] = useState<string | undefined>(undefined);
   const [allTokens, setAllTokens] = useState<(string | undefined)[]>([undefined]);
   const [pageIndex, setPageIndex] = useState(0);
+
+  // Reset pagination when queryKey changes (e.g. branch switch)
+  const keyRef = useRef(queryKey.join('|'));
+  useEffect(() => {
+    const newKey = queryKey.join('|');
+    if (newKey !== keyRef.current) {
+      keyRef.current = newKey;
+      setPageToken(undefined);
+      setAllTokens([undefined]);
+      setPageIndex(0);
+    }
+  }, [queryKey]);
 
   const query = useQuery({
     queryKey: [...queryKey, pageToken],

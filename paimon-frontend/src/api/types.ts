@@ -59,21 +59,22 @@ export interface SnapshotInfo {
 }
 
 export interface BranchInfo {
-  branchName: string;
-  createdFromSnapshot?: number;
-  createdFromTag?: string;
+  branch: string;
   latestSnapshotId?: number;
   latestSchemaId?: number;
 }
 
 export interface TagInfo {
   tagName: string;
-  snapshotId: number;
-  schemaId?: number;
-  recordCount?: number;
-  fileSizeInBytes?: number;
-  fileCount?: number;
-  createTime?: number;
+  snapshot?: {
+    id: number;
+    schemaId: number;
+    commitKind: string;
+    totalRecordCount: number;
+    deltaRecordCount: number;
+    timeMillis: number;
+  };
+  tagCreateTime?: number;
 }
 
 export interface PartitionInfo {

@@ -1,17 +1,19 @@
-import { Table } from 'antd';
+import { Table, Tag } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { listTags } from '../../api/tags';
-import { formatTimestamp, formatNumber, formatBytes } from '../../utils/format';
+import { formatTimestamp, formatNumber } from '../../utils/format';
+import type { TagInfo } from '../../api/types';
 
 interface Props {
   database: string;
   table: string;
+  branch?: string;
 }
 
-export default function TagList({ database, table }: Props) {
+export default function TagList({ database, table, branch }: Props) {
   const { data = [], isLoading } = useQuery({
-    queryKey: ['tags', database, table],
-    queryFn: () => listTags(database, table),
+    queryKey: ['tags', database, table, branch ?? 'main'],
+    queryFn: () => listTags(database, table, branch),
   });
 
   return (
@@ -23,12 +25,32 @@ export default function TagList({ database, table }: Props) {
       size="small"
       columns={[
         { title: 'Tag Name', dataIndex: 'tagName' },
-        { title: 'Snapshot ID', dataIndex: 'snapshotId' },
-        { title: 'Schema ID', dataIndex: 'schemaId' },
-        { title: 'Records', dataIndex: 'recordCount', render: formatNumber },
-        { title: 'File Size', dataIndex: 'fileSizeInBytes', render: formatBytes },
-        { title: 'Files', dataIndex: 'fileCount', render: formatNumber },
-        { title: 'Created', dataIndex: 'createTime', render: formatTimestamp },
+        {
+          title: 'Snapshot ID',
+          render: (_: unknown, r: TagInfo) => r.snapshot?.id ?? '-',
+        },
+        {
+          title: 'Schema ID',
+          render: (_: unknown, r: TagInfo) => r.snapshot?.schemaId ?? '-',
+        },
+        {
+          title: 'Commit Kind',
+          render: (_: unknown, r: TagInfo) =>
+            r.snapshot?.commitKind ? <Tag>{r.snapshot.commitKind}</Tag> : '-',
+        },
+        {
+          title: 'Total Records',
+          render: (_: unknown, r: TagInfo) => formatNumber(r.snapshot?.totalRecordCount),
+        },
+        {
+          title: 'Snapshot Time',
+          render: (_: unknown, r: TagInfo) => formatTimestamp(r.snapshot?.timeMillis),
+        },
+        {
+          title: 'Tag Created',
+          dataIndex: 'tagCreateTime',
+          render: formatTimestamp,
+        },
       ]}
     />
   );

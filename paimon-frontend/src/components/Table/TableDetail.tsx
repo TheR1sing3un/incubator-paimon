@@ -1,7 +1,10 @@
-import { Tabs, Typography, Spin, Alert } from 'antd';
+import { useState } from 'react';
+import { Tabs, Typography, Spin, Alert, Select, Space } from 'antd';
+import { BranchesOutlined } from '@ant-design/icons';
 import { useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getTable } from '../../api/tables';
+import { listBranches } from '../../api/branches';
 import SchemaView from './SchemaView';
 import OptionsView from './OptionsView';
 import SnapshotList from './SnapshotList';
@@ -15,6 +18,7 @@ const { Title } = Typography;
 
 export default function TableDetail() {
   const { db, table } = useParams<{ db: string; table: string }>();
+  const [currentBranch, setCurrentBranch] = useState('main');
 
   const { data: tableInfo, isLoading, error } = useQuery({
     queryKey: ['table', db, table],
@@ -22,9 +26,20 @@ export default function TableDetail() {
     enabled: !!db && !!table,
   });
 
+  const { data: branches = [] } = useQuery({
+    queryKey: ['branches', db, table],
+    queryFn: () => listBranches(db!, table!),
+    enabled: !!db && !!table,
+  });
+
   if (isLoading) return <Spin size="large" />;
   if (error) return <Alert type="error" message="Failed to load table" description={String(error)} />;
   if (!tableInfo) return null;
+
+  const branchOptions = branches.map((b) => ({
+    value: b.branch,
+    label: b.branch,
+  }));
 
   const tabItems = [
     {
@@ -40,7 +55,7 @@ export default function TableDetail() {
     {
       key: 'snapshots',
       label: 'Snapshots',
-      children: <SnapshotList database={db!} table={table!} />,
+      children: <SnapshotList key={currentBranch} database={db!} table={table!} branch={currentBranch} />,
     },
     {
       key: 'branches',
@@ -50,31 +65,44 @@ export default function TableDetail() {
     {
       key: 'tags',
       label: 'Tags',
-      children: <TagList database={db!} table={table!} />,
+      children: <TagList key={currentBranch} database={db!} table={table!} branch={currentBranch} />,
     },
     {
       key: 'partitions',
       label: 'Partitions',
-      children: <PartitionList database={db!} table={table!} />,
+      children: <PartitionList key={currentBranch} database={db!} table={table!} branch={currentBranch} />,
     },
     {
       key: 'schema-history',
       label: 'Schema History',
-      children: <SchemaHistory database={db!} table={table!} />,
+      children: <SchemaHistory key={currentBranch} database={db!} table={table!} branch={currentBranch} />,
     },
     {
       key: 'consumers',
       label: 'Consumers',
-      children: <ConsumerList database={db!} table={table!} />,
+      children: <ConsumerList key={currentBranch} database={db!} table={table!} branch={currentBranch} />,
     },
   ];
 
   return (
     <div>
-      <Title level={3}>
-        {db}.{table}
-      </Title>
-      <Tabs defaultActiveKey="schema" items={tabItems} />
+      <Space align="center" style={{ marginBottom: 8 }}>
+        <Title level={3} style={{ margin: 0 }}>
+          {db}.{table}
+        </Title>
+        {branchOptions.length > 0 && (
+          <>
+            <BranchesOutlined style={{ marginLeft: 16, color: '#999' }} />
+            <Select
+              value={currentBranch}
+              onChange={(val: string) => setCurrentBranch(val)}
+              options={branchOptions}
+              style={{ minWidth: 140 }}
+            />
+          </>
+        )}
+      </Space>
+      <Tabs defaultActiveKey="schema" items={tabItems} destroyOnHidden />
     </div>
   );
 }

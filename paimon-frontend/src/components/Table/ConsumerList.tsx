@@ -5,12 +5,13 @@ import { listConsumers } from '../../api/consumers';
 interface Props {
   database: string;
   table: string;
+  branch?: string;
 }
 
-export default function ConsumerList({ database, table }: Props) {
+export default function ConsumerList({ database, table, branch }: Props) {
   const { data = [], isLoading } = useQuery({
-    queryKey: ['consumers', database, table],
-    queryFn: () => listConsumers(database, table),
+    queryKey: ['consumers', database, table, branch ?? 'main'],
+    queryFn: () => listConsumers(database, table, branch),
   });
 
   return (

@@ -59,7 +59,7 @@ export default function CatalogManager({ open, onClose }: Props) {
       if (resp.data?.defaults) {
         const serverPrefix = resp.data.defaults.prefix;
         message.success(`Connected! Server prefix: "${serverPrefix}"`);
-        if (serverPrefix && !form.getFieldValue('prefix')) {
+        if (serverPrefix) {
           form.setFieldValue('prefix', serverPrefix);
         }
       } else {
@@ -173,6 +173,7 @@ export default function CatalogManager({ open, onClose }: Props) {
           <Form.Item
             name="prefix"
             label="Prefix"
+            rules={[{ required: true, message: 'Click "Test Connection" to auto-detect, or enter manually' }]}
             tooltip="The REST catalog prefix. Click 'Test Connection' to auto-detect."
           >
             <Input placeholder="e.g. paimon (auto-detected on test)" />

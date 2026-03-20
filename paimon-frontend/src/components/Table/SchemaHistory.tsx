@@ -7,12 +7,13 @@ import type { SchemaHistoryEntry, FieldInfo } from '../../api/types';
 interface Props {
   database: string;
   table: string;
+  branch?: string;
 }
 
-export default function SchemaHistory({ database, table }: Props) {
+export default function SchemaHistory({ database, table, branch }: Props) {
   const { data = [], isLoading } = useQuery({
-    queryKey: ['schemas', database, table],
-    queryFn: () => listSchemas(database, table),
+    queryKey: ['schemas', database, table, branch ?? 'main'],
+    queryFn: () => listSchemas(database, table, branch),
   });
 
   const fieldColumns = [

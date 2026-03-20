@@ -8,13 +8,14 @@ import type { SnapshotInfo } from '../../api/types';
 interface Props {
   database: string;
   table: string;
+  branch?: string;
 }
 
-export default function SnapshotList({ database, table }: Props) {
+export default function SnapshotList({ database, table, branch }: Props) {
   const { data, isLoading, hasNext, hasPrev, pageIndex, goNext, goPrev } = usePagedData<SnapshotInfo>({
-    queryKey: ['snapshots', database, table],
+    queryKey: ['snapshots', database, table, branch ?? 'main'],
     fetcher: (pageToken) =>
-      listSnapshots(database, table, pageToken).then((r) => ({
+      listSnapshots(database, table, pageToken, branch).then((r) => ({
         data: r.snapshots,
         nextPageToken: r.nextPageToken,
       })),
@@ -36,11 +37,6 @@ export default function SnapshotList({ database, table }: Props) {
     {
       title: 'Delta Records',
       dataIndex: 'deltaRecordCount',
-      render: formatNumber,
-    },
-    {
-      title: 'Total Files',
-      dataIndex: 'totalFileCount',
       render: formatNumber,
     },
     {
