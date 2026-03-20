@@ -736,33 +736,35 @@ public class SparkSQLWithRestCatalogE2ETest {
     //         CREATE VIEW → SELECT FROM view → DROP VIEW
     //         验证 View 定义通过 REST 写入和回读 —— 不支持，去掉case
     // ------------------------------------------------------------------
-//    @Test
-//    void testViewCrudAndQuery() {
-//        spark.sql(
-//                "CREATE TABLE t_view_src (id INT, name STRING, score INT)"
-//                        + " USING paimon TBLPROPERTIES ('bucket'='-1')");
-//        spark.sql(
-//                "INSERT INTO t_view_src VALUES (1, 'Alice', 90), (2, 'Bob', 80), (3, 'Charlie', 70)");
-//
-//        // 创建 View
-//        spark.sql("CREATE VIEW v_high_score AS SELECT * FROM t_view_src WHERE score >= 80");
-//
-//        // 通过 View 查询
-//        List<Row> rows = spark.sql("SELECT * FROM v_high_score ORDER BY id").collectAsList();
-//        assertThat(rows).hasSize(2);
-//        assertThat(rows.get(0).getString(1)).isEqualTo("Alice");
-//        assertThat(rows.get(1).getString(1)).isEqualTo("Bob");
-//
-//        // SHOW VIEWS 应包含该 View
-//        List<Row> views = spark.sql("SHOW VIEWS").collectAsList();
-//        assertThat(views.stream().map(r -> r.getString(1))).contains("v_high_score");
-//
-//        // DROP VIEW
-//        spark.sql("DROP VIEW v_high_score");
-//
-//        List<Row> viewsAfterDrop = spark.sql("SHOW VIEWS").collectAsList();
-//        assertThat(viewsAfterDrop.stream().map(r -> r.getString(1))).doesNotContain("v_high_score");
-//    }
+    //    @Test
+    //    void testViewCrudAndQuery() {
+    //        spark.sql(
+    //                "CREATE TABLE t_view_src (id INT, name STRING, score INT)"
+    //                        + " USING paimon TBLPROPERTIES ('bucket'='-1')");
+    //        spark.sql(
+    //                "INSERT INTO t_view_src VALUES (1, 'Alice', 90), (2, 'Bob', 80), (3,
+    // 'Charlie', 70)");
+    //
+    //        // 创建 View
+    //        spark.sql("CREATE VIEW v_high_score AS SELECT * FROM t_view_src WHERE score >= 80");
+    //
+    //        // 通过 View 查询
+    //        List<Row> rows = spark.sql("SELECT * FROM v_high_score ORDER BY id").collectAsList();
+    //        assertThat(rows).hasSize(2);
+    //        assertThat(rows.get(0).getString(1)).isEqualTo("Alice");
+    //        assertThat(rows.get(1).getString(1)).isEqualTo("Bob");
+    //
+    //        // SHOW VIEWS 应包含该 View
+    //        List<Row> views = spark.sql("SHOW VIEWS").collectAsList();
+    //        assertThat(views.stream().map(r -> r.getString(1))).contains("v_high_score");
+    //
+    //        // DROP VIEW
+    //        spark.sql("DROP VIEW v_high_score");
+    //
+    //        List<Row> viewsAfterDrop = spark.sql("SHOW VIEWS").collectAsList();
+    //        assertThat(viewsAfterDrop.stream().map(r ->
+    // r.getString(1))).doesNotContain("v_high_score");
+    //    }
 
     // ------------------------------------------------------------------
     // CASE 20: Rollback 回滚到指定 Snapshot
@@ -1047,7 +1049,8 @@ public class SparkSQLWithRestCatalogE2ETest {
                         e -> assertThat(e.getMessage()).containsIgnoringCase("not exist"),
                         e ->
                                 assertThat(e.getMessage())
-                                        .containsIgnoringCase("The table or view `t_nonexistent` cannot be found"));
+                                        .containsIgnoringCase(
+                                                "The table or view `t_nonexistent` cannot be found"));
     }
 
     // ------------------------------------------------------------------
@@ -1162,8 +1165,7 @@ public class SparkSQLWithRestCatalogE2ETest {
                         + ".t_list_br', branch => 'feature', tag => 'base_tag')");
 
         // 通过 REST API 列出分支
-        String response =
-                restGet("/databases/" + DB_NAME + "/tables/t_list_br/branches");
+        String response = restGet("/databases/" + DB_NAME + "/tables/t_list_br/branches");
         JsonNode json = MAPPER.readTree(response);
 
         JsonNode branches = json.get("branches");
@@ -1225,8 +1227,7 @@ public class SparkSQLWithRestCatalogE2ETest {
                         + ".t_list_tag', tag => 'release_v2', snapshot => 2)");
 
         // 列出 Tag
-        String listResponse =
-                restGet("/databases/" + DB_NAME + "/tables/t_list_tag/tags");
+        String listResponse = restGet("/databases/" + DB_NAME + "/tables/t_list_tag/tags");
         JsonNode listJson = MAPPER.readTree(listResponse);
 
         JsonNode tags = listJson.get("tags");
@@ -1240,8 +1241,7 @@ public class SparkSQLWithRestCatalogE2ETest {
 
         // 获取单个 Tag 详情
         String getResponse =
-                restGet(
-                        "/databases/" + DB_NAME + "/tables/t_list_tag/tags/release_v1");
+                restGet("/databases/" + DB_NAME + "/tables/t_list_tag/tags/release_v1");
         JsonNode getJson = MAPPER.readTree(getResponse);
 
         assertThat(getJson.get("tagName").asText()).isEqualTo("release_v1");
@@ -1281,8 +1281,7 @@ public class SparkSQLWithRestCatalogE2ETest {
         spark.sql("INSERT INTO t_commits VALUES (3, 'v3')"); // snapshot 3
 
         // 通过 REST API 列出 Commit 历史
-        String response =
-                restGet("/databases/" + DB_NAME + "/tables/t_commits/commits");
+        String response = restGet("/databases/" + DB_NAME + "/tables/t_commits/commits");
         JsonNode json = MAPPER.readTree(response);
 
         JsonNode commits = json.get("commits");
@@ -1313,8 +1312,7 @@ public class SparkSQLWithRestCatalogE2ETest {
         spark.sql("INSERT INTO t_get_commit VALUES (2, 'v2')"); // snapshot 2
 
         // 获取 snapshot 1 的 Commit 详情
-        String response =
-                restGet("/databases/" + DB_NAME + "/tables/t_get_commit/commits/1");
+        String response = restGet("/databases/" + DB_NAME + "/tables/t_get_commit/commits/1");
         JsonNode json = MAPPER.readTree(response);
 
         assertThat(json.get("snapshotId").asLong()).isEqualTo(1L);
@@ -1323,8 +1321,7 @@ public class SparkSQLWithRestCatalogE2ETest {
         assertThat(json.get("timeMillis").asLong()).isGreaterThan(0);
 
         // 获取 snapshot 2 的 Commit 详情
-        String response2 =
-                restGet("/databases/" + DB_NAME + "/tables/t_get_commit/commits/2");
+        String response2 = restGet("/databases/" + DB_NAME + "/tables/t_get_commit/commits/2");
         JsonNode json2 = MAPPER.readTree(response2);
 
         assertThat(json2.get("snapshotId").asLong()).isEqualTo(2L);
@@ -1351,9 +1348,7 @@ public class SparkSQLWithRestCatalogE2ETest {
 
         // 通过 Commit API 回滚到 snapshot 1
         String response =
-                restPost(
-                        "/databases/" + DB_NAME + "/tables/t_reset/commits/1/reset",
-                        null);
+                restPost("/databases/" + DB_NAME + "/tables/t_reset/commits/1/reset", null);
         JsonNode json = MAPPER.readTree(response);
         assertThat(json.get("snapshotId").asLong()).isEqualTo(1L);
 
@@ -1384,8 +1379,7 @@ public class SparkSQLWithRestCatalogE2ETest {
         spark.sql("INSERT INTO t_list_snap VALUES (3, 'v3')"); // snapshot 3
 
         // 通过 REST API 列出快照
-        String response =
-                restGet("/databases/" + DB_NAME + "/tables/t_list_snap/snapshots");
+        String response = restGet("/databases/" + DB_NAME + "/tables/t_list_snap/snapshots");
         JsonNode json = MAPPER.readTree(response);
 
         JsonNode snapshots = json.get("snapshots");
@@ -1427,8 +1421,7 @@ public class SparkSQLWithRestCatalogE2ETest {
         spark.sql("INSERT INTO t_schema_hist VALUES (2, 'Bob', 30)");
 
         // 列出 schema 版本
-        String listResponse =
-                restGet("/databases/" + DB_NAME + "/tables/t_schema_hist/schemas");
+        String listResponse = restGet("/databases/" + DB_NAME + "/tables/t_schema_hist/schemas");
         JsonNode listJson = MAPPER.readTree(listResponse);
 
         JsonNode schemas = listJson.get("schemas");
@@ -1436,8 +1429,7 @@ public class SparkSQLWithRestCatalogE2ETest {
         assertThat(schemas.size()).isGreaterThanOrEqualTo(2);
 
         // 获取 schema 0（初始版本）
-        String getResponse =
-                restGet("/databases/" + DB_NAME + "/tables/t_schema_hist/schemas/0");
+        String getResponse = restGet("/databases/" + DB_NAME + "/tables/t_schema_hist/schemas/0");
         JsonNode schemaJson = MAPPER.readTree(getResponse);
 
         assertThat(schemaJson.get("schemaId").asLong()).isEqualTo(0L);
@@ -1449,8 +1441,7 @@ public class SparkSQLWithRestCatalogE2ETest {
         assertThat(fields.size()).isEqualTo(2);
 
         // 获取 schema 1（ADD COLUMN 后）
-        String getResponse1 =
-                restGet("/databases/" + DB_NAME + "/tables/t_schema_hist/schemas/1");
+        String getResponse1 = restGet("/databases/" + DB_NAME + "/tables/t_schema_hist/schemas/1");
         JsonNode schemaJson1 = MAPPER.readTree(getResponse1);
 
         assertThat(schemaJson1.get("schemaId").asLong()).isEqualTo(1L);
