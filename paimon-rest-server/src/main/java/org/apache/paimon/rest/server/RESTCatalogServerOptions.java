@@ -120,6 +120,13 @@ public class RESTCatalogServerOptions {
                     .withDescription(
                             "Maximum time in milliseconds to wait for a connection from the pool.");
 
+    public static final ConfigOption<Boolean> FRONTEND_ENABLED =
+            ConfigOptions.key("rest-server.frontend.enabled")
+                    .booleanType()
+                    .defaultValue(true)
+                    .withDescription(
+                            "Whether to serve the frontend Web UI from classpath static resources.");
+
     public static final ConfigOption<String> AUTH_URL =
             ConfigOptions.key("rest-server.auth.url")
                     .stringType()

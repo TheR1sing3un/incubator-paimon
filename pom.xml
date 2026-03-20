@@ -87,6 +87,7 @@ under the License.
         <module>tools/ci/paimon-ci-tools</module>
         <module>paimon-api</module>
         <module>paimon-rest-server</module>
+        <module>paimon-frontend</module>
     </modules>
 
     <properties>

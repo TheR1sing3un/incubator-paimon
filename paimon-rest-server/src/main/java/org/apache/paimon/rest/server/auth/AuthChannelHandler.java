@@ -65,6 +65,14 @@ public class AuthChannelHandler extends SimpleChannelInboundHandler<FullHttpRequ
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request)
             throws Exception {
+        // Skip authentication for static frontend resources (non-API paths)
+        String uri = request.uri().split("\\?")[0];
+        if (!uri.startsWith("/v1/")) {
+            ctx.channel().attr(AUTH_CONTEXT_KEY).set(AuthContext.ANONYMOUS);
+            ctx.fireChannelRead(request);
+            return;
+        }
+
         String token = extractToken(request);
         try {
             AuthContext authContext = authenticator.authenticate(token);

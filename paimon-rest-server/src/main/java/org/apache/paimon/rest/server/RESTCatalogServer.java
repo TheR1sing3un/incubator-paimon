@@ -97,7 +97,8 @@ public class RESTCatalogServer {
         AuthChannelHandler authHandler = new AuthChannelHandler(authenticator);
         this.metadataStore = createMetadataStore();
         RouteDispatcher dispatcher = new RouteDispatcher(catalog, prefix, warehouse, metadataStore);
-        HttpRequestHandler handler = new HttpRequestHandler(dispatcher);
+        boolean frontendEnabled = options.get(RESTCatalogServerOptions.FRONTEND_ENABLED);
+        HttpRequestHandler handler = new HttpRequestHandler(dispatcher, frontendEnabled);
         this.httpServer =
                 new HttpServer(
                         host,
