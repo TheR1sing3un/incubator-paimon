@@ -9,6 +9,7 @@ import SchemaView from './SchemaView';
 import OptionsView from './OptionsView';
 import SnapshotList from './SnapshotList';
 import BranchList from './BranchList';
+import BranchGraph from './BranchGraph';
 import TagList from './TagList';
 import PartitionList from './PartitionList';
 import SchemaHistory from './SchemaHistory';
@@ -21,8 +22,8 @@ export default function TableDetail() {
   const [currentBranch, setCurrentBranch] = useState('main');
 
   const { data: tableInfo, isLoading, error } = useQuery({
-    queryKey: ['table', db, table],
-    queryFn: () => getTable(db!, table!),
+    queryKey: ['table', db, table, currentBranch],
+    queryFn: () => getTable(db!, table!, currentBranch),
     enabled: !!db && !!table,
   });
 
@@ -61,6 +62,11 @@ export default function TableDetail() {
       key: 'branches',
       label: 'Branches',
       children: <BranchList database={db!} table={table!} />,
+    },
+    {
+      key: 'graph',
+      label: 'Graph',
+      children: <BranchGraph database={db!} table={table!} />,
     },
     {
       key: 'tags',

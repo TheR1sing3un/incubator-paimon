@@ -11,7 +11,8 @@ export async function listTables(database: string): Promise<string[]> {
   return resp.data.tables ?? [];
 }
 
-export async function getTable(database: string, table: string): Promise<TableInfo> {
-  const resp = await apiClient.get(`/${getCurrentPrefix()}/databases/${database}/tables/${table}`);
+export async function getTable(database: string, table: string, branch?: string): Promise<TableInfo> {
+  const t = encodeBranchTable(table, branch);
+  const resp = await apiClient.get(`/${getCurrentPrefix()}/databases/${database}/tables/${t}`);
   return resp.data;
 }
