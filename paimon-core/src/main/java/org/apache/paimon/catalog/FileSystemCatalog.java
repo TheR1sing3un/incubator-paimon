@@ -416,7 +416,9 @@ public class FileSystemCatalog extends AbstractCatalog {
     @Override
     public List<String> listBranches(Identifier identifier) throws TableNotExistException {
         assertTableExists(identifier);
-        return newBranchManager(identifier).branches();
+        List<String> branches = new ArrayList<>(newBranchManager(identifier).branches());
+        branches.add(0, Identifier.DEFAULT_MAIN_BRANCH);
+        return branches;
     }
 
     @Override
