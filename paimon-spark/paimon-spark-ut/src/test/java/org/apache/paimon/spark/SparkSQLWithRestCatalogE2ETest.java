@@ -1459,4 +1459,68 @@ public class SparkSQLWithRestCatalogE2ETest {
         assertThat(fields1.isArray()).isTrue();
         assertThat(fields1.size()).isEqualTo(3);
     }
+
+    // ------------------------------------------------------------------
+    // CASE 37: Fast-Forward Branch
+    // 测试点: REST Catalog 的 POST .../branches/{branch}/forward 端点
+    //         在 branch 上写入数据后，fast-forward 将主分支推进到 branch 最新状态
+    //         验证主分支数据与 branch 一致，原主分支独有的数据被覆盖
+    // ------------------------------------------------------------------
+    @Test
+    void testFastForwardBranch() {
+        spark.sql(
+                "CREATE TABLE t_ff (id INT, val STRING)"
+                        + " USING paimon TBLPROPERTIES ('bucket'='-1')");
+
+        spark.sql("INSERT INTO t_ff VALUES (1, 'main_v1')"); // snapshot 1
+        spark.sql("INSERT INTO t_ff VALUES (2, 'main_v2')"); // snapshot 2
+
+        // 基于 snapshot 1 创建 Tag 和 Branch
+        spark.sql(
+                "CALL "
+                        + CATALOG_NAME
+                        + ".sys.create_tag(table => '"
+                        + DB_NAME
+                        + ".t_ff', tag => 'ff_tag', snapshot => 1)");
+        spark.sql(
+                "CALL "
+                        + CATALOG_NAME
+                        + ".sys.create_branch(table => '"
+                        + DB_NAME
+                        + ".t_ff', branch => 'ff_branch', tag => 'ff_tag')");
+
+        // 在 branch 上写入数据
+        spark.sql("INSERT INTO `t_ff$branch_ff_branch` VALUES (10, 'branch_v1')");
+
+        // 主分支当前应有 2 行（main_v1, main_v2）
+        assertThat(spark.sql("SELECT * FROM t_ff").collectAsList()).hasSize(2);
+
+        // fast-forward 主分支到 ff_branch 状态
+        spark.sql(
+                "CALL "
+                        + CATALOG_NAME
+                        + ".sys.fast_forward(table => '"
+                        + DB_NAME
+                        + ".t_ff', branch => 'ff_branch')");
+
+        // fast-forward 后主分支应该与 branch 一致：
+        // branch 基于 snapshot 1（1 行）+ 自身写入（1 行）= 2 行
+        List<Row> rows = spark.sql("SELECT * FROM t_ff ORDER BY id").collectAsList();
+        assertThat(rows).hasSize(2);
+        assertThat(rows.get(0).getInt(0)).isEqualTo(1);
+        assertThat(rows.get(0).getString(1)).isEqualTo("main_v1");
+        assertThat(rows.get(1).getInt(0)).isEqualTo(10);
+        assertThat(rows.get(1).getString(1)).isEqualTo("branch_v1");
+
+        // main_v2 不再存在（被 fast-forward 覆盖）
+        assertThat(rows.stream().map(r -> r.getString(1))).doesNotContain("main_v2");
+
+        // 清理
+        spark.sql(
+                "CALL "
+                        + CATALOG_NAME
+                        + ".sys.delete_tag(table => '"
+                        + DB_NAME
+                        + ".t_ff', tag => 'ff_tag')");
+    }
 }
