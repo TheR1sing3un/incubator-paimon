@@ -21,6 +21,7 @@ package org.apache.paimon.operation;
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.KeyValue;
 import org.apache.paimon.KeyValueFileStore;
+import org.apache.paimon.VersionedMergeMode;
 import org.apache.paimon.codegen.RecordEqualiser;
 import org.apache.paimon.compact.CompactManager;
 import org.apache.paimon.data.BinaryRow;
@@ -194,6 +195,13 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
                 compactManagerFactory.create(
                         partition, bucket, compactExecutor, restoreFiles, dvMaintainer);
 
+        VersionedMergeMode mergeMode = VersionedMergeMode.UPSERT;
+        if (options.mergeEngine() == CoreOptions.MergeEngine.VERSIONED_PARTIAL_UPDATE) {
+            String mergeModeStr =
+                    options.toConfiguration().get(CoreOptions.VERSIONED_PARTIAL_UPDATE_MERGE_MODE);
+            mergeMode = VersionedMergeMode.fromString(mergeModeStr);
+        }
+
         return new MergeTreeWriter(
                 options.writeBufferSpillable(),
                 options.writeBufferSpillDiskSize(),
@@ -209,7 +217,8 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
                 options.changelogProducer(),
                 restoreIncrement,
                 UserDefinedSeqComparator.create(valueType, options),
-                options.snapshotSequenceOrdering());
+                options.snapshotSequenceOrdering(),
+                mergeMode);
     }
 
     @Override

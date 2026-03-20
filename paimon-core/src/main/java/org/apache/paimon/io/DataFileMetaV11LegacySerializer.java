@@ -1,0 +1,113 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.paimon.io;
+
+import org.apache.paimon.data.InternalRow;
+import org.apache.paimon.manifest.FileSource;
+import org.apache.paimon.stats.SimpleStats;
+import org.apache.paimon.types.ArrayType;
+import org.apache.paimon.types.BigIntType;
+import org.apache.paimon.types.DataField;
+import org.apache.paimon.types.DataTypes;
+import org.apache.paimon.types.IntType;
+import org.apache.paimon.types.RowType;
+import org.apache.paimon.types.TinyIntType;
+import org.apache.paimon.utils.ObjectSerializer;
+
+import java.util.Arrays;
+
+import static org.apache.paimon.utils.InternalRowUtils.fromStringArrayData;
+import static org.apache.paimon.utils.SerializationUtils.deserializeBinaryRow;
+import static org.apache.paimon.utils.SerializationUtils.newBytesType;
+import static org.apache.paimon.utils.SerializationUtils.newStringType;
+
+/**
+ * Legacy serializer for {@link DataFileMeta} with the 20-field schema (before _COMMIT_SNAPSHOT_ID
+ * and _MERGE_MODE were added). Used by {@link org.apache.paimon.table.sink.CommitMessageSerializer}
+ * to deserialize commit messages from versions 9-11.
+ */
+public class DataFileMetaV11LegacySerializer extends ObjectSerializer<DataFileMeta> {
+
+    private static final long serialVersionUID = 1L;
+
+    public static final RowType SCHEMA =
+            new RowType(
+                    false,
+                    Arrays.asList(
+                            new DataField(0, "_FILE_NAME", newStringType(false)),
+                            new DataField(1, "_FILE_SIZE", new BigIntType(false)),
+                            new DataField(2, "_ROW_COUNT", new BigIntType(false)),
+                            new DataField(3, "_MIN_KEY", newBytesType(false)),
+                            new DataField(4, "_MAX_KEY", newBytesType(false)),
+                            new DataField(5, "_KEY_STATS", SimpleStats.SCHEMA),
+                            new DataField(6, "_VALUE_STATS", SimpleStats.SCHEMA),
+                            new DataField(7, "_MIN_SEQUENCE_NUMBER", new BigIntType(false)),
+                            new DataField(8, "_MAX_SEQUENCE_NUMBER", new BigIntType(false)),
+                            new DataField(9, "_SCHEMA_ID", new BigIntType(false)),
+                            new DataField(10, "_LEVEL", new IntType(false)),
+                            new DataField(
+                                    11, "_EXTRA_FILES", new ArrayType(false, newStringType(false))),
+                            new DataField(12, "_CREATION_TIME", DataTypes.TIMESTAMP_MILLIS()),
+                            new DataField(13, "_DELETE_ROW_COUNT", new BigIntType(true)),
+                            new DataField(14, "_EMBEDDED_FILE_INDEX", newBytesType(true)),
+                            new DataField(15, "_FILE_SOURCE", new TinyIntType(true)),
+                            new DataField(
+                                    16,
+                                    "_VALUE_STATS_COLS",
+                                    DataTypes.ARRAY(DataTypes.STRING().notNull())),
+                            new DataField(17, "_EXTERNAL_PATH", newStringType(true)),
+                            new DataField(18, "_FIRST_ROW_ID", new BigIntType(true)),
+                            new DataField(
+                                    19, "_WRITE_COLS", new ArrayType(true, newStringType(false)))));
+
+    public DataFileMetaV11LegacySerializer() {
+        super(SCHEMA);
+    }
+
+    @Override
+    public InternalRow toRow(DataFileMeta meta) {
+        throw new UnsupportedOperationException(
+                "Legacy serializer does not support serialization.");
+    }
+
+    @Override
+    public DataFileMeta fromRow(InternalRow row) {
+        return DataFileMeta.create(
+                row.getString(0).toString(),
+                row.getLong(1),
+                row.getLong(2),
+                deserializeBinaryRow(row.getBinary(3)),
+                deserializeBinaryRow(row.getBinary(4)),
+                SimpleStats.fromRow(row.getRow(5, 3)),
+                SimpleStats.fromRow(row.getRow(6, 3)),
+                row.getLong(7),
+                row.getLong(8),
+                row.getLong(9),
+                row.getInt(10),
+                fromStringArrayData(row.getArray(11)),
+                row.getTimestamp(12, 3),
+                row.isNullAt(13) ? null : row.getLong(13),
+                row.isNullAt(14) ? null : row.getBinary(14),
+                row.isNullAt(15) ? null : FileSource.fromByteValue(row.getByte(15)),
+                row.isNullAt(16) ? null : fromStringArrayData(row.getArray(16)),
+                row.isNullAt(17) ? null : row.getString(17).toString(),
+                row.isNullAt(18) ? null : row.getLong(18),
+                row.isNullAt(19) ? null : fromStringArrayData(row.getArray(19)));
+    }
+}

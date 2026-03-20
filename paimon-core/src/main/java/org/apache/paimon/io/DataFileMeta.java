@@ -18,6 +18,7 @@
 
 package org.apache.paimon.io;
 
+import org.apache.paimon.VersionedMergeMode;
 import org.apache.paimon.annotation.Public;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.data.Timestamp;
@@ -86,7 +87,8 @@ public interface DataFileMeta {
                             new DataField(18, "_FIRST_ROW_ID", new BigIntType(true)),
                             new DataField(
                                     19, "_WRITE_COLS", new ArrayType(true, newStringType(false))),
-                            new DataField(20, "_COMMIT_SNAPSHOT_ID", new BigIntType(true))));
+                            new DataField(20, "_COMMIT_SNAPSHOT_ID", new BigIntType(true)),
+                            new DataField(21, "_MERGE_MODE", new TinyIntType(true))));
 
     BinaryRow EMPTY_MIN_KEY = EMPTY_ROW;
     BinaryRow EMPTY_MAX_KEY = EMPTY_ROW;
@@ -279,6 +281,54 @@ public interface DataFileMeta {
             @Nullable String externalPath,
             @Nullable Long firstRowId,
             @Nullable List<String> writeCols,
+            @Nullable Long commitSnapshotId,
+            VersionedMergeMode mergeMode) {
+        return new PojoDataFileMeta(
+                fileName,
+                fileSize,
+                rowCount,
+                minKey,
+                maxKey,
+                keyStats,
+                valueStats,
+                minSequenceNumber,
+                maxSequenceNumber,
+                schemaId,
+                level,
+                extraFiles,
+                creationTime,
+                deleteRowCount,
+                embeddedIndex,
+                fileSource,
+                valueStatsCols,
+                externalPath,
+                firstRowId,
+                writeCols,
+                commitSnapshotId,
+                mergeMode);
+    }
+
+    static DataFileMeta create(
+            String fileName,
+            long fileSize,
+            long rowCount,
+            BinaryRow minKey,
+            BinaryRow maxKey,
+            SimpleStats keyStats,
+            SimpleStats valueStats,
+            long minSequenceNumber,
+            long maxSequenceNumber,
+            long schemaId,
+            int level,
+            List<String> extraFiles,
+            Timestamp creationTime,
+            @Nullable Long deleteRowCount,
+            @Nullable byte[] embeddedIndex,
+            @Nullable FileSource fileSource,
+            @Nullable List<String> valueStatsCols,
+            @Nullable String externalPath,
+            @Nullable Long firstRowId,
+            @Nullable List<String> writeCols,
             @Nullable Long commitSnapshotId) {
         return new PojoDataFileMeta(
                 fileName,
@@ -301,7 +351,8 @@ public interface DataFileMeta {
                 externalPath,
                 firstRowId,
                 writeCols,
-                commitSnapshotId);
+                commitSnapshotId,
+                VersionedMergeMode.UPSERT);
     }
 
     String fileName();
@@ -363,6 +414,17 @@ public interface DataFileMeta {
 
     @Nullable
     List<String> writeCols();
+
+    /**
+     * Merge mode for the versioned-partial-update merge engine. Defaults to {@link
+     * VersionedMergeMode#UPSERT}.
+     */
+    default VersionedMergeMode mergeMode() {
+        return VersionedMergeMode.UPSERT;
+    }
+
+    /** Return a copy of this file meta with the given merge mode. */
+    DataFileMeta withVersionedMergeMode(VersionedMergeMode mergeMode);
 
     DataFileMeta upgrade(int newLevel);
 

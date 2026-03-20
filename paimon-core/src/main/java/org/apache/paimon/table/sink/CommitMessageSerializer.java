@@ -33,6 +33,7 @@ import org.apache.paimon.io.DataFileMeta10LegacySerializer;
 import org.apache.paimon.io.DataFileMeta12LegacySerializer;
 import org.apache.paimon.io.DataFileMetaFirstRowIdLegacySerializer;
 import org.apache.paimon.io.DataFileMetaSerializer;
+import org.apache.paimon.io.DataFileMetaV11LegacySerializer;
 import org.apache.paimon.io.DataIncrement;
 import org.apache.paimon.io.DataInputDeserializer;
 import org.apache.paimon.io.DataInputView;
@@ -51,7 +52,7 @@ import static org.apache.paimon.utils.SerializationUtils.serializeBinaryRow;
 /** {@link VersionedSerializer} for {@link CommitMessage}. */
 public class CommitMessageSerializer implements VersionedSerializer<CommitMessage> {
 
-    public static final int CURRENT_VERSION = 11;
+    public static final int CURRENT_VERSION = 12;
 
     private final DataFileMetaSerializer dataFileSerializer;
     private final IndexFileMetaSerializer indexEntrySerializer;
@@ -64,6 +65,7 @@ public class CommitMessageSerializer implements VersionedSerializer<CommitMessag
     private IndexFileMetaV1Deserializer indexEntryV1Deserializer;
     private IndexFileMetaV2Deserializer indexEntryV2Deserializer;
     private IndexFileMetaV3Deserializer indexEntryV3Deserializer;
+    private DataFileMetaV11LegacySerializer dataFileMetaV11LegacySerializer;
 
     public CommitMessageSerializer() {
         this.dataFileSerializer = new DataFileMetaSerializer();
@@ -184,8 +186,16 @@ public class CommitMessageSerializer implements VersionedSerializer<CommitMessag
 
     private IOExceptionSupplier<List<DataFileMeta>> fileDeserializer(
             int version, DataInputView view) {
-        if (version >= 9) {
+        if (version >= 12) {
+            // Version 12+: DataFileMeta with 22 fields (_COMMIT_SNAPSHOT_ID and _MERGE_MODE)
             return () -> dataFileSerializer.deserializeList(view);
+        } else if (version >= 9) {
+            // Version 9-11: DataFileMeta with 20 fields (before _COMMIT_SNAPSHOT_ID and
+            // _MERGE_MODE)
+            if (dataFileMetaV11LegacySerializer == null) {
+                dataFileMetaV11LegacySerializer = new DataFileMetaV11LegacySerializer();
+            }
+            return () -> dataFileMetaV11LegacySerializer.deserializeList(view);
         } else if (version == 8) {
             if (dataFileMetaFirstRowIdLegacySerializer == null) {
                 dataFileMetaFirstRowIdLegacySerializer =

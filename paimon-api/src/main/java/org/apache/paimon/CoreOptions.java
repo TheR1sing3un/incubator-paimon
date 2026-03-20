@@ -970,6 +970,38 @@ public class CoreOptions implements Serializable {
                             "When -D records of the given sequence groups are received, remove the whole row.");
 
     @Immutable
+    public static final ConfigOption<String> VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS =
+            key("versioned-partial-update.multi-version-fields")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Comma-separated list of multi-version column names for the "
+                                    + "'versioned-partial-update' merge engine. Each column must be "
+                                    + "ROW<latest_version STRING, latest_value T, "
+                                    + "all_versioned_values MAP<STRING, T>>. "
+                                    + "These columns accumulate version entries from multiple "
+                                    + "writing jobs, with each entry identified by a version key. "
+                                    + "Note: the 'latest' version is determined by lexicographic "
+                                    + "order (String comparison), not numeric order. For example, "
+                                    + "'v9' > 'v10' > 'v2' lexicographically. Use zero-padded "
+                                    + "version keys (e.g., 'v002', 'v009', 'v010') if numeric "
+                                    + "ordering is desired.");
+
+    public static final ConfigOption<String> VERSIONED_PARTIAL_UPDATE_MERGE_MODE =
+            key("versioned-partial-update.merge-mode")
+                    .stringType()
+                    .defaultValue("upsert")
+                    .withDescription(
+                            "Per-job merge mode for the 'versioned-partial-update' merge engine. "
+                                    + "'upsert' (default): overwrite existing values for both "
+                                    + "single-version and multi-version columns. "
+                                    + "'ignore': for single-version columns, only set when target "
+                                    + "is null; for multi-version columns, only append new version "
+                                    + "keys and do not overwrite existing version entries. "
+                                    + "Different jobs writing to the same table can use different "
+                                    + "modes by setting this option per job.");
+
+    @Immutable
     public static final ConfigOption<String> ROWKIND_FIELD =
             key("rowkind.field")
                     .stringType()
@@ -3708,7 +3740,11 @@ public class CoreOptions implements Serializable {
 
         AGGREGATE("aggregation", "Aggregate fields with same primary key."),
 
-        FIRST_ROW("first-row", "De-duplicate and keep the first row.");
+        FIRST_ROW("first-row", "De-duplicate and keep the first row."),
+
+        VERSIONED_PARTIAL_UPDATE(
+                "versioned-partial-update",
+                "Partial update with versioned multi-version columns. Requires deletion-vectors enabled.");
 
         private final String value;
         private final String description;

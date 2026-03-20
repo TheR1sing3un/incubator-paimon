@@ -24,6 +24,7 @@ import org.apache.paimon.mergetree.compact.DeduplicateMergeFunction;
 import org.apache.paimon.mergetree.compact.FirstRowMergeFunction;
 import org.apache.paimon.mergetree.compact.MergeFunctionFactory;
 import org.apache.paimon.mergetree.compact.PartialUpdateMergeFunction;
+import org.apache.paimon.mergetree.compact.VersionedPartialUpdateMergeFunction;
 import org.apache.paimon.mergetree.compact.aggregate.AggregateMergeFunction;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.schema.KeyValueFieldsExtractor;
@@ -71,6 +72,9 @@ public class PrimaryKeyTableUtils {
                 return AggregateMergeFunction.factory(conf, rowType, tableSchema.primaryKeys());
             case FIRST_ROW:
                 return FirstRowMergeFunction.factory(conf);
+            case VERSIONED_PARTIAL_UPDATE:
+                return VersionedPartialUpdateMergeFunction.factory(
+                        conf, rowType, tableSchema.primaryKeys());
             default:
                 throw new UnsupportedOperationException("Unsupported merge engine: " + mergeEngine);
         }
@@ -138,6 +142,17 @@ public class PrimaryKeyTableUtils {
                                             + "please set %s to true.",
                                     mergeEngine, AGGREGATION_REMOVE_RECORD_ON_DELETE.key()));
                 }
+            case VERSIONED_PARTIAL_UPDATE:
+                if (!options.get(CoreOptions.IGNORE_DELETE)) {
+                    return;
+                }
+                throw new UnsupportedOperationException(
+                        String.format(
+                                "Merge engine %s cannot support batch delete when 'ignore-delete' is true. "
+                                        + "When ignore-delete is true, DELETE records are silently dropped, "
+                                        + "so a batch DELETE statement would have no effect. "
+                                        + "Set 'ignore-delete' to false (the default) to enable batch delete.",
+                                mergeEngine));
             default:
                 throw new UnsupportedOperationException(
                         String.format(

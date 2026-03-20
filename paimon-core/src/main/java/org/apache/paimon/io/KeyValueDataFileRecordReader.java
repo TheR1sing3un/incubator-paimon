@@ -20,6 +20,7 @@ package org.apache.paimon.io;
 
 import org.apache.paimon.KeyValue;
 import org.apache.paimon.KeyValueSerializer;
+import org.apache.paimon.VersionedMergeMode;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.reader.FileRecordIterator;
 import org.apache.paimon.reader.FileRecordReader;
@@ -39,16 +40,25 @@ public class KeyValueDataFileRecordReader implements FileRecordReader<KeyValue> 
 
     private final long fileSnapshotId;
 
+    /**
+     * Merge mode from this file's {@link DataFileMeta#mergeMode()}. Each deserialized {@link
+     * KeyValue} is stamped with this mode so that the merge function knows which semantics to
+     * apply. This decouples the merge behavior from the writing job's runtime configuration.
+     */
+    private final VersionedMergeMode mergeMode;
+
     public KeyValueDataFileRecordReader(
             FileRecordReader<InternalRow> reader,
             RowType keyType,
             RowType valueType,
             int level,
-            long fileSnapshotId) {
+            long fileSnapshotId,
+            VersionedMergeMode mergeMode) {
         this.reader = reader;
         this.serializer = new KeyValueSerializer(keyType, valueType);
         this.level = level;
         this.fileSnapshotId = fileSnapshotId;
+        this.mergeMode = mergeMode;
     }
 
     @Nullable
@@ -65,7 +75,10 @@ public class KeyValueDataFileRecordReader implements FileRecordReader<KeyValue> 
                         return null;
                     }
                     KeyValue kv =
-                            serializer.fromRow(internalRow).setLevel(level).setMergeMode(mergeMode);
+                            serializer
+                                    .fromRow(internalRow)
+                                    .setLevel(level)
+                                    .setVersionedMergeMode(mergeMode);
                     if (kv.snapshotId() <= 0 && fileSnapshotId > 0) {
                         kv.setSnapshotId(fileSnapshotId);
                     }

@@ -53,8 +53,15 @@ public class KeyValue {
     private InternalRow value;
     // determined after read from file
     private int level;
+    private VersionedMergeMode mergeMode;
     private long snapshotId;
 
+    /**
+     * Note on partial-replace methods ({@link #replaceKey}, {@link #replaceValue}, {@link
+     * #replaceValueKind}): these intentionally preserve file-level metadata ({@code level}, {@code
+     * mergeMode}) because the KeyValue still originates from the same file. Only the full {@link
+     * #replace(InternalRow, long, RowKind, InternalRow)} resets them.
+     */
     public KeyValue replace(InternalRow key, RowKind valueKind, InternalRow value) {
         return replace(key, UNKNOWN_SEQUENCE, valueKind, value);
     }
@@ -66,6 +73,7 @@ public class KeyValue {
         this.valueKind = valueKind;
         this.value = value;
         this.level = UNKNOWN_LEVEL;
+        this.mergeMode = VersionedMergeMode.UPSERT;
         this.snapshotId = UNKNOWN_SNAPSHOT_ID;
         return this;
     }
@@ -111,6 +119,15 @@ public class KeyValue {
 
     public KeyValue setLevel(int level) {
         this.level = level;
+        return this;
+    }
+
+    public VersionedMergeMode mergeMode() {
+        return mergeMode;
+    }
+
+    public KeyValue setVersionedMergeMode(VersionedMergeMode mergeMode) {
+        this.mergeMode = mergeMode;
         return this;
     }
 
@@ -191,6 +208,7 @@ public class KeyValue {
                         valueKind,
                         valueSerializer.copy(value))
                 .setLevel(level)
+                .setVersionedMergeMode(mergeMode)
                 .setSnapshotId(snapshotId);
     }
 
@@ -199,8 +217,8 @@ public class KeyValue {
         String keyString = rowDataToString(key, keyType);
         String valueString = rowDataToString(value, valueType);
         return String.format(
-                "{kind: %s, seq: %d, key: (%s), value: (%s), level: %d}",
-                valueKind.name(), sequenceNumber, keyString, valueString, level);
+                "{kind: %s, seq: %d, key: (%s), value: (%s), level: %d, mergeMode: %s}",
+                valueKind.name(), sequenceNumber, keyString, valueString, level, mergeMode);
     }
 
     public static String rowDataToString(InternalRow row, RowType type) {

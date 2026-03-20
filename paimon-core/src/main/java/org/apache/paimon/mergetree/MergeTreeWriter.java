@@ -20,6 +20,7 @@ package org.apache.paimon.mergetree;
 
 import org.apache.paimon.CoreOptions.ChangelogProducer;
 import org.apache.paimon.KeyValue;
+import org.apache.paimon.VersionedMergeMode;
 import org.apache.paimon.annotation.VisibleForTesting;
 import org.apache.paimon.compact.CompactDeletionFile;
 import org.apache.paimon.compact.CompactManager;
@@ -86,6 +87,15 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
     private long newSequenceNumber;
     private WriteBuffer writeBuffer;
 
+    /**
+     * Per-job merge mode for the versioned-partial-update engine. This value comes from the job's
+     * configuration (e.g. OPTIONS hint) and is stamped onto each newly flushed {@link DataFileMeta}
+     * at write time. During compaction and merge-on-read, the merge mode is read back from {@link
+     * DataFileMeta}, not from job configuration, so each file permanently carries the merge
+     * semantics of the job that wrote it.
+     */
+    private final VersionedMergeMode mergeMode;
+
     public MergeTreeWriter(
             boolean writeBufferSpillable,
             MemorySize maxDiskSize,
@@ -101,7 +111,8 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
             ChangelogProducer changelogProducer,
             @Nullable CommitIncrement increment,
             @Nullable FieldsComparator userDefinedSeqComparator,
-            boolean snapshotSequenceOrdering) {
+            boolean snapshotSequenceOrdering,
+            VersionedMergeMode mergeMode) {
         this.writeBufferSpillable = writeBufferSpillable;
         this.maxDiskSize = maxDiskSize;
         this.sortMaxFan = sortMaxFan;
@@ -117,6 +128,7 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
         this.commitForceCompact = commitForceCompact;
         this.changelogProducer = changelogProducer;
         this.userDefinedSeqComparator = userDefinedSeqComparator;
+        this.mergeMode = mergeMode;
 
         this.snapshotSequenceOrdering = snapshotSequenceOrdering;
 
@@ -243,6 +255,9 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
             }
 
             for (DataFileMeta fileMeta : dataWriter.result()) {
+                if (mergeMode != VersionedMergeMode.UPSERT) {
+                    fileMeta = fileMeta.withVersionedMergeMode(mergeMode);
+                }
                 if (snapshotSequenceOrdering) {
                     fileMeta = fileMeta.assignCommitSnapshotId(Long.MAX_VALUE);
                 }

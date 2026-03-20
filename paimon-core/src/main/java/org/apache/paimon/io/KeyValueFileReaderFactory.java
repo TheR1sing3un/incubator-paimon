@@ -175,7 +175,8 @@ public class KeyValueFileReaderFactory implements FileReaderFactory<KeyValue> {
                 file.level(),
                 file.commitSnapshotId() != null
                         ? file.commitSnapshotId()
-                        : KeyValue.UNKNOWN_SNAPSHOT_ID);
+                        : KeyValue.UNKNOWN_SNAPSHOT_ID,
+                file.mergeMode());
     }
 
     public static Builder builder(

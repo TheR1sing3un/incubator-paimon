@@ -18,6 +18,7 @@
 
 package org.apache.paimon.io;
 
+import org.apache.paimon.VersionedMergeMode;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.data.Timestamp;
 import org.apache.paimon.fs.Path;
@@ -82,6 +83,8 @@ public class PojoDataFileMeta implements DataFileMeta {
 
     private final @Nullable List<String> writeCols;
 
+    private final VersionedMergeMode mergeMode;
+
     private final @Nullable Long commitSnapshotId;
 
     public PojoDataFileMeta(
@@ -126,7 +129,8 @@ public class PojoDataFileMeta implements DataFileMeta {
                 externalPath,
                 firstRowId,
                 writeCols,
-                null);
+                null,
+                VersionedMergeMode.UPSERT);
     }
 
     public PojoDataFileMeta(
@@ -150,7 +154,8 @@ public class PojoDataFileMeta implements DataFileMeta {
             @Nullable String externalPath,
             @Nullable Long firstRowId,
             @Nullable List<String> writeCols,
-            @Nullable Long commitSnapshotId) {
+            @Nullable Long commitSnapshotId,
+            VersionedMergeMode mergeMode) {
         this.fileName = fileName;
         this.fileSize = fileSize;
 
@@ -176,6 +181,7 @@ public class PojoDataFileMeta implements DataFileMeta {
         this.firstRowId = firstRowId;
         this.writeCols = writeCols;
         this.commitSnapshotId = commitSnapshotId;
+        this.mergeMode = mergeMode;
     }
 
     @Override
@@ -330,7 +336,40 @@ public class PojoDataFileMeta implements DataFileMeta {
                 externalPath,
                 firstRowId,
                 writeCols,
-                snapshotId);
+                snapshotId,
+                mergeMode);
+    }
+
+    @Override
+    public VersionedMergeMode mergeMode() {
+        return mergeMode;
+    }
+
+    @Override
+    public PojoDataFileMeta withVersionedMergeMode(VersionedMergeMode mergeMode) {
+        return new PojoDataFileMeta(
+                fileName,
+                fileSize,
+                rowCount,
+                minKey,
+                maxKey,
+                keyStats,
+                valueStats,
+                minSequenceNumber,
+                maxSequenceNumber,
+                schemaId,
+                level,
+                extraFiles,
+                creationTime,
+                deleteRowCount,
+                embeddedIndex,
+                fileSource,
+                valueStatsCols,
+                externalPath,
+                firstRowId,
+                writeCols,
+                commitSnapshotId,
+                mergeMode);
     }
 
     @Override
@@ -357,7 +396,8 @@ public class PojoDataFileMeta implements DataFileMeta {
                 externalPath,
                 firstRowId,
                 writeCols,
-                commitSnapshotId);
+                commitSnapshotId,
+                mergeMode);
     }
 
     @Override
@@ -384,7 +424,8 @@ public class PojoDataFileMeta implements DataFileMeta {
                 newExternalPath,
                 firstRowId,
                 writeCols,
-                commitSnapshotId);
+                commitSnapshotId,
+                mergeMode);
     }
 
     @Override
@@ -410,7 +451,8 @@ public class PojoDataFileMeta implements DataFileMeta {
                 externalPath,
                 firstRowId,
                 writeCols,
-                commitSnapshotId);
+                commitSnapshotId,
+                mergeMode);
     }
 
     @Override
@@ -436,7 +478,8 @@ public class PojoDataFileMeta implements DataFileMeta {
                 externalPath,
                 firstRowId,
                 writeCols,
-                commitSnapshotId);
+                commitSnapshotId,
+                mergeMode);
     }
 
     @Override
@@ -462,7 +505,8 @@ public class PojoDataFileMeta implements DataFileMeta {
                 externalPath,
                 firstRowId,
                 writeCols,
-                commitSnapshotId);
+                commitSnapshotId,
+                mergeMode);
     }
 
     @Override
@@ -488,7 +532,8 @@ public class PojoDataFileMeta implements DataFileMeta {
                 externalPath,
                 firstRowId,
                 writeCols,
-                commitSnapshotId);
+                commitSnapshotId,
+                mergeMode);
     }
 
     @Override
@@ -514,7 +559,8 @@ public class PojoDataFileMeta implements DataFileMeta {
                 newExternalPath,
                 firstRowId,
                 writeCols,
-                commitSnapshotId);
+                commitSnapshotId,
+                mergeMode);
     }
 
     @Override
@@ -540,7 +586,8 @@ public class PojoDataFileMeta implements DataFileMeta {
                 externalPath,
                 firstRowId,
                 writeCols,
-                commitSnapshotId);
+                commitSnapshotId,
+                mergeMode);
     }
 
     @Override
@@ -639,7 +686,7 @@ public class PojoDataFileMeta implements DataFileMeta {
                         + "minKey: %s, maxKey: %s, keyStats: %s, valueStats: %s, "
                         + "minSequenceNumber: %d, maxSequenceNumber: %d, "
                         + "schemaId: %d, level: %d, extraFiles: %s, creationTime: %s, "
-                        + "deleteRowCount: %s, fileSource: %s, valueStatsCols: %s, externalPath: %s, firstRowId: %s, writeCols: %s, commitSnapshotId: %s}",
+                        + "deleteRowCount: %s, fileSource: %s, valueStatsCols: %s, externalPath: %s, firstRowId: %s, writeCols: %s, commitSnapshotId: %s, mergeMode: %s}",
                 fileName,
                 fileSize,
                 rowCount,
@@ -660,6 +707,7 @@ public class PojoDataFileMeta implements DataFileMeta {
                 externalPath,
                 firstRowId,
                 writeCols,
-                commitSnapshotId);
+                commitSnapshotId,
+                mergeMode);
     }
 }

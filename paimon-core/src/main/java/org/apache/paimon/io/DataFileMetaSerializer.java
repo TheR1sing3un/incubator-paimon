@@ -18,6 +18,7 @@
 
 package org.apache.paimon.io;
 
+import org.apache.paimon.VersionedMergeMode;
 import org.apache.paimon.data.BinaryString;
 import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.data.InternalRow;
@@ -62,7 +63,10 @@ public class DataFileMetaSerializer extends ObjectSerializer<DataFileMeta> {
                 meta.externalPath().map(BinaryString::fromString).orElse(null),
                 meta.firstRowId(),
                 meta.writeCols() == null ? null : toStringArrayData(meta.writeCols()),
-                meta.commitSnapshotId());
+                meta.commitSnapshotId(),
+                meta.mergeMode() == VersionedMergeMode.UPSERT
+                        ? null
+                        : meta.mergeMode().toByteValue());
     }
 
     @Override
@@ -88,6 +92,9 @@ public class DataFileMetaSerializer extends ObjectSerializer<DataFileMeta> {
                 row.isNullAt(17) ? null : row.getString(17).toString(),
                 row.isNullAt(18) ? null : row.getLong(18),
                 row.isNullAt(19) ? null : fromStringArrayData(row.getArray(19)),
-                row.isNullAt(20) ? null : row.getLong(20));
+                row.isNullAt(20) ? null : row.getLong(20),
+                row.isNullAt(21)
+                        ? VersionedMergeMode.UPSERT
+                        : VersionedMergeMode.fromByteValue(row.getByte(21)));
     }
 }

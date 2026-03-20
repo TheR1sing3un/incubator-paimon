@@ -227,6 +227,21 @@ public class SchemaValidation {
             }
         }
 
+        if (options.mergeEngine() == MergeEngine.VERSIONED_PARTIAL_UPDATE) {
+            checkArgument(
+                    options.deletionVectorsEnabled(),
+                    "Versioned partial update merge engine requires deletion-vectors.enabled = true.");
+            checkArgument(
+                    options.snapshotSequenceOrdering(),
+                    "Versioned partial update merge engine requires sequence.snapshot-ordering = true.");
+            if (options.changelogProducer() != ChangelogProducer.LOOKUP
+                    && options.changelogProducer() != ChangelogProducer.NONE) {
+                throw new IllegalArgumentException(
+                        "Only support 'none' and 'lookup' changelog-producer on "
+                                + "versioned-partial-update merge engine.");
+            }
+        }
+
         options.rowkindField()
                 .ifPresent(
                         field ->
