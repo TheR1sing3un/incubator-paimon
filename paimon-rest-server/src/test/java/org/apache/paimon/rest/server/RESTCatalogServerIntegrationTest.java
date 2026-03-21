@@ -40,7 +40,11 @@ import org.apache.paimon.table.sink.BatchTableCommit;
 import org.apache.paimon.table.sink.BatchTableWrite;
 import org.apache.paimon.table.sink.BatchWriteBuilder;
 import org.apache.paimon.table.sink.CommitMessage;
+import org.apache.paimon.types.ArrayType;
+import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataTypes;
+import org.apache.paimon.types.MapType;
+import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
 import org.junit.jupiter.api.AfterAll;
@@ -108,7 +112,7 @@ class RESTCatalogServerIntegrationTest {
         // Create database
         String createBody = "{\"name\": \"test_db\", \"options\": {}}";
         int createStatus = httpPostStatus("/v1/test-prefix/databases", createBody);
-        assertThat(createStatus).isEqualTo(201);
+        assertThat(createStatus).isEqualTo(200);
 
         // List databases
         String listResponse = httpGet("/v1/test-prefix/databases");
@@ -227,7 +231,7 @@ class RESTCatalogServerIntegrationTest {
                         + "\"partitionKeys\":[],\"primaryKeys\":[\"id\"],"
                         + "\"options\":{\"bucket\":\"1\"},\"comment\":\"test\"}}";
         int status = httpPostStatus("/v1/test-prefix/databases/rest_tbl_db/tables", createBody);
-        assertThat(status).isEqualTo(201);
+        assertThat(status).isEqualTo(200);
 
         // Verify table was created
         String getResponse = httpGet("/v1/test-prefix/databases/rest_tbl_db/tables/rest_table");
@@ -250,7 +254,7 @@ class RESTCatalogServerIntegrationTest {
                         + "\"partitionKeys\":[],\"primaryKeys\":[\"pk\"],"
                         + "\"options\":{\"bucket\":\"1\"},\"comment\":\"no field ids\"}}";
         int status = httpPostStatus("/v1/test-prefix/databases/rest_noid_db/tables", createBody);
-        assertThat(status).isEqualTo(201);
+        assertThat(status).isEqualTo(200);
 
         // Verify table was created and field ids are auto-assigned
         Table table = server.getCatalog().getTable(Identifier.create("rest_noid_db", "noid_table"));
@@ -588,6 +592,496 @@ class RESTCatalogServerIntegrationTest {
         // Clean up
         httpDelete(tablePath);
         httpDelete("/v1/test-prefix/databases/tag_404_db");
+    }
+
+    // -- Complex type table creation tests --
+
+    @Test
+    void testCreateTableWithEmptyStringPartitionKeys() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"emptypart_db\", \"options\": {}}");
+
+        // partitionKeys contains empty string — should be filtered out, not cause error
+        String createBody =
+                "{\"identifier\":{\"database\":\"emptypart_db\",\"object\":\"emptypart_tbl\"},"
+                        + "\"schema\":{\"fields\":["
+                        + "{\"name\":\"id\",\"type\":\"INT\"},"
+                        + "{\"name\":\"name\",\"type\":\"STRING\"}"
+                        + "],\"partitionKeys\":[\"\"],\"primaryKeys\":[\"id\"],"
+                        + "\"options\":{\"bucket\":\"1\"}}}";
+        int status = httpPostStatus("/v1/test-prefix/databases/emptypart_db/tables", createBody);
+        assertThat(status).isEqualTo(200);
+
+        Table table =
+                server.getCatalog()
+                        .getTable(Identifier.create("emptypart_db", "emptypart_tbl"));
+        assertThat(table.partitionKeys()).isEmpty();
+
+        httpDelete("/v1/test-prefix/databases/emptypart_db/tables/emptypart_tbl");
+        httpDelete("/v1/test-prefix/databases/emptypart_db");
+    }
+
+    @Test
+    void testCreateTableWithEmptyStringPrimaryKeys() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"emptypk_db\", \"options\": {}}");
+
+        // primaryKeys contains empty string — should be filtered out (append-only table)
+        String createBody =
+                "{\"identifier\":{\"database\":\"emptypk_db\",\"object\":\"emptypk_tbl\"},"
+                        + "\"schema\":{\"fields\":["
+                        + "{\"name\":\"id\",\"type\":\"INT\"},"
+                        + "{\"name\":\"name\",\"type\":\"STRING\"}"
+                        + "],\"partitionKeys\":[],\"primaryKeys\":[\"\"],"
+                        + "\"options\":{}}}";
+        int status = httpPostStatus("/v1/test-prefix/databases/emptypk_db/tables", createBody);
+        assertThat(status).isEqualTo(200);
+
+        Table table =
+                server.getCatalog().getTable(Identifier.create("emptypk_db", "emptypk_tbl"));
+        assertThat(table.primaryKeys()).isEmpty();
+
+        httpDelete("/v1/test-prefix/databases/emptypk_db/tables/emptypk_tbl");
+        httpDelete("/v1/test-prefix/databases/emptypk_db");
+    }
+
+    @Test
+    void testCreateTableWithArrayType() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"arr_db\", \"options\": {}}");
+
+        String createBody =
+                "{\"identifier\":{\"database\":\"arr_db\",\"object\":\"arr_tbl\"},"
+                        + "\"schema\":{\"fields\":["
+                        + "{\"name\":\"id\",\"type\":\"INT\"},"
+                        + "{\"name\":\"tags\",\"type\":\"ARRAY<STRING>\"},"
+                        + "{\"name\":\"scores\",\"type\":\"ARRAY<INT NOT NULL>\"}"
+                        + "],\"partitionKeys\":[],\"primaryKeys\":[\"id\"],"
+                        + "\"options\":{\"bucket\":\"1\"}}}";
+        int status = httpPostStatus("/v1/test-prefix/databases/arr_db/tables", createBody);
+        assertThat(status).isEqualTo(200);
+
+        Table table = server.getCatalog().getTable(Identifier.create("arr_db", "arr_tbl"));
+        assertThat(table.rowType().getFieldCount()).isEqualTo(3);
+        assertThat(table.rowType().getField("tags").type()).isInstanceOf(ArrayType.class);
+        assertThat(table.rowType().getField("scores").type()).isInstanceOf(ArrayType.class);
+        // Verify auto-assigned field IDs
+        assertThat(table.rowType().getFields().get(0).id()).isEqualTo(0);
+        assertThat(table.rowType().getFields().get(1).id()).isEqualTo(1);
+        assertThat(table.rowType().getFields().get(2).id()).isEqualTo(2);
+
+        httpDelete("/v1/test-prefix/databases/arr_db/tables/arr_tbl");
+        httpDelete("/v1/test-prefix/databases/arr_db");
+    }
+
+    @Test
+    void testCreateTableWithMapType() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"map_db\", \"options\": {}}");
+
+        String createBody =
+                "{\"identifier\":{\"database\":\"map_db\",\"object\":\"map_tbl\"},"
+                        + "\"schema\":{\"fields\":["
+                        + "{\"name\":\"id\",\"type\":\"INT\"},"
+                        + "{\"name\":\"props\",\"type\":\"MAP<STRING, STRING>\"},"
+                        + "{\"name\":\"counts\",\"type\":\"MAP<STRING, INT>\"}"
+                        + "],\"partitionKeys\":[],\"primaryKeys\":[\"id\"],"
+                        + "\"options\":{\"bucket\":\"1\"}}}";
+        int status = httpPostStatus("/v1/test-prefix/databases/map_db/tables", createBody);
+        assertThat(status).isEqualTo(200);
+
+        Table table = server.getCatalog().getTable(Identifier.create("map_db", "map_tbl"));
+        assertThat(table.rowType().getField("props").type()).isInstanceOf(MapType.class);
+        assertThat(table.rowType().getField("counts").type()).isInstanceOf(MapType.class);
+
+        httpDelete("/v1/test-prefix/databases/map_db/tables/map_tbl");
+        httpDelete("/v1/test-prefix/databases/map_db");
+    }
+
+    @Test
+    void testCreateTableWithRowType() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"row_db\", \"options\": {}}");
+
+        String createBody =
+                "{\"identifier\":{\"database\":\"row_db\",\"object\":\"row_tbl\"},"
+                        + "\"schema\":{\"fields\":["
+                        + "{\"name\":\"id\",\"type\":\"INT\"},"
+                        + "{\"name\":\"address\",\"type\":\"ROW<city STRING, zip STRING>\"}"
+                        + "],\"partitionKeys\":[],\"primaryKeys\":[\"id\"],"
+                        + "\"options\":{\"bucket\":\"1\"}}}";
+        int status = httpPostStatus("/v1/test-prefix/databases/row_db/tables", createBody);
+        assertThat(status).isEqualTo(200);
+
+        Table table = server.getCatalog().getTable(Identifier.create("row_db", "row_tbl"));
+        assertThat(table.rowType().getField("address").type()).isInstanceOf(RowType.class);
+        RowType addressType = (RowType) table.rowType().getField("address").type();
+        assertThat(addressType.getFieldCount()).isEqualTo(2);
+        assertThat(addressType.getField("city")).isNotNull();
+        assertThat(addressType.getField("zip")).isNotNull();
+
+        httpDelete("/v1/test-prefix/databases/row_db/tables/row_tbl");
+        httpDelete("/v1/test-prefix/databases/row_db");
+    }
+
+    @Test
+    void testCreateTableWithNestedRowInRow() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"nested_db\", \"options\": {}}");
+
+        String createBody =
+                "{\"identifier\":{\"database\":\"nested_db\",\"object\":\"nested_tbl\"},"
+                        + "\"schema\":{\"fields\":["
+                        + "{\"name\":\"id\",\"type\":\"INT\"},"
+                        + "{\"name\":\"info\",\"type\":\"ROW<name STRING, addr ROW<city STRING, country STRING>>\"}"
+                        + "],\"partitionKeys\":[],\"primaryKeys\":[\"id\"],"
+                        + "\"options\":{\"bucket\":\"1\"}}}";
+        int status = httpPostStatus("/v1/test-prefix/databases/nested_db/tables", createBody);
+        assertThat(status).isEqualTo(200);
+
+        Table table = server.getCatalog().getTable(Identifier.create("nested_db", "nested_tbl"));
+        RowType infoType = (RowType) table.rowType().getField("info").type();
+        assertThat(infoType.getFieldCount()).isEqualTo(2);
+        RowType addrType = (RowType) infoType.getField("addr").type();
+        assertThat(addrType.getFieldCount()).isEqualTo(2);
+        assertThat(addrType.getField("city")).isNotNull();
+        assertThat(addrType.getField("country")).isNotNull();
+
+        httpDelete("/v1/test-prefix/databases/nested_db/tables/nested_tbl");
+        httpDelete("/v1/test-prefix/databases/nested_db");
+    }
+
+    @Test
+    void testCreateTableWithMapOfRow() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"maprow_db\", \"options\": {}}");
+
+        String createBody =
+                "{\"identifier\":{\"database\":\"maprow_db\",\"object\":\"maprow_tbl\"},"
+                        + "\"schema\":{\"fields\":["
+                        + "{\"name\":\"id\",\"type\":\"INT\"},"
+                        + "{\"name\":\"versions\",\"type\":\"MAP<STRING, ROW<ver STRING, path STRING>>\"}"
+                        + "],\"partitionKeys\":[],\"primaryKeys\":[\"id\"],"
+                        + "\"options\":{\"bucket\":\"1\"}}}";
+        int status = httpPostStatus("/v1/test-prefix/databases/maprow_db/tables", createBody);
+        assertThat(status).isEqualTo(200);
+
+        Table table = server.getCatalog().getTable(Identifier.create("maprow_db", "maprow_tbl"));
+        MapType mapType = (MapType) table.rowType().getField("versions").type();
+        assertThat(mapType.getValueType()).isInstanceOf(RowType.class);
+        RowType valueRow = (RowType) mapType.getValueType();
+        assertThat(valueRow.getFieldCount()).isEqualTo(2);
+
+        httpDelete("/v1/test-prefix/databases/maprow_db/tables/maprow_tbl");
+        httpDelete("/v1/test-prefix/databases/maprow_db");
+    }
+
+    @Test
+    void testCreateTableWithArrayOfRow() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"arrrow_db\", \"options\": {}}");
+
+        String createBody =
+                "{\"identifier\":{\"database\":\"arrrow_db\",\"object\":\"arrrow_tbl\"},"
+                        + "\"schema\":{\"fields\":["
+                        + "{\"name\":\"id\",\"type\":\"INT\"},"
+                        + "{\"name\":\"items\",\"type\":\"ARRAY<ROW<name STRING, qty INT>>\"}"
+                        + "],\"partitionKeys\":[],\"primaryKeys\":[\"id\"],"
+                        + "\"options\":{\"bucket\":\"1\"}}}";
+        int status = httpPostStatus("/v1/test-prefix/databases/arrrow_db/tables", createBody);
+        assertThat(status).isEqualTo(200);
+
+        Table table = server.getCatalog().getTable(Identifier.create("arrrow_db", "arrrow_tbl"));
+        ArrayType arrType = (ArrayType) table.rowType().getField("items").type();
+        assertThat(arrType.getElementType()).isInstanceOf(RowType.class);
+        RowType elemRow = (RowType) arrType.getElementType();
+        assertThat(elemRow.getFieldCount()).isEqualTo(2);
+
+        httpDelete("/v1/test-prefix/databases/arrrow_db/tables/arrrow_tbl");
+        httpDelete("/v1/test-prefix/databases/arrrow_db");
+    }
+
+    @Test
+    void testCreateTableWithMixedComplexAndSimpleTypes() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"mixed_db\", \"options\": {}}");
+
+        String createBody =
+                "{\"identifier\":{\"database\":\"mixed_db\",\"object\":\"mixed_tbl\"},"
+                        + "\"schema\":{\"fields\":["
+                        + "{\"name\":\"id\",\"type\":\"INT\"},"
+                        + "{\"name\":\"name\",\"type\":\"STRING\"},"
+                        + "{\"name\":\"score\",\"type\":\"DOUBLE\"},"
+                        + "{\"name\":\"ts\",\"type\":\"TIMESTAMP(3)\"},"
+                        + "{\"name\":\"tags\",\"type\":\"ARRAY<STRING>\"},"
+                        + "{\"name\":\"props\",\"type\":\"MAP<STRING, STRING>\"},"
+                        + "{\"name\":\"detail\",\"type\":\"ROW<x INT, y DOUBLE>\"}"
+                        + "],\"partitionKeys\":[],\"primaryKeys\":[\"id\"],"
+                        + "\"options\":{\"bucket\":\"1\"}}}";
+        int status = httpPostStatus("/v1/test-prefix/databases/mixed_db/tables", createBody);
+        assertThat(status).isEqualTo(200);
+
+        Table table = server.getCatalog().getTable(Identifier.create("mixed_db", "mixed_tbl"));
+        assertThat(table.rowType().getFieldCount()).isEqualTo(7);
+        assertThat(table.rowType().getField("tags").type()).isInstanceOf(ArrayType.class);
+        assertThat(table.rowType().getField("props").type()).isInstanceOf(MapType.class);
+        assertThat(table.rowType().getField("detail").type()).isInstanceOf(RowType.class);
+
+        httpDelete("/v1/test-prefix/databases/mixed_db/tables/mixed_tbl");
+        httpDelete("/v1/test-prefix/databases/mixed_db");
+    }
+
+    @Test
+    void testCreateTableWithDeeplyNestedTypes() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"deep_db\", \"options\": {}}");
+
+        // Reproduces the exact vae field from the user's REST request
+        String createBody =
+                "{\"identifier\":{\"database\":\"deep_db\",\"object\":\"deep_tbl\"},"
+                        + "\"schema\":{\"fields\":["
+                        + "{\"name\":\"id\",\"type\":\"STRING\"},"
+                        + "{\"name\":\"blobstore_key\",\"type\":\"STRING\"},"
+                        + "{\"name\":\"vae\",\"type\":\"ROW<latest_version STRING, "
+                        + "latest_value ROW<vae_version STRING, vae_result_path STRING, vae_latent_shape STRING>, "
+                        + "all_versioned_values MAP<STRING, ROW<vae_version STRING, vae_result_path STRING, vae_latent_shape STRING>>>\"},"
+                        + "{\"name\":\"database_ids\",\"type\":\"STRING\"}"
+                        + "],\"partitionKeys\":[],\"primaryKeys\":[\"id\"],"
+                        + "\"options\":{\"bucket\":\"1\"}}}";
+        int status = httpPostStatus("/v1/test-prefix/databases/deep_db/tables", createBody);
+        assertThat(status).isEqualTo(200);
+
+        Table table = server.getCatalog().getTable(Identifier.create("deep_db", "deep_tbl"));
+        assertThat(table.rowType().getFieldCount()).isEqualTo(4);
+
+        // Verify vae field structure
+        RowType vaeType = (RowType) table.rowType().getField("vae").type();
+        assertThat(vaeType.getFieldCount()).isEqualTo(3);
+        assertThat(vaeType.getField("latest_version")).isNotNull();
+
+        // latest_value is ROW<vae_version, vae_result_path, vae_latent_shape>
+        RowType latestValue = (RowType) vaeType.getField("latest_value").type();
+        assertThat(latestValue.getFieldCount()).isEqualTo(3);
+
+        // all_versioned_values is MAP<STRING, ROW<...>>
+        MapType mapType = (MapType) vaeType.getField("all_versioned_values").type();
+        RowType mapValueRow = (RowType) mapType.getValueType();
+        assertThat(mapValueRow.getFieldCount()).isEqualTo(3);
+        assertThat(mapValueRow.getField("vae_version")).isNotNull();
+
+        // Verify auto-assigned field IDs (no "id" in request, all auto-assigned)
+        // Top level: id=0, blobstore_key=1, vae=2, database_ids=N
+        assertThat(table.rowType().getFields().get(0).id()).isEqualTo(0);
+        assertThat(table.rowType().getFields().get(1).id()).isEqualTo(1);
+        assertThat(table.rowType().getFields().get(2).id()).isEqualTo(2);
+        // Nested ROW fields should also have IDs assigned
+        assertThat(vaeType.getFields().get(0).id()).isGreaterThanOrEqualTo(0);
+        assertThat(vaeType.getFields().get(1).id()).isGreaterThanOrEqualTo(0);
+
+        httpDelete("/v1/test-prefix/databases/deep_db/tables/deep_tbl");
+        httpDelete("/v1/test-prefix/databases/deep_db");
+    }
+
+    @Test
+    void testCreateTableWithJsonObjectComplexTypes() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"jsonobj_db\", \"options\": {}}");
+
+        // Uses the standard Paimon JSON object format for complex types
+        String createBody =
+                "{\"identifier\":{\"database\":\"jsonobj_db\",\"object\":\"jsonobj_tbl\"},"
+                        + "\"schema\":{\"fields\":["
+                        + "{\"name\":\"id\",\"type\":\"INT\"},"
+                        + "{\"name\":\"tags\",\"type\":{\"type\":\"ARRAY\",\"element\":\"STRING\"}},"
+                        + "{\"name\":\"props\",\"type\":{\"type\":\"MAP\",\"key\":\"STRING\",\"value\":\"INT\"}},"
+                        + "{\"name\":\"info\",\"type\":{\"type\":\"ROW\",\"fields\":["
+                        + "{\"id\":0,\"name\":\"city\",\"type\":\"STRING\"},"
+                        + "{\"id\":1,\"name\":\"zip\",\"type\":\"STRING\"}"
+                        + "]}}"
+                        + "],\"partitionKeys\":[],\"primaryKeys\":[\"id\"],"
+                        + "\"options\":{\"bucket\":\"1\"}}}";
+        int status = httpPostStatus("/v1/test-prefix/databases/jsonobj_db/tables", createBody);
+        assertThat(status).isEqualTo(200);
+
+        Table table = server.getCatalog().getTable(Identifier.create("jsonobj_db", "jsonobj_tbl"));
+        assertThat(table.rowType().getField("tags").type()).isInstanceOf(ArrayType.class);
+        assertThat(table.rowType().getField("props").type()).isInstanceOf(MapType.class);
+        assertThat(table.rowType().getField("info").type()).isInstanceOf(RowType.class);
+
+        httpDelete("/v1/test-prefix/databases/jsonobj_db/tables/jsonobj_tbl");
+        httpDelete("/v1/test-prefix/databases/jsonobj_db");
+    }
+
+    @Test
+    void testCreateTableWithMapOfArrayOfRow() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"maparr_db\", \"options\": {}}");
+
+        // MAP<STRING, ARRAY<ROW<...>>>
+        String createBody =
+                "{\"identifier\":{\"database\":\"maparr_db\",\"object\":\"maparr_tbl\"},"
+                        + "\"schema\":{\"fields\":["
+                        + "{\"name\":\"id\",\"type\":\"INT\"},"
+                        + "{\"name\":\"data\",\"type\":\"MAP<STRING, ARRAY<ROW<k STRING, v INT>>>\"}"
+                        + "],\"partitionKeys\":[],\"primaryKeys\":[\"id\"],"
+                        + "\"options\":{\"bucket\":\"1\"}}}";
+        int status = httpPostStatus("/v1/test-prefix/databases/maparr_db/tables", createBody);
+        assertThat(status).isEqualTo(200);
+
+        Table table = server.getCatalog().getTable(Identifier.create("maparr_db", "maparr_tbl"));
+        MapType mapType = (MapType) table.rowType().getField("data").type();
+        ArrayType arrType = (ArrayType) mapType.getValueType();
+        RowType rowType = (RowType) arrType.getElementType();
+        assertThat(rowType.getFieldCount()).isEqualTo(2);
+
+        httpDelete("/v1/test-prefix/databases/maparr_db/tables/maparr_tbl");
+        httpDelete("/v1/test-prefix/databases/maparr_db");
+    }
+
+    @Test
+    void testCreateTableAutoFieldIdWithNestedRow() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"autoid_db\", \"options\": {}}");
+
+        // No "id" on any field — server must auto-assign IDs including nested ROW fields
+        String createBody =
+                "{\"identifier\":{\"database\":\"autoid_db\",\"object\":\"autoid_tbl\"},"
+                        + "\"schema\":{\"fields\":["
+                        + "{\"name\":\"pk\",\"type\":\"INT\"},"
+                        + "{\"name\":\"info\",\"type\":\"ROW<name STRING, score DOUBLE>\"},"
+                        + "{\"name\":\"tags\",\"type\":\"ARRAY<STRING>\"},"
+                        + "{\"name\":\"meta\",\"type\":\"MAP<STRING, ROW<k STRING, v INT>>\"}"
+                        + "],\"partitionKeys\":[],\"primaryKeys\":[\"pk\"],"
+                        + "\"options\":{\"bucket\":\"1\"}}}";
+        int status = httpPostStatus("/v1/test-prefix/databases/autoid_db/tables", createBody);
+        assertThat(status).isEqualTo(200);
+
+        Table table = server.getCatalog().getTable(Identifier.create("autoid_db", "autoid_tbl"));
+        // Verify top-level auto-assigned IDs are sequential
+        java.util.List<DataField> fields = table.rowType().getFields();
+        assertThat(fields.get(0).name()).isEqualTo("pk");
+        assertThat(fields.get(0).id()).isEqualTo(0);
+
+        assertThat(fields.get(1).name()).isEqualTo("info");
+        assertThat(fields.get(1).id()).isEqualTo(1);
+
+        // Nested ROW fields inside "info" should have IDs > 1
+        RowType infoType = (RowType) fields.get(1).type();
+        assertThat(infoType.getFields().get(0).name()).isEqualTo("name");
+        assertThat(infoType.getFields().get(0).id()).isGreaterThan(1);
+        assertThat(infoType.getFields().get(1).name()).isEqualTo("score");
+        assertThat(infoType.getFields().get(1).id()).isGreaterThan(infoType.getFields().get(0).id());
+
+        // "tags" field ID should be after all nested IDs
+        assertThat(fields.get(2).name()).isEqualTo("tags");
+        assertThat(fields.get(2).id()).isGreaterThan(infoType.getFields().get(1).id());
+
+        // "meta" field and its nested ROW value type
+        assertThat(fields.get(3).name()).isEqualTo("meta");
+        assertThat(fields.get(3).id()).isGreaterThan(fields.get(2).id());
+        MapType metaMap = (MapType) fields.get(3).type();
+        RowType metaValue = (RowType) metaMap.getValueType();
+        assertThat(metaValue.getFields().get(0).name()).isEqualTo("k");
+        assertThat(metaValue.getFields().get(0).id()).isGreaterThan(fields.get(3).id());
+
+        // All field IDs across the entire schema should be unique
+        java.util.Set<Integer> allIds = new java.util.HashSet<>();
+        collectFieldIds(table.rowType(), allIds);
+        // pk(1) + info(1) + info.name(1) + info.score(1) + tags(1) + meta(1) + meta.k(1) + meta.v(1) = 8
+        assertThat(allIds).hasSize(8);
+
+        httpDelete("/v1/test-prefix/databases/autoid_db/tables/autoid_tbl");
+        httpDelete("/v1/test-prefix/databases/autoid_db");
+    }
+
+    @Test
+    void testCreateTableWithBacktickFieldNamesInRow() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"bt_db\", \"options\": {}}");
+
+        // ROW field names with backtick escaping (e.g. names with spaces or reserved words)
+        String createBody =
+                "{\"identifier\":{\"database\":\"bt_db\",\"object\":\"bt_tbl\"},"
+                        + "\"schema\":{\"fields\":["
+                        + "{\"name\":\"id\",\"type\":\"INT\"},"
+                        + "{\"name\":\"detail\",\"type\":\"ROW<`user name` STRING, `order id` BIGINT, status INT>\"}"
+                        + "],\"partitionKeys\":[],\"primaryKeys\":[\"id\"],"
+                        + "\"options\":{\"bucket\":\"1\"}}}";
+        int status = httpPostStatus("/v1/test-prefix/databases/bt_db/tables", createBody);
+        assertThat(status).isEqualTo(200);
+
+        Table table = server.getCatalog().getTable(Identifier.create("bt_db", "bt_tbl"));
+        RowType detailType = (RowType) table.rowType().getField("detail").type();
+        assertThat(detailType.getFieldCount()).isEqualTo(3);
+        assertThat(detailType.getFields().get(0).name()).isEqualTo("user name");
+        assertThat(detailType.getFields().get(1).name()).isEqualTo("order id");
+        assertThat(detailType.getFields().get(2).name()).isEqualTo("status");
+
+        httpDelete("/v1/test-prefix/databases/bt_db/tables/bt_tbl");
+        httpDelete("/v1/test-prefix/databases/bt_db");
+    }
+
+    @Test
+    void testCreateTableAllAtomicTypesWithComplexTypes() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"alltype_db\", \"options\": {}}");
+
+        // Mix all common atomic types with complex types, no field IDs
+        String createBody =
+                "{\"identifier\":{\"database\":\"alltype_db\",\"object\":\"alltype_tbl\"},"
+                        + "\"schema\":{\"fields\":["
+                        + "{\"name\":\"f_int\",\"type\":\"INT\"},"
+                        + "{\"name\":\"f_bigint\",\"type\":\"BIGINT\"},"
+                        + "{\"name\":\"f_string\",\"type\":\"STRING\"},"
+                        + "{\"name\":\"f_double\",\"type\":\"DOUBLE\"},"
+                        + "{\"name\":\"f_float\",\"type\":\"FLOAT\"},"
+                        + "{\"name\":\"f_boolean\",\"type\":\"BOOLEAN\"},"
+                        + "{\"name\":\"f_decimal\",\"type\":\"DECIMAL(10, 2)\"},"
+                        + "{\"name\":\"f_date\",\"type\":\"DATE\"},"
+                        + "{\"name\":\"f_timestamp\",\"type\":\"TIMESTAMP(3)\"},"
+                        + "{\"name\":\"f_binary\",\"type\":\"BYTES\"},"
+                        + "{\"name\":\"f_arr_int\",\"type\":\"ARRAY<INT>\"},"
+                        + "{\"name\":\"f_arr_str\",\"type\":\"ARRAY<STRING>\"},"
+                        + "{\"name\":\"f_map\",\"type\":\"MAP<STRING, BIGINT>\"},"
+                        + "{\"name\":\"f_row\",\"type\":\"ROW<a INT, b STRING>\"},"
+                        + "{\"name\":\"f_nested\",\"type\":\"MAP<STRING, ARRAY<ROW<x DECIMAL(18, 6), y TIMESTAMP(3)>>>\"}"
+                        + "],\"partitionKeys\":[],\"primaryKeys\":[\"f_int\"],"
+                        + "\"options\":{\"bucket\":\"1\"}}}";
+        int status = httpPostStatus("/v1/test-prefix/databases/alltype_db/tables", createBody);
+        assertThat(status).isEqualTo(200);
+
+        Table table = server.getCatalog().getTable(Identifier.create("alltype_db", "alltype_tbl"));
+        assertThat(table.rowType().getFieldCount()).isEqualTo(15);
+
+        // Verify all field IDs are unique and auto-assigned
+        java.util.Set<Integer> allIds = new java.util.HashSet<>();
+        collectFieldIds(table.rowType(), allIds);
+        // 15 top-level + 2 in f_row + 2 in nested ROW = 19
+        assertThat(allIds).hasSize(19);
+
+        // Verify the deeply nested type: MAP<STRING, ARRAY<ROW<x DECIMAL, y TIMESTAMP>>>
+        MapType nestedMap = (MapType) table.rowType().getField("f_nested").type();
+        ArrayType nestedArr = (ArrayType) nestedMap.getValueType();
+        RowType nestedRow = (RowType) nestedArr.getElementType();
+        assertThat(nestedRow.getFieldCount()).isEqualTo(2);
+        assertThat(nestedRow.getField("x")).isNotNull();
+        assertThat(nestedRow.getField("y")).isNotNull();
+
+        httpDelete("/v1/test-prefix/databases/alltype_db/tables/alltype_tbl");
+        httpDelete("/v1/test-prefix/databases/alltype_db");
+    }
+
+    private void collectFieldIds(RowType rowType, java.util.Set<Integer> ids) {
+        for (DataField field : rowType.getFields()) {
+            ids.add(field.id());
+            if (field.type() instanceof RowType) {
+                collectFieldIds((RowType) field.type(), ids);
+            } else if (field.type() instanceof MapType) {
+                MapType mt = (MapType) field.type();
+                collectNestedRowIds(mt.getKeyType(), ids);
+                collectNestedRowIds(mt.getValueType(), ids);
+            } else if (field.type() instanceof ArrayType) {
+                collectNestedRowIds(((ArrayType) field.type()).getElementType(), ids);
+            }
+        }
+    }
+
+    private void collectNestedRowIds(
+            org.apache.paimon.types.DataType type, java.util.Set<Integer> ids) {
+        if (type instanceof RowType) {
+            collectFieldIds((RowType) type, ids);
+        } else if (type instanceof MapType) {
+            MapType mt = (MapType) type;
+            collectNestedRowIds(mt.getKeyType(), ids);
+            collectNestedRowIds(mt.getValueType(), ids);
+        } else if (type instanceof ArrayType) {
+            collectNestedRowIds(((ArrayType) type).getElementType(), ids);
+        }
     }
 
     // -- Consumer Handler Tests --

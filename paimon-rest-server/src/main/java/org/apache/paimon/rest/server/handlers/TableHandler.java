@@ -39,6 +39,10 @@ import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Table;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
+import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.databind.JsonNode;
+import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.databind.node.ArrayNode;
+import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.databind.node.ObjectNode;
+
 import javax.annotation.Nullable;
 
 import java.util.ArrayList;
@@ -233,7 +237,9 @@ public class TableHandler implements RouteRegistrar {
     }
 
     public void createTable(String databaseName, String body) throws Exception {
-        CreateTableRequest request = JsonSerdeUtil.fromJson(body, CreateTableRequest.class);
+        String sanitizedBody = sanitizeCreateTableBody(body);
+        CreateTableRequest request =
+                JsonSerdeUtil.fromJson(sanitizedBody, CreateTableRequest.class);
         Identifier identifier = request.getIdentifier();
         if (identifier == null) {
             throw new IllegalArgumentException("Table identifier is required");
@@ -340,5 +346,47 @@ public class TableHandler implements RouteRegistrar {
                             + identifier.getDatabaseName()
                             + "'");
         }
+    }
+
+    /** Filter empty/blank strings from partitionKeys and primaryKeys in the JSON body. */
+    static String sanitizeCreateTableBody(String body) {
+        JsonNode root = JsonSerdeUtil.fromJson(body, JsonNode.class);
+        if (root == null || !root.isObject()) {
+            return body;
+        }
+        JsonNode schemaNode = root.get("schema");
+        if (schemaNode == null || !schemaNode.isObject()) {
+            return body;
+        }
+        boolean changed = false;
+        changed |= filterEmptyStringsInArray((ObjectNode) schemaNode, "partitionKeys");
+        changed |= filterEmptyStringsInArray((ObjectNode) schemaNode, "primaryKeys");
+        return changed ? JsonSerdeUtil.toJson(root) : body;
+    }
+
+    private static boolean filterEmptyStringsInArray(ObjectNode node, String fieldName) {
+        JsonNode arrayNode = node.get(fieldName);
+        if (arrayNode == null || !arrayNode.isArray()) {
+            return false;
+        }
+        ArrayNode original = (ArrayNode) arrayNode;
+        ArrayNode filtered = original.arrayNode();
+        boolean removed = false;
+        for (JsonNode element : original) {
+            if (element.isTextual()) {
+                String text = element.asText().trim();
+                if (!text.isEmpty()) {
+                    filtered.add(text);
+                } else {
+                    removed = true;
+                }
+            } else {
+                filtered.add(element);
+            }
+        }
+        if (removed) {
+            node.set(fieldName, filtered);
+        }
+        return removed;
     }
 }

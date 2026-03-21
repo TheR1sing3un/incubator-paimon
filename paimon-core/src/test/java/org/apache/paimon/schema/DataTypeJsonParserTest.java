@@ -194,6 +194,47 @@ public class DataTypeJsonParserTest {
                                                         "my_comment",
                                                         "55")))),
 
+                // SQL string format for complex types
+
+                TestSpec.forString("ARRAY<INT>").expectType(new ArrayType(new IntType())),
+                TestSpec.forString("ARRAY<STRING NOT NULL>")
+                        .expectType(new ArrayType(VarCharType.STRING_TYPE.copy(false))),
+                TestSpec.forString("MULTISET<INT>").expectType(new MultisetType(new IntType())),
+                TestSpec.forString("MAP<STRING, INT>")
+                        .expectType(new MapType(VarCharType.STRING_TYPE, new IntType())),
+                TestSpec.forString("MAP<STRING, ARRAY<INT>>")
+                        .expectType(
+                                new MapType(
+                                        VarCharType.STRING_TYPE, new ArrayType(new IntType()))),
+                TestSpec.forString("ROW<name STRING, age INT>")
+                        .expectType(
+                                new RowType(
+                                        Arrays.asList(
+                                                new DataField(
+                                                        0,
+                                                        "name",
+                                                        VarCharType.STRING_TYPE),
+                                                new DataField(1, "age", new IntType())))),
+                TestSpec.forString("ROW<f0 INT, f1 ROW<s0 STRING, s1 BIGINT>>")
+                        .expectType(
+                                new RowType(
+                                        Arrays.asList(
+                                                new DataField(0, "f0", new IntType()),
+                                                new DataField(
+                                                        1,
+                                                        "f1",
+                                                        new RowType(
+                                                                Arrays.asList(
+                                                                        new DataField(
+                                                                                0,
+                                                                                "s0",
+                                                                                VarCharType
+                                                                                        .STRING_TYPE),
+                                                                        new DataField(
+                                                                                1,
+                                                                                "s1",
+                                                                                new BigIntType()))))))),
+
                 // error message testing
 
                 TestSpec.forString("VARCHAR(test)").expectErrorMessage("<LITERAL_INT> expected"),
@@ -328,6 +369,31 @@ public class DataTypeJsonParserTest {
         assertThat(schema.fields().get(0).id()).isEqualTo(0);
         assertThat(schema.fields().get(1).id()).isEqualTo(1);
         assertThat(schema.fields().get(2).id()).isEqualTo(2);
+    }
+
+    @Test
+    void testParseSqlStringComplexTypeFromRestRequest() {
+        // Reproduces the exact type string from the REST server request
+        String vaeType =
+                "ROW<latest_version STRING, latest_value ROW<vae_version STRING, vae_result_path STRING, vae_latent_shape STRING>, all_versioned_values MAP<STRING, ROW<vae_version STRING, vae_result_path STRING, vae_latent_shape STRING>>>";
+        DataType parsed = parse(vaeType);
+
+        RowType innerRow =
+                new RowType(
+                        Arrays.asList(
+                                new DataField(0, "vae_version", VarCharType.STRING_TYPE),
+                                new DataField(1, "vae_result_path", VarCharType.STRING_TYPE),
+                                new DataField(2, "vae_latent_shape", VarCharType.STRING_TYPE)));
+        RowType expected =
+                new RowType(
+                        Arrays.asList(
+                                new DataField(0, "latest_version", VarCharType.STRING_TYPE),
+                                new DataField(1, "latest_value", innerRow),
+                                new DataField(
+                                        2,
+                                        "all_versioned_values",
+                                        new MapType(VarCharType.STRING_TYPE, innerRow))));
+        assertThat(parsed).isEqualTo(expected);
     }
 
     @Test

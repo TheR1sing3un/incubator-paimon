@@ -555,6 +555,14 @@ public final class DataTypeJsonParser {
                     return new BlobType();
                 case VECTOR:
                     return parseVectorType();
+                case ARRAY:
+                    return parseArrayType();
+                case MULTISET:
+                    return parseMultisetType();
+                case MAP:
+                    return parseMapType();
+                case ROW:
+                    return parseRowType();
                 default:
                     throw parsingError("Unsupported type: " + token().value);
             }
@@ -686,6 +694,59 @@ public final class DataTypeJsonParser {
             int length = tokenAsInt();
             nextToken(TokenType.END_SUBTYPE);
             return DataTypes.VECTOR(length, elementType);
+        }
+
+        private DataType parseArrayType() {
+            // ARRAY<elementType>
+            nextToken(TokenType.BEGIN_SUBTYPE);
+            DataType element = parseTypeWithNullability();
+            nextToken(TokenType.END_SUBTYPE);
+            return new ArrayType(element);
+        }
+
+        private DataType parseMultisetType() {
+            // MULTISET<elementType>
+            nextToken(TokenType.BEGIN_SUBTYPE);
+            DataType element = parseTypeWithNullability();
+            nextToken(TokenType.END_SUBTYPE);
+            return new MultisetType(element);
+        }
+
+        private DataType parseMapType() {
+            // MAP<keyType, valueType>
+            nextToken(TokenType.BEGIN_SUBTYPE);
+            DataType key = parseTypeWithNullability();
+            nextToken(TokenType.LIST_SEPARATOR);
+            DataType value = parseTypeWithNullability();
+            nextToken(TokenType.END_SUBTYPE);
+            return new MapType(key, value);
+        }
+
+        private DataType parseRowType() {
+            // ROW<name1 type1, name2 type2, ...>
+            nextToken(TokenType.BEGIN_SUBTYPE);
+            List<DataField> fields = new ArrayList<>();
+            int fieldId = 0;
+            while (true) {
+                nextToken();
+                // Field name can be an IDENTIFIER or a KEYWORD (e.g. "date", "timestamp")
+                Token nameToken = token();
+                if (nameToken.type != TokenType.IDENTIFIER
+                        && nameToken.type != TokenType.KEYWORD) {
+                    throw parsingError(
+                            "Expected field name but got <" + nameToken.type + ">.");
+                }
+                String fieldName = nameToken.value;
+                DataType fieldType = parseTypeWithNullability();
+                fields.add(new DataField(fieldId++, fieldName, fieldType));
+                if (hasNextToken(TokenType.LIST_SEPARATOR)) {
+                    nextToken(TokenType.LIST_SEPARATOR);
+                } else {
+                    break;
+                }
+            }
+            nextToken(TokenType.END_SUBTYPE);
+            return new RowType(fields);
         }
     }
 }
