@@ -32,6 +32,18 @@ DOCKER_DIR="${SCRIPT_DIR}"
 IMAGE_NAME="paimon-rest-server"
 IMAGE_TAG="latest"
 
+# Use podman if docker is not available
+if command -v docker &>/dev/null; then
+    DOCKER=docker
+    COMPOSE="docker-compose"
+elif command -v podman &>/dev/null; then
+    DOCKER=podman
+    COMPOSE="podman-compose"
+else
+    echo "ERROR: Neither docker nor podman found"
+    exit 1
+fi
+
 echo "============================================================"
 echo " Building Paimon REST Server Docker Image"
 echo "============================================================"
@@ -73,7 +85,7 @@ cp "${DOCKER_DIR}/docker-entrypoint.sh" "${BUILD_CONTEXT}/"
 # --- 3. Build Docker image ---
 echo "[3/3] Building Docker image: ${IMAGE_NAME}:${IMAGE_TAG}"
 cd "${BUILD_CONTEXT}"
-docker build -t "${IMAGE_NAME}:${IMAGE_TAG}" .
+${DOCKER} build -t "${IMAGE_NAME}:${IMAGE_TAG}" .
 
 # Cleanup build context
 rm -rf "${BUILD_CONTEXT}"
@@ -84,19 +96,19 @@ echo " Build complete: ${IMAGE_NAME}:${IMAGE_TAG}"
 echo "============================================================"
 echo ""
 echo " Run with docker-compose (recommended):"
-echo "   cd ${DOCKER_DIR} && docker-compose up"
+echo "   cd ${DOCKER_DIR} && ${COMPOSE} up"
 echo ""
 echo " Or run directly:"
-echo "   docker run -p 26754:26754 -p 3306:3306 ${IMAGE_NAME}:${IMAGE_TAG}"
+echo "   ${DOCKER} run -p 26754:26754 -p 3306:3306 ${IMAGE_NAME}:${IMAGE_TAG}"
 echo ""
 
 # --- Optional: run or compose ---
 if [ "$1" = "run" ]; then
     shift
     echo "Starting container..."
-    docker run -p 26754:26754 -p 3306:3306 "$@" "${IMAGE_NAME}:${IMAGE_TAG}"
+    ${DOCKER} run -p 26754:26754 -p 3306:3306 "$@" "${IMAGE_NAME}:${IMAGE_TAG}"
 elif [ "$1" = "compose" ]; then
     echo "Starting with docker-compose..."
     cd "${DOCKER_DIR}"
-    docker-compose up "${@:2}"
+    ${COMPOSE} up "${@:2}"
 fi
