@@ -100,6 +100,7 @@ public class HandlerUtils {
         return Pattern.compile(sb.toString());
     }
 
+    /** Factory for creating paged REST responses. */
     @FunctionalInterface
     public interface PagedResponseFactory<T> {
         RESTResponse create(List<T> data, @Nullable String nextPageToken);
@@ -134,6 +135,7 @@ public class HandlerUtils {
         }
     }
 
+    /** Extracts a sort key from an item for paged responses. */
     @FunctionalInterface
     public interface KeyExtractor<T> {
         String extractKey(T item);

@@ -40,6 +40,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
+/** Client for remote Paimon table lookups. */
 public final class PaimonRemoteLookupClient implements AutoCloseable {
 
     private static final String HADOOP_CONF_DIR_PROP = "paimon.hadoop.conf.dir";
@@ -246,7 +247,7 @@ public final class PaimonRemoteLookupClient implements AutoCloseable {
         return trimmed.isEmpty() ? null : trimmed;
     }
 
-    /** 每个线程创建一个 Session，不要跨线程共享 Session。 */
+    /** Create a new session per thread. Do not share across threads. */
     public Session newSession() {
         return new Session(new RemoteTableQuery(table));
     }
@@ -256,6 +257,7 @@ public final class PaimonRemoteLookupClient implements AutoCloseable {
         catalog.close();
     }
 
+    /** A thread-local session for performing remote lookups. */
     public static final class Session implements AutoCloseable {
 
         private final RemoteTableQuery query;
