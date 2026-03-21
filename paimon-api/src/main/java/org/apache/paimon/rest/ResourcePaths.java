@@ -57,7 +57,7 @@ public class ResourcePaths {
     private final String prefix;
 
     public ResourcePaths(String prefix) {
-        this.prefix = encodeString(prefix);
+        this.prefix = (prefix != null) ? encodeString(prefix) : null;
     }
 
     public String databases() {
