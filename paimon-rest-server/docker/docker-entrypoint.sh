@@ -30,7 +30,7 @@ echo "============================================================"
 
 # --- 1. Start MySQL in background using the official entrypoint ---
 echo "[1/3] Starting MySQL..."
-docker-entrypoint.sh mysqld &
+mysql-entrypoint.sh mysqld &
 MYSQL_PID=$!
 
 # --- 2. Wait for MySQL to be ready ---

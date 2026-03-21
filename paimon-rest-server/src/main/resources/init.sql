@@ -14,7 +14,7 @@
 -- See the License for the specific language governing permissions and
 -- limitations under the License.
 
-create database paimon_catalog;
+create database if not exists paimon_catalog;
 
 -- ============================================================
 -- paimon_database: Paimon Database 元信息

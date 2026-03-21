@@ -19,9 +19,10 @@
 # Build and run Paimon REST Server Docker image
 #
 # Usage:
-#   ./build-docker.sh          # build only
-#   ./build-docker.sh run      # build and run
-#   ./build-docker.sh run -d   # build and run detached
+#   ./build-docker.sh              # build only
+#   ./build-docker.sh run          # build and run
+#   ./build-docker.sh run -d       # build and run detached
+#   ./build-docker.sh compose      # build and start with docker-compose
 # ============================================================
 set -e
 
@@ -55,11 +56,11 @@ cp "${PROJECT_DIR}/target/lib/"*.jar "${BUILD_CONTEXT}/lib/" 2>/dev/null || true
 
 # Copy config files
 cp "${DOCKER_DIR}/conf/server-docker.properties" "${BUILD_CONTEXT}/conf/server-docker.properties"
-cp "${PROJECT_DIR}/deploy/log4j2.xml" "${BUILD_CONTEXT}/conf/log4j2.xml"
+cp "${PROJECT_DIR}/deploy/conf/log4j2.xml" "${BUILD_CONTEXT}/conf/log4j2.xml"
 
 # Copy scripts
-cp "${PROJECT_DIR}/deploy/start.sh" "${BUILD_CONTEXT}/bin/"
-cp "${PROJECT_DIR}/deploy/stop.sh"  "${BUILD_CONTEXT}/bin/"
+cp "${PROJECT_DIR}/deploy/bin/start.sh" "${BUILD_CONTEXT}/bin/"
+cp "${PROJECT_DIR}/deploy/bin/stop.sh"  "${BUILD_CONTEXT}/bin/"
 
 # Copy SQL
 cp "${PROJECT_DIR}/src/main/resources/init.sql" "${BUILD_CONTEXT}/sql/init.sql"
@@ -82,13 +83,20 @@ echo "============================================================"
 echo " Build complete: ${IMAGE_NAME}:${IMAGE_TAG}"
 echo "============================================================"
 echo ""
-echo " Run:"
+echo " Run with docker-compose (recommended):"
+echo "   cd ${DOCKER_DIR} && docker-compose up"
+echo ""
+echo " Or run directly:"
 echo "   docker run -p 26754:26754 -p 3306:3306 ${IMAGE_NAME}:${IMAGE_TAG}"
 echo ""
 
-# --- Optional: run ---
+# --- Optional: run or compose ---
 if [ "$1" = "run" ]; then
     shift
     echo "Starting container..."
     docker run -p 26754:26754 -p 3306:3306 "$@" "${IMAGE_NAME}:${IMAGE_TAG}"
+elif [ "$1" = "compose" ]; then
+    echo "Starting with docker-compose..."
+    cd "${DOCKER_DIR}"
+    docker-compose up "${@:2}"
 fi

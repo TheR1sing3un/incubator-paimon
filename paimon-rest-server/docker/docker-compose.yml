@@ -1,0 +1,16 @@
+version: "3.8"
+
+services:
+  paimon-rest-server:
+    image: paimon-rest-server:latest
+    container_name: paimon-rest-server
+    ports:
+      - "26754:26754"
+      - "3306:3306"
+    volumes:
+      - paimon-warehouse:/tmp/paimon/warehouse
+      - mysql-data:/var/lib/mysql
+
+volumes:
+  paimon-warehouse:
+  mysql-data:

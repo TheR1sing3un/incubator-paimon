@@ -21,12 +21,12 @@ FROM mysql:8.0
 # Includes: MySQL 8.0 + JDK 8 + Paimon REST Server
 # ============================================================
 
-# Install JDK 8
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends openjdk-8-jdk-headless procps && \
-    rm -rf /var/lib/apt/lists/*
+# Install JDK 8 via Adoptium tarball (avoids Oracle Linux repo network issues)
+RUN curl -fsSL https://github.com/adoptium/temurin8-binaries/releases/download/jdk8u432-b06/OpenJDK8U-jdk_aarch64_linux_hotspot_8u432b06.tar.gz \
+    | tar xz -C /opt && \
+    ln -s /opt/jdk8u* /opt/java
 
-ENV JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
+ENV JAVA_HOME=/opt/java
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
 # ---- MySQL configuration ----
@@ -55,8 +55,10 @@ COPY conf/server-docker.properties ${SERVER_HOME}/conf/server.properties
 RUN mkdir -p ${SERVER_HOME}/logs
 
 # ---- Entrypoint ----
+# Save MySQL's original entrypoint before overwriting
+RUN cp /usr/local/bin/docker-entrypoint.sh /usr/local/bin/mysql-entrypoint.sh
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/mysql-entrypoint.sh
 
 EXPOSE 3306 26754
 
