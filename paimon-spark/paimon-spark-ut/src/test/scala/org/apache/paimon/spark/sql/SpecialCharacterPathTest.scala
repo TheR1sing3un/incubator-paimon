@@ -55,7 +55,7 @@ class SpecialCharacterPathTest extends PaimonSparkTestBase {
             checkAnswer(sql("SELECT count(*) FROM t"), Seq(Row(1000)))
             checkAnswer(sql("SELECT sum(id) FROM t"), Seq(Row(499500)))
 
-            val fileDir = new Path(warehouseDir, "test.db/t/dt=2024-06-02T22%3A45%3A30/bucket-0")
+            val fileDir = new Path(warehouseDir, "test/dw/test.db/t/dt=2024-06-02T22%3A45%3A30/bucket-0")
             assert(fileIO.exists(fileDir))
             val filePath =
               sql("SELECT __paimon_file_path FROM t LIMIT 1").collect().head.getString(0)

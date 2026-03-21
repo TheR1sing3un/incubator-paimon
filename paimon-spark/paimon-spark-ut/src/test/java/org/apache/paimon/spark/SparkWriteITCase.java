@@ -786,7 +786,7 @@ public class SparkWriteITCase {
     protected static FileStoreTable getTable(String tableName) {
         return FileStoreTableFactory.create(
                 LocalFileIO.create(),
-                new Path(warehousePath, String.format("db.db/%s", tableName)));
+                new Path(warehousePath, String.format("db/dw/db.db/%s", tableName)));
     }
 
     private long dataFileCount(FileStatus[] files, String filePrefix) {

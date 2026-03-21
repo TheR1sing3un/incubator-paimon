@@ -111,7 +111,7 @@ public class SparkGenericCatalogTest {
         FileStoreTable fileStoreTable =
                 FileStoreTableFactory.create(
                         LocalFileIO.create(),
-                        new Path(warehousePath, String.format("default.db/%s", tableName)));
+                        new Path(warehousePath, String.format("default/dw/default.db/%s", tableName)));
         BatchWriteBuilder writeBuilder = fileStoreTable.newBatchWriteBuilder();
         BatchTableWrite writer = writeBuilder.newWrite();
         BatchTableCommit commit = writeBuilder.newCommit();

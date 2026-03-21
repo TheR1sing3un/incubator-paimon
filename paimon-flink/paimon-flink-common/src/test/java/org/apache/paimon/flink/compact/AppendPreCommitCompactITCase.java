@@ -100,9 +100,9 @@ public class AppendPreCommitCompactITCase extends AbstractTestBase {
         LocalFileIO fileIO = LocalFileIO.create();
         for (int r = 1; r <= 3; r++) {
             tEnv.executeSql("INSERT INTO T VALUES " + String.join(", ", values)).await();
-            assertThat(fileIO.listStatus(new Path(warehouse, "default.db/T/pt=0/bucket-0")))
+            assertThat(fileIO.listStatus(new Path(warehouse, "default/dw/default.db/T/pt=0/bucket-0")))
                     .hasSize(r);
-            assertThat(fileIO.listStatus(new Path(warehouse, "default.db/T/pt=1/bucket-0")))
+            assertThat(fileIO.listStatus(new Path(warehouse, "default/dw/default.db/T/pt=1/bucket-0")))
                     .hasSize(r);
             Map<String, Integer> actual = getActual.get();
             assertThat(actual.keySet()).hasSameElementsAs(values);
@@ -111,8 +111,8 @@ public class AppendPreCommitCompactITCase extends AbstractTestBase {
         }
 
         tEnv.executeSql("CALL sys.compact('default.T')").await();
-        assertThat(fileIO.listStatus(new Path(warehouse, "default.db/T/pt=0/bucket-0"))).hasSize(4);
-        assertThat(fileIO.listStatus(new Path(warehouse, "default.db/T/pt=1/bucket-0"))).hasSize(4);
+        assertThat(fileIO.listStatus(new Path(warehouse, "default/dw/default.db/T/pt=0/bucket-0"))).hasSize(4);
+        assertThat(fileIO.listStatus(new Path(warehouse, "default/dw/default.db/T/pt=1/bucket-0"))).hasSize(4);
         Map<String, Integer> actual = getActual.get();
         assertThat(actual.keySet()).hasSameElementsAs(values);
         assertThat(actual.values()).allMatch(i -> i == 3);
@@ -120,8 +120,8 @@ public class AppendPreCommitCompactITCase extends AbstractTestBase {
         tEnv.executeSql(
                         "CALL sys.expire_snapshots(`table` => 'default.T', retain_max => 1, retain_min => 1)")
                 .await();
-        assertThat(fileIO.listStatus(new Path(warehouse, "default.db/T/pt=0/bucket-0"))).hasSize(1);
-        assertThat(fileIO.listStatus(new Path(warehouse, "default.db/T/pt=1/bucket-0"))).hasSize(1);
+        assertThat(fileIO.listStatus(new Path(warehouse, "default/dw/default.db/T/pt=0/bucket-0"))).hasSize(1);
+        assertThat(fileIO.listStatus(new Path(warehouse, "default/dw/default.db/T/pt=1/bucket-0"))).hasSize(1);
         actual = getActual.get();
         assertThat(actual.keySet()).hasSameElementsAs(values);
         assertThat(actual.values()).allMatch(i -> i == 3);

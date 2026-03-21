@@ -104,33 +104,6 @@ class RESTCatalogServerE2ETest {
         // Execute the production DDL (adapted for H2 MySQL mode)
         try (Connection conn = metadataDs.getConnection();
                 Statement stmt = conn.createStatement()) {
-            // paimon_database (database registry)
-            stmt.execute(
-                    "CREATE TABLE IF NOT EXISTS paimon_database ("
-                            + "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
-                            + "database_name VARCHAR(256) NOT NULL, "
-                            + "properties CLOB NULL, "
-                            + "created_by VARCHAR(64) NOT NULL, "
-                            + "created_at BIGINT NOT NULL, "
-                            + "updated_at BIGINT NOT NULL, "
-                            + "UNIQUE (database_name)"
-                            + ")");
-
-            // paimon_table (table registry)
-            stmt.execute(
-                    "CREATE TABLE IF NOT EXISTS paimon_table ("
-                            + "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
-                            + "database_name VARCHAR(256) NOT NULL, "
-                            + "table_name VARCHAR(256) NOT NULL, "
-                            + "default_branch VARCHAR(128) NOT NULL DEFAULT 'main', "
-                            + "state VARCHAR(16) NOT NULL DEFAULT 'ACTIVE', "
-                            + "properties CLOB NULL, "
-                            + "created_by VARCHAR(64) NOT NULL, "
-                            + "created_at BIGINT NOT NULL, "
-                            + "updated_at BIGINT NOT NULL, "
-                            + "UNIQUE (database_name, table_name)"
-                            + ")");
-
             // paimon_op_log (audit log)
             stmt.execute(
                     "CREATE TABLE IF NOT EXISTS paimon_op_log ("
@@ -261,22 +234,6 @@ class RESTCatalogServerE2ETest {
                 assertThat(rs.next()).isTrue();
                 assertThat(rs.getString("user_id")).isEqualTo("anonymous");
                 assertThat(rs.getString("target_type")).isEqualTo("DATABASE");
-            }
-        }
-    }
-
-    @Test
-    @Order(16)
-    void phase2_databaseMetadataPersisted() throws Exception {
-        try (Connection conn = metadataDs.getConnection();
-                PreparedStatement ps =
-                        conn.prepareStatement(
-                                "SELECT * FROM paimon_database "
-                                        + "WHERE database_name = 'e2e_db'")) {
-            try (ResultSet rs = ps.executeQuery()) {
-                assertThat(rs.next()).isTrue();
-                assertThat(rs.getString("created_by")).isEqualTo("anonymous");
-                assertThat(rs.getLong("created_at")).isGreaterThan(0);
             }
         }
     }

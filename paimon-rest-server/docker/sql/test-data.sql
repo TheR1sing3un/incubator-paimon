@@ -4,23 +4,6 @@
 
 USE paimon_catalog;
 
--- Test databases
-INSERT INTO paimon_database (database_name, properties, created_by, created_at, updated_at)
-VALUES
-    ('test_db', '{"comment": "Default test database"}', 'admin', UNIX_TIMESTAMP() * 1000, UNIX_TIMESTAMP() * 1000),
-    ('production', '{"comment": "Production database", "owner": "data-team"}', 'admin', UNIX_TIMESTAMP() * 1000, UNIX_TIMESTAMP() * 1000),
-    ('staging', '{"comment": "Staging environment database"}', 'admin', UNIX_TIMESTAMP() * 1000, UNIX_TIMESTAMP() * 1000);
-
--- Test tables
-INSERT INTO paimon_table (database_name, table_name, default_branch, state, properties, created_by, created_at, updated_at)
-VALUES
-    ('test_db', 'user_events', 'main', 'ACTIVE', '{"bucket": "4", "changelog-producer": "input"}', 'admin', UNIX_TIMESTAMP() * 1000, UNIX_TIMESTAMP() * 1000),
-    ('test_db', 'order_details', 'main', 'ACTIVE', '{"bucket": "8", "merge-engine": "deduplicate"}', 'admin', UNIX_TIMESTAMP() * 1000, UNIX_TIMESTAMP() * 1000),
-    ('test_db', 'deleted_table', 'main', 'DELETED', '{}', 'admin', UNIX_TIMESTAMP() * 1000, UNIX_TIMESTAMP() * 1000),
-    ('production', 'click_stream', 'main', 'ACTIVE', '{"bucket": "16", "changelog-producer": "lookup", "snapshot.num-retained.max": "100"}', 'admin', UNIX_TIMESTAMP() * 1000, UNIX_TIMESTAMP() * 1000),
-    ('production', 'user_profile', 'main', 'ACTIVE', '{"bucket": "4", "merge-engine": "partial-update"}', 'admin', UNIX_TIMESTAMP() * 1000, UNIX_TIMESTAMP() * 1000),
-    ('staging', 'test_sink', 'main', 'ACTIVE', '{"bucket": "2"}', 'admin', UNIX_TIMESTAMP() * 1000, UNIX_TIMESTAMP() * 1000);
-
 -- Test operation logs
 INSERT INTO paimon_op_log (database_name, table_name, user_id, user_name, operation_type, target_type, target_id, request_json, result_json, status, created_at)
 VALUES

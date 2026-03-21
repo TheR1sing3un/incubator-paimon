@@ -147,7 +147,7 @@ public abstract class FlinkTestBase extends AbstractTestBase {
 
     protected String relativeTablePath(ObjectIdentifier tableIdentifier) {
         return String.format(
-                "%s.db/%s", tableIdentifier.getDatabaseName(), tableIdentifier.getObjectName());
+                "%s/dw/%s.db/%s", tableIdentifier.getDatabaseName(), tableIdentifier.getDatabaseName(), tableIdentifier.getObjectName());
     }
 
     /** Expected result wrapper. */

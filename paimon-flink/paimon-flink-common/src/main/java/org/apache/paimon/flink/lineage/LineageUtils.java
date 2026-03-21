@@ -62,7 +62,7 @@ public class LineageUtils {
     /**
      * Returns the lineage namespace for a Paimon table. The namespace uses the {@code paimon://}
      * scheme followed by the table's physical warehouse path, e.g. {@code
-     * "paimon://s3://my-bucket/warehouse/mydb.db/mytable"}.
+     * "paimon://s3://my-bucket/warehouse/mydb/dw/mydb.db/mytable"}.
      */
     public static String getNamespace(Table table) {
         return PAIMON_DATASET_PREFIX + CoreOptions.path(table.options());

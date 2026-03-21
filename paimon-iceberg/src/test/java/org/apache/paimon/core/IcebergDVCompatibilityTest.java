@@ -40,6 +40,7 @@ import org.apache.paimon.types.RowKind;
 import org.apache.paimon.types.RowType;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.data.IcebergGenerics;
 import org.apache.iceberg.data.Record;
@@ -285,7 +286,7 @@ public class IcebergDVCompatibilityTest {
 
     private void validateIcebergResult(List<Object[]> expected) throws Exception {
         HadoopCatalog icebergCatalog = new HadoopCatalog(new Configuration(), tempDir.toString());
-        TableIdentifier icebergIdentifier = TableIdentifier.of("mydb.db", "t");
+        TableIdentifier icebergIdentifier = TableIdentifier.of(Namespace.of("mydb", "dw", "mydb.db"), "t");
         org.apache.iceberg.Table icebergTable = icebergCatalog.loadTable(icebergIdentifier);
 
         Types.StructType type = icebergTable.schema().asStruct();

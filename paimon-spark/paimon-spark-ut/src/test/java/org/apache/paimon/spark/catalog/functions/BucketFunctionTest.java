@@ -183,7 +183,7 @@ public class BucketFunctionTest {
     public static void setup(@TempDir java.nio.file.Path tempDir) {
         ioManagerPath = new Path(tempDir.toString(), "io-manager");
         warehousePath = new Path(tempDir.toString());
-        tablePath = new Path(warehousePath, "db.db/" + TABLE_NAME);
+        tablePath = new Path(warehousePath, "db/dw/db.db/" + TABLE_NAME);
         spark =
                 SparkSession.builder()
                         .master("local[2]")

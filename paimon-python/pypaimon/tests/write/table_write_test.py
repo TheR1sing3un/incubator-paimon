@@ -218,11 +218,11 @@ class TableWriteTest(unittest.TestCase):
         table_write.close()
         table_commit.close()
 
-        self.assertTrue(os.path.exists(self.warehouse + "/default.db/test_postpone/snapshot/LATEST"))
-        self.assertTrue(os.path.exists(self.warehouse + "/default.db/test_postpone/snapshot/snapshot-1"))
-        self.assertTrue(os.path.exists(self.warehouse + "/default.db/test_postpone/manifest"))
-        self.assertEqual(len(glob.glob(self.warehouse + "/default.db/test_postpone/manifest/*")), 3)
-        self.assertEqual(len(glob.glob(self.warehouse + "/default.db/test_postpone/user_id=2/bucket-postpone/*.avro")),
+        self.assertTrue(os.path.exists(self.warehouse + "/default/dw/default.db/test_postpone/snapshot/LATEST"))
+        self.assertTrue(os.path.exists(self.warehouse + "/default/dw/default.db/test_postpone/snapshot/snapshot-1"))
+        self.assertTrue(os.path.exists(self.warehouse + "/default/dw/default.db/test_postpone/manifest"))
+        self.assertEqual(len(glob.glob(self.warehouse + "/default/dw/default.db/test_postpone/manifest/*")), 3)
+        self.assertEqual(len(glob.glob(self.warehouse + "/default/dw/default.db/test_postpone/user_id=2/bucket-postpone/*.avro")),
                          1)
         read_builder = table.new_read_builder()
         table_read = read_builder.new_read()
@@ -257,7 +257,7 @@ class TableWriteTest(unittest.TestCase):
         table_commit.close()
 
         # Find generated data files
-        table_path = os.path.join(self.warehouse, 'default.db', 'test_file_prefix_postpone')
+        table_path = os.path.join(self.warehouse, 'default', 'dw', 'default.db', 'test_file_prefix_postpone')
         data_files = []
         for root, dirs, files in os.walk(table_path):
             for file in files:
@@ -308,7 +308,7 @@ class TableWriteTest(unittest.TestCase):
         table_commit.close()
 
         # Find generated data files
-        table_path = os.path.join(self.warehouse, 'default.db', 'test_file_prefix_default')
+        table_path = os.path.join(self.warehouse, 'default', 'dw', 'default.db', 'test_file_prefix_default')
         data_files = []
         for root, dirs, files in os.walk(table_path):
             for file in files:
@@ -355,7 +355,7 @@ class TableWriteTest(unittest.TestCase):
         table_commit.close()
 
         # Find generated data files
-        table_path = os.path.join(self.warehouse, 'default.db', 'test_file_prefix')
+        table_path = os.path.join(self.warehouse, 'default', 'dw', 'default.db', 'test_file_prefix')
         data_files = []
         for root, dirs, files in os.walk(table_path):
             for file in files:

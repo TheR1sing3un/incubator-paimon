@@ -265,7 +265,7 @@ public class JavaPyE2ETest {
                     options.set(DELETION_VECTORS_ENABLED, true);
                 };
         String tableName = "test_pk_dv";
-        Path tablePath = new Path(warehouse.toString() + "/default.db/" + tableName);
+        Path tablePath = new Path(warehouse.toString() + "/default/dw/default.db/" + tableName);
         FileStoreTable table = createFileStoreTable(optionsSetter, tablePath);
         StreamTableWrite write = table.newWrite(commitUser);
         IOManager ioManager = IOManager.create(tablePath.toString());
@@ -313,7 +313,7 @@ public class JavaPyE2ETest {
                     options.set(DELETION_VECTORS_ENABLED, true);
                 };
         String tableName = "test_pk_dv_multi_batch";
-        Path tablePath = new Path(warehouse.toString() + "/default.db/" + tableName);
+        Path tablePath = new Path(warehouse.toString() + "/default/dw/default.db/" + tableName);
         FileStoreTable table = createFileStoreTable(optionsSetter, tablePath);
         StreamTableWrite write = table.newWrite(commitUser);
         IOManager ioManager = IOManager.create(tablePath.toString());
@@ -356,7 +356,7 @@ public class JavaPyE2ETest {
                     options.set(DELETION_VECTORS_ENABLED, true);
                 };
         String tableName = "test_pk_dv_raw_convertable";
-        Path tablePath = new Path(warehouse.toString() + "/default.db/" + tableName);
+        Path tablePath = new Path(warehouse.toString() + "/default/dw/default.db/" + tableName);
         FileStoreTable table = createFileStoreTable(optionsSetter, tablePath);
         StreamTableWrite write = table.newWrite(commitUser);
         IOManager ioManager = IOManager.create(tablePath.toString());
@@ -480,7 +480,7 @@ public class JavaPyE2ETest {
         RowType rowType =
                 RowType.of(new DataType[] {keyType, DataTypes.STRING()}, new String[] {"k", "v"});
         Options options = new Options();
-        Path tablePath = new Path(warehouse.toString() + "/default.db/" + tableName);
+        Path tablePath = new Path(warehouse.toString() + "/default/dw/default.db/" + tableName);
         options.set(PATH, tablePath.toString());
         options.set(ROW_TRACKING_ENABLED, true);
         options.set(DATA_EVOLUTION_ENABLED, true);
@@ -544,7 +544,7 @@ public class JavaPyE2ETest {
                         new DataType[] {DataTypes.STRING(), DataTypes.STRING()},
                         new String[] {"k", "v"});
         Options options = new Options();
-        Path tablePath = new Path(warehouse.toString() + "/default.db/test_btree_index_large");
+        Path tablePath = new Path(warehouse.toString() + "/default/dw/default.db/test_btree_index_large");
         options.set(PATH, tablePath.toString());
         options.set(ROW_TRACKING_ENABLED, true);
         options.set(DATA_EVOLUTION_ENABLED, true);
@@ -613,7 +613,7 @@ public class JavaPyE2ETest {
                         new DataType[] {DataTypes.STRING(), DataTypes.STRING()},
                         new String[] {"k", "v"});
         Options options = new Options();
-        Path tablePath = new Path(warehouse.toString() + "/default.db/test_btree_index_null");
+        Path tablePath = new Path(warehouse.toString() + "/default/dw/default.db/test_btree_index_null");
         options.set(PATH, tablePath.toString());
         options.set(ROW_TRACKING_ENABLED, true);
         options.set(DATA_EVOLUTION_ENABLED, true);

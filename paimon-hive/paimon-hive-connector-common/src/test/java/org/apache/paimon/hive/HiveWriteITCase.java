@@ -109,7 +109,7 @@ public class HiveWriteITCase extends HiveTestBase {
         String path = folder.newFolder().toURI().toString();
         String tableNameNotNull =
                 StringUtils.isNullOrWhitespaceOnly(tableName) ? TABLE_NAME : tableName;
-        String tablePath = String.format("%s/test_db.db/%s", path, tableNameNotNull);
+        String tablePath = String.format("%s/test_db/dw/test_db.db/%s", path, tableNameNotNull);
         Options conf = new Options();
         conf.set(CatalogOptions.WAREHOUSE, path);
         conf.set(CoreOptions.BUCKET, 2);
@@ -133,7 +133,7 @@ public class HiveWriteITCase extends HiveTestBase {
         String path = folder.newFolder().toURI().toString();
         String tableNameNotNull =
                 StringUtils.isNullOrWhitespaceOnly(tableName) ? TABLE_NAME : tableName;
-        String tablePath = String.format("%s/test_db.db/%s", path, tableNameNotNull);
+        String tablePath = String.format("%s/test_db/dw/test_db.db/%s", path, tableNameNotNull);
         Options conf = new Options();
         conf.set(CatalogOptions.WAREHOUSE, path);
         conf.set(CoreOptions.FILE_FORMAT, CoreOptions.FILE_FORMAT_AVRO);
@@ -202,7 +202,7 @@ public class HiveWriteITCase extends HiveTestBase {
         String innerName = "hive_test_table_output";
 
         String path = folder.newFolder().toURI().toString();
-        String tablePath = String.format("%s/test_db.db/%s", path, innerName);
+        String tablePath = String.format("%s/test_db/dw/test_db.db/%s", path, innerName);
         Options conf = new Options();
         conf.set(CatalogOptions.WAREHOUSE, path);
         conf.set(CoreOptions.BUCKET, 1);
@@ -245,7 +245,7 @@ public class HiveWriteITCase extends HiveTestBase {
         String innerName = "hive_test_table_output";
         int maxCompact = 5;
         String path = folder.newFolder().toURI().toString();
-        String tablePath = String.format("%s/test_db.db/%s", path, innerName);
+        String tablePath = String.format("%s/test_db/dw/test_db.db/%s", path, innerName);
         Options conf = new Options();
         conf.set(CatalogOptions.WAREHOUSE, path);
         conf.set(CoreOptions.FILE_FORMAT, CoreOptions.FILE_FORMAT_AVRO);
@@ -588,7 +588,7 @@ public class HiveWriteITCase extends HiveTestBase {
     public void testInsertAllSupportedTypes() throws Exception {
 
         String root = folder.newFolder().toString();
-        String tablePath = String.format("%s/test_db.db/hive_test_table", root);
+        String tablePath = String.format("%s/test_db/dw/test_db.db/hive_test_table", root);
         Options conf = new Options();
         conf.set(CatalogOptions.WAREHOUSE, root);
         conf.set(CoreOptions.FILE_FORMAT, CoreOptions.FILE_FORMAT_AVRO);

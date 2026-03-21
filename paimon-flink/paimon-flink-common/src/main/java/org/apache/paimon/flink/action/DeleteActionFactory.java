@@ -70,7 +70,7 @@ public class DeleteActionFactory implements ActionFactory {
 
         System.out.println("Examples:");
         System.out.println(
-                "  delete --path hdfs:///path/to/warehouse/test_db.db/test_table --where 'id > (SELECT count(*) FROM employee)'");
+                "  delete --path hdfs:///path/to/warehouse/test_db/dw/test_db.db/test_table --where 'id > (SELECT count(*) FROM employee)'");
         System.out.println(
                 "  It's equal to 'DELETE FROM test_table WHERE id > (SELECT count(*) FROM employee)");
     }

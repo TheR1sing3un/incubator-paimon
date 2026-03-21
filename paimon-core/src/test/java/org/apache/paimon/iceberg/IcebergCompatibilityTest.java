@@ -63,6 +63,7 @@ import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericDatumReader;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.data.IcebergGenerics;
 import org.apache.iceberg.data.Record;
@@ -1525,7 +1526,7 @@ public class IcebergCompatibilityTest {
 
     private org.apache.iceberg.Table getIcebergTable() {
         HadoopCatalog icebergCatalog = new HadoopCatalog(new Configuration(), tempDir.toString());
-        TableIdentifier icebergIdentifier = TableIdentifier.of("mydb.db", "t");
+        TableIdentifier icebergIdentifier = TableIdentifier.of(Namespace.of("mydb", "dw", "mydb.db"), "t");
         return icebergCatalog.loadTable(icebergIdentifier);
     }
 

@@ -82,15 +82,18 @@ import static org.apache.paimon.utils.Preconditions.checkArgument;
 public class CatalogUtils {
 
     public static Path path(String warehouse, String database, String table) {
-        return new Path(String.format("%s/%s.db/%s", warehouse, database, table));
+        return new Path(AbstractCatalog.newDatabasePath(warehouse, database), table);
     }
 
     public static String stringifyPath(String warehouse, String database, String table) {
-        return String.format("%s/%s.db/%s", warehouse, database, table);
+        return new Path(AbstractCatalog.newDatabasePath(warehouse, database), table).toString();
     }
 
     public static String warehouse(String path) {
-        return new Path(path).getParent().getParent().toString();
+        // Layout: {warehouse}/{db}/dw/{db}.db/{table}
+        // From table path, go up 4 levels to get warehouse
+        Path p = new Path(path);
+        return p.getParent().getParent().getParent().getParent().toString();
     }
 
     public static String database(Path path) {

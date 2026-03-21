@@ -65,7 +65,7 @@ public class CDCMetadataAccessorTest {
         org.apache.flink.cdc.common.schema.Schema expectedSchema =
                 org.apache.flink.cdc.common.schema.Schema.newBuilder()
                         .physicalColumn("a", org.apache.flink.cdc.common.types.DataTypes.INT())
-                        .option("path", warehouse + "/default.db/test")
+                        .option("path", warehouse + "/default/dw/default.db/test")
                         .build();
         org.apache.flink.cdc.common.schema.Schema actualSchema =
                 metadataAccessor.getTableSchema(tableId);

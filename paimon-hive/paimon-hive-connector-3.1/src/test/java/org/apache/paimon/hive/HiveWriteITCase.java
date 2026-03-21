@@ -103,7 +103,7 @@ public class HiveWriteITCase {
         String path = folder.newFolder().toURI().toString();
         String tableNameNotNull =
                 StringUtils.isNullOrWhitespaceOnly(tableName) ? TABLE_NAME : tableName;
-        String tablePath = String.format("%s/test_db.db/%s", path, tableNameNotNull);
+        String tablePath = String.format("%s/test_db/dw/test_db.db/%s", path, tableNameNotNull);
         Options conf = new Options();
         conf.set(CatalogOptions.WAREHOUSE, path);
         conf.set(

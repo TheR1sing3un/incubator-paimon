@@ -150,7 +150,7 @@ public class SparkCatalogWithHiveTest {
                                             new Path(
                                                     warehousePath,
                                                     String.format(
-                                                            "%s.db/%s",
+                                                            "%s/dw/%s.db/%s",
                                                             "test_db", "external_table"))))
                     .doesNotThrowAnyException();
         }

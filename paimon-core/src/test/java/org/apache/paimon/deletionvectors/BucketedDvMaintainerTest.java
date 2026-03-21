@@ -171,7 +171,7 @@ public class BucketedDvMaintainerTest extends PrimaryKeyTableTestBase {
         BucketedDvMaintainer.Factory factory = BucketedDvMaintainer.factory(fileHandler);
         BucketedDvMaintainer dvMaintainer = factory.create(partition, 0, emptyList());
 
-        File indexDir = new File(tempPath.toFile(), "/default.db/T/index");
+        File indexDir = new File(tempPath.toFile(), "/default/dw/default.db/T/index");
 
         // test generate files
 

@@ -690,7 +690,9 @@ public abstract class AbstractCatalog implements Catalog {
     }
 
     public static Path newDatabasePath(String warehouse, String database) {
-        return new Path(warehouse, database + DB_SUFFIX);
+        Path homePath = new Path(warehouse, database);
+        Path splitPath = new Path(homePath, DB_HOUSE);
+        return new Path(splitPath, database + DB_SUFFIX);
     }
 
     private void copyTableDefaultOptions(Map<String, String> options) {
@@ -712,9 +714,14 @@ public abstract class AbstractCatalog implements Catalog {
         List<String> databases = new ArrayList<>();
         for (FileStatus status : fileIO(warehouse).listDirectories(warehouse)) {
             Path path = status.getPath();
-            if (status.isDir() && path.getName().endsWith(DB_SUFFIX)) {
-                String fileName = path.getName();
-                databases.add(fileName.substring(0, fileName.length() - DB_SUFFIX.length()));
+            if (status.isDir()) {
+                String dirName = path.getName();
+                // New layout: {warehouse}/{db}/dw/{db}.db
+                // Check if {warehouse}/{dirName}/dw/{dirName}.db exists
+                Path dbPath = new Path(new Path(path, DB_HOUSE), dirName + DB_SUFFIX);
+                if (fileIO(warehouse).exists(dbPath)) {
+                    databases.add(dirName);
+                }
             }
         }
         return databases;

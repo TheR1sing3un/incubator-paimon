@@ -109,7 +109,7 @@ public class JavaPyFaissE2ETest {
         }
 
         // Create warehouse directory if it doesn't exist
-        java.nio.file.Path warehouseDir = tempDir.resolve("warehouse").resolve("default.db");
+        java.nio.file.Path warehouseDir = tempDir.resolve("warehouse").resolve("default").resolve("dw").resolve("default.db");
         if (!Files.exists(warehouseDir)) {
             Files.createDirectories(warehouseDir);
         }

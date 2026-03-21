@@ -428,7 +428,7 @@ public class PrimaryKeyFileStoreTableITCase extends AbstractTestBase {
         sEnv.executeSql("DROP TABLE T2");
 
         LocalFileIO fileIO = LocalFileIO.create();
-        assertThat(fileIO.exists(new Path(path + "/warehouse" + "/default.db" + "/T2"))).isFalse();
+        assertThat(fileIO.exists(new Path(path + "/warehouse" + "/default/dw/default.db" + "/T2"))).isFalse();
         assertThat(fileIO.exists(new Path(externalPath1))).isFalse();
         assertThat(fileIO.exists(new Path(externalPath2))).isFalse();
     }
@@ -499,7 +499,7 @@ public class PrimaryKeyFileStoreTableITCase extends AbstractTestBase {
         // drop table
         sEnv.executeSql("DROP TABLE T2");
 
-        assertThat(fileIO.exists(new Path(path + "/warehouse" + "/default.db" + "/T2"))).isFalse();
+        assertThat(fileIO.exists(new Path(path + "/warehouse" + "/default/dw/default.db" + "/T2"))).isFalse();
         assertThat(fileIO.exists(new Path(externalPath1))).isFalse();
         assertThat(fileIO.exists(new Path(externalPath2))).isFalse();
     }
@@ -584,7 +584,7 @@ public class PrimaryKeyFileStoreTableITCase extends AbstractTestBase {
         // drop table
         sEnv.executeSql("DROP TABLE T2");
 
-        assertThat(fileIO.exists(new Path(path + "/warehouse" + "/default.db" + "/T2"))).isFalse();
+        assertThat(fileIO.exists(new Path(path + "/warehouse" + "/default/dw/default.db" + "/T2"))).isFalse();
         assertThat(fileIO.exists(new Path(externalPath1))).isFalse();
         assertThat(fileIO.exists(new Path(externalPath2))).isFalse();
     }

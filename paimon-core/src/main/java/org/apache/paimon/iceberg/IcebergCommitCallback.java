@@ -194,7 +194,11 @@ public class IcebergCommitCallback implements CommitCallback, TagCallback {
                 String dbName =
                         dbPath.getName()
                                 .substring(0, dbPath.getName().length() - dbSuffix.length());
-                return new Path(dbPath.getParent(), String.format("iceberg/%s/", dbName));
+                // Layout: {warehouse}/{db}/dw/{db}.db
+                // dbPath.getParent() = {warehouse}/{db}/dw
+                // Go up 2 more levels to reach warehouse
+                Path warehousePath = dbPath.getParent().getParent().getParent();
+                return new Path(warehousePath, String.format("iceberg/%s/", dbName));
             default:
                 throw new UnsupportedOperationException(
                         "Unknown storage location " + storageLocation.name());

@@ -57,7 +57,7 @@ public class PartitionsTableTest extends TableTestBase {
     @BeforeEach
     public void before() throws Exception {
         FileIO fileIO = LocalFileIO.create();
-        Path tablePath = new Path(String.format("%s/%s.db/%s", warehouse, database, tableName));
+        Path tablePath = new Path(String.format("%s/%s/dw/%s.db/%s", warehouse, database, database, tableName));
         Schema schema =
                 Schema.newBuilder()
                         .column("pk", DataTypes.INT())

@@ -75,6 +75,6 @@ public class MarkPartitionDoneActionFactory implements ActionFactory {
         System.out.println(
                 "  mark_partition_done --warehouse hdfs:///path/to/warehouse --database test_db --table test_table --partition dt=20221126,hh=08");
         System.out.println(
-                "  mark_partition_done --path hdfs:///path/to/warehouse/test_db.db/test_table --partition dt=20221126,hh=08 --partition dt=20221127,hh=09");
+                "  mark_partition_done --path hdfs:///path/to/warehouse/test_db/dw/test_db.db/test_table --partition dt=20221126,hh=08 --partition dt=20221127,hh=09");
     }
 }

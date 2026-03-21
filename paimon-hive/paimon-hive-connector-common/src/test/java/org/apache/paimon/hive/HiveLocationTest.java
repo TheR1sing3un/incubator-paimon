@@ -129,7 +129,7 @@ public class HiveLocationTest {
             assertThat(hmsClient.getDatabase(db)).isNotNull();
 
             Path actual = catalog.newDatabasePath(db);
-            Path expected = new Path(this.objectStorePath + "/" + db + ".db");
+            Path expected = new Path(this.objectStorePath + "/" + db + "/dw/" + db + ".db");
             assertThat(fileIO.exists(expected)).isTrue();
             assertThat(actual).isEqualTo(expected);
 
@@ -177,7 +177,7 @@ public class HiveLocationTest {
                         tableIdentifier.getDatabaseName(), tableIdentifier.getObjectName());
         String location =
                 hmsClientTablea.getParameters().get(LocationKeyExtractor.TBPROPERTIES_LOCATION_KEY);
-        String expected = this.objectStorePath + "/" + db + ".db" + "/" + table;
+        String expected = this.objectStorePath + "/" + db + "/dw/" + db + ".db" + "/" + table;
         assertThat(fileIO.exists(new Path(expected))).isTrue();
         assertThat(location).isEqualTo(expected);
     }
@@ -310,7 +310,7 @@ public class HiveLocationTest {
                 db,
                 hiveTableName,
                 true);
-        String location = path + "/" + db + ".db" + "/" + hiveTableName;
+        String location = path + "/" + db + "/dw/" + db + ".db" + "/" + hiveTableName;
         String extern = isExtern ? "EXTERNAL" : "";
 
         String s;

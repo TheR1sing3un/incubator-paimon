@@ -58,7 +58,7 @@ class LanceUtilsTest {
 
     @Test
     void testOssUrlConversion() {
-        Path path = new Path("oss://test-bucket/db-name.db/table-name/bucket-0/data.lance");
+        Path path = new Path("oss://test-bucket/db-name/dw/db-name.db/table-name/bucket-0/data.lance");
         Options options = new Options();
         options.set(LanceUtils.FS_OSS_ENDPOINT, "oss-example-region.example.com");
         options.set(LanceUtils.FS_OSS_ACCESS_KEY_ID, "test-key");

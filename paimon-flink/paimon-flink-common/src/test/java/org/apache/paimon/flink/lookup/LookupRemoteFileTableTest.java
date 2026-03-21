@@ -200,7 +200,7 @@ public class LookupRemoteFileTableTest extends TableTestBase {
                                     .getFileSize(
                                             new Path(
                                                     new Path(tempPath.toUri()),
-                                                    "default.db/t/bucket-0/" + extraFile));
+                                                    "default/dw/default.db/t/bucket-0/" + extraFile));
                 } catch (IOException e) {
                     throw new RuntimeException(e);
                 }

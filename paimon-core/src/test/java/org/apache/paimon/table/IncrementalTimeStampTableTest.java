@@ -59,7 +59,7 @@ public class IncrementalTimeStampTableTest extends TableTestBase {
                         .build();
         catalog.createTable(identifier, schema, true);
         Table table = catalog.getTable(identifier);
-        Path tablePath = new Path(String.format("%s/%s.db/%s", warehouse, database, "T"));
+        Path tablePath = new Path(String.format("%s/%s/dw/%s.db/%s", warehouse, database, database, "T"));
         SnapshotManager snapshotManager = newSnapshotManager(LocalFileIO.create(), tablePath);
 
         String timestampEarliest0 = formatLocalDateTime(LocalDateTime.now().minusSeconds(1), 3);
@@ -204,7 +204,7 @@ public class IncrementalTimeStampTableTest extends TableTestBase {
                         .build();
         catalog.createTable(identifier, schema, true);
         Table table = catalog.getTable(identifier);
-        Path tablePath = new Path(String.format("%s/%s.db/%s", warehouse, database, "T"));
+        Path tablePath = new Path(String.format("%s/%s/dw/%s.db/%s", warehouse, database, database, "T"));
         SnapshotManager snapshotManager = newSnapshotManager(LocalFileIO.create(), tablePath);
 
         // snapshot 1: append
@@ -242,7 +242,7 @@ public class IncrementalTimeStampTableTest extends TableTestBase {
                         .build();
         catalog.createTable(identifier, schema, true);
         Table table = catalog.getTable(identifier);
-        Path tablePath = new Path(String.format("%s/%s.db/%s", warehouse, database, "T"));
+        Path tablePath = new Path(String.format("%s/%s/dw/%s.db/%s", warehouse, database, database, "T"));
         SnapshotManager snapshotManager = newSnapshotManager(LocalFileIO.create(), tablePath);
 
         // snapshot 1: append
@@ -299,7 +299,7 @@ public class IncrementalTimeStampTableTest extends TableTestBase {
                         .build();
         catalog.createTable(identifier, schema, true);
         Table table = catalog.getTable(identifier);
-        Path tablePath = new Path(String.format("%s/%s.db/%s", warehouse, database, "T"));
+        Path tablePath = new Path(String.format("%s/%s/dw/%s.db/%s", warehouse, database, database, "T"));
         SnapshotManager snapshotManager = newSnapshotManager(LocalFileIO.create(), tablePath);
         Long timestampEarliest = System.currentTimeMillis();
         // snapshot 1: append

@@ -190,7 +190,7 @@ public class SparkReadITCase extends SparkReadTestBase {
         spark.sql("INSERT INTO partitionedTable VALUES(1,'aaa','bbb')");
         spark.sql(
                 "CREATE TABLE partitionedTableAs PARTITIONED BY (a) AS SELECT * FROM partitionedTable");
-        Path tablePath = new Path(warehousePath, "default.db/partitionedTableAs");
+        Path tablePath = new Path(warehousePath, "default/dw/default.db/partitionedTableAs");
         assertThat(spark.sql("SHOW CREATE TABLE partitionedTableAs").collectAsList().toString())
                 .isEqualTo(
                         String.format(
@@ -220,7 +220,7 @@ public class SparkReadITCase extends SparkReadTestBase {
         spark.sql("INSERT INTO testTable VALUES(1,'a','b')");
         spark.sql(
                 "CREATE TABLE testTableAs TBLPROPERTIES ('file.format' = 'parquet') AS SELECT * FROM testTable");
-        tablePath = new Path(warehousePath, "default.db/testTableAs");
+        tablePath = new Path(warehousePath, "default/dw/default.db/testTableAs");
         assertThat(spark.sql("SHOW CREATE TABLE testTableAs").collectAsList().toString())
                 .isEqualTo(
                         String.format(
@@ -251,7 +251,7 @@ public class SparkReadITCase extends SparkReadTestBase {
                         + "COMMENT 'table comment'");
         spark.sql("INSERT INTO t_pk VALUES(1,'aaa','bbb')");
         spark.sql("CREATE TABLE t_pk_as TBLPROPERTIES ('primary-key' = 'a') AS SELECT * FROM t_pk");
-        tablePath = new Path(warehousePath, "default.db/t_pk_as");
+        tablePath = new Path(warehousePath, "default/dw/default.db/t_pk_as");
         assertThat(spark.sql("SHOW CREATE TABLE t_pk_as").collectAsList().toString())
                 .isEqualTo(
                         String.format(
@@ -280,7 +280,7 @@ public class SparkReadITCase extends SparkReadTestBase {
         spark.sql("INSERT INTO t_all VALUES(1,2,'bbb','2020-01-01','12')");
         spark.sql(
                 "CREATE TABLE t_all_as PARTITIONED BY (dt) TBLPROPERTIES ('primary-key' = 'dt,hh') AS SELECT * FROM t_all");
-        tablePath = new Path(warehousePath, "default.db/t_all_as");
+        tablePath = new Path(warehousePath, "default/dw/default.db/t_all_as");
         assertThat(spark.sql("SHOW CREATE TABLE t_all_as").collectAsList().toString())
                 .isEqualTo(
                         String.format(
@@ -345,7 +345,7 @@ public class SparkReadITCase extends SparkReadTestBase {
                         + "a BIGINT,\n"
                         + "b STRING)\n"
                         + "TBLPROPERTIES ('primary-key' = 'a')");
-        Path tablePath = new Path(warehousePath, "default.db/PkTable");
+        Path tablePath = new Path(warehousePath, "default/dw/default.db/PkTable");
         TableSchema schema = FileStoreTableFactory.create(LocalFileIO.create(), tablePath).schema();
         assertThat(schema.logicalRowType().getTypeAt(0).isNullable()).isFalse();
     }
@@ -376,7 +376,7 @@ public class SparkReadITCase extends SparkReadTestBase {
                         + "  'k1' = 'v1'\n"
                         + ")");
 
-        Path tablePath = new Path(warehousePath, "default.db/tbl");
+        Path tablePath = new Path(warehousePath, "default/dw/default.db/tbl");
         assertThat(spark.sql("SHOW CREATE TABLE tbl").collectAsList().toString())
                 .isEqualTo(
                         String.format(
@@ -560,7 +560,7 @@ public class SparkReadITCase extends SparkReadTestBase {
                 .isInstanceOf(UnsupportedOperationException.class)
                 .hasMessageContaining("Alter primary key is not supported");
 
-        Path tablePath = new Path(warehousePath, String.format("default.db/%s", tableName));
+        Path tablePath = new Path(warehousePath, String.format("default/dw/default.db/%s", tableName));
         TableSchema schema = FileStoreTableFactory.create(LocalFileIO.create(), tablePath).schema();
         assertThat(schema.fields()).containsExactlyElementsOf(fields);
         assertThat(schema.options()).containsEntry("foo", "bar");
@@ -637,7 +637,7 @@ public class SparkReadITCase extends SparkReadTestBase {
                                 .collect(Collectors.toList()))
                 .containsExactlyInAnyOrder("bar", "default");
 
-        Path nsPath = new Path(warehousePath, "bar.db");
+        Path nsPath = new Path(warehousePath, "bar/dw/bar.db");
         assertThat(new File(nsPath.toUri())).exists();
 
         // drop namespace

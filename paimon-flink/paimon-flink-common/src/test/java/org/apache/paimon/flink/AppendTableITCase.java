@@ -469,7 +469,7 @@ public class AppendTableITCase extends CatalogITCaseBase {
     public void testStatelessWriter() throws Exception {
         FileStoreTable table =
                 FileStoreTableFactory.create(
-                        LocalFileIO.create(), new Path(path, "default.db/append_table"));
+                        LocalFileIO.create(), new Path(path, "default/dw/default.db/append_table"));
 
         StreamExecutionEnvironment env =
                 streamExecutionEnvironmentBuilder()
