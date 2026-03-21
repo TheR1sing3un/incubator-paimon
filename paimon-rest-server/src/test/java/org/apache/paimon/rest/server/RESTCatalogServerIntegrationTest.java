@@ -612,8 +612,7 @@ class RESTCatalogServerIntegrationTest {
         assertThat(status).isEqualTo(200);
 
         Table table =
-                server.getCatalog()
-                        .getTable(Identifier.create("emptypart_db", "emptypart_tbl"));
+                server.getCatalog().getTable(Identifier.create("emptypart_db", "emptypart_tbl"));
         assertThat(table.partitionKeys()).isEmpty();
 
         httpDelete("/v1/test-prefix/databases/emptypart_db/tables/emptypart_tbl");
@@ -635,8 +634,7 @@ class RESTCatalogServerIntegrationTest {
         int status = httpPostStatus("/v1/test-prefix/databases/emptypk_db/tables", createBody);
         assertThat(status).isEqualTo(200);
 
-        Table table =
-                server.getCatalog().getTable(Identifier.create("emptypk_db", "emptypk_tbl"));
+        Table table = server.getCatalog().getTable(Identifier.create("emptypk_db", "emptypk_tbl"));
         assertThat(table.primaryKeys()).isEmpty();
 
         httpDelete("/v1/test-prefix/databases/emptypk_db/tables/emptypk_tbl");
@@ -957,7 +955,8 @@ class RESTCatalogServerIntegrationTest {
         assertThat(infoType.getFields().get(0).name()).isEqualTo("name");
         assertThat(infoType.getFields().get(0).id()).isGreaterThan(1);
         assertThat(infoType.getFields().get(1).name()).isEqualTo("score");
-        assertThat(infoType.getFields().get(1).id()).isGreaterThan(infoType.getFields().get(0).id());
+        assertThat(infoType.getFields().get(1).id())
+                .isGreaterThan(infoType.getFields().get(0).id());
 
         // "tags" field ID should be after all nested IDs
         assertThat(fields.get(2).name()).isEqualTo("tags");
@@ -974,7 +973,8 @@ class RESTCatalogServerIntegrationTest {
         // All field IDs across the entire schema should be unique
         java.util.Set<Integer> allIds = new java.util.HashSet<>();
         collectFieldIds(table.rowType(), allIds);
-        // pk(1) + info(1) + info.name(1) + info.score(1) + tags(1) + meta(1) + meta.k(1) + meta.v(1) = 8
+        // pk(1) + info(1) + info.name(1) + info.score(1) + tags(1) + meta(1) + meta.k(1) +
+        // meta.v(1) = 8
         assertThat(allIds).hasSize(8);
 
         httpDelete("/v1/test-prefix/databases/autoid_db/tables/autoid_tbl");

@@ -731,10 +731,8 @@ public final class DataTypeJsonParser {
                 nextToken();
                 // Field name can be an IDENTIFIER or a KEYWORD (e.g. "date", "timestamp")
                 Token nameToken = token();
-                if (nameToken.type != TokenType.IDENTIFIER
-                        && nameToken.type != TokenType.KEYWORD) {
-                    throw parsingError(
-                            "Expected field name but got <" + nameToken.type + ">.");
+                if (nameToken.type != TokenType.IDENTIFIER && nameToken.type != TokenType.KEYWORD) {
+                    throw parsingError("Expected field name but got <" + nameToken.type + ">.");
                 }
                 String fieldName = nameToken.value;
                 DataType fieldType = parseTypeWithNullability();

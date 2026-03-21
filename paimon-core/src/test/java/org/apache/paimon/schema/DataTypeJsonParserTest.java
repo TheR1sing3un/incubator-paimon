@@ -204,16 +204,12 @@ public class DataTypeJsonParserTest {
                         .expectType(new MapType(VarCharType.STRING_TYPE, new IntType())),
                 TestSpec.forString("MAP<STRING, ARRAY<INT>>")
                         .expectType(
-                                new MapType(
-                                        VarCharType.STRING_TYPE, new ArrayType(new IntType()))),
+                                new MapType(VarCharType.STRING_TYPE, new ArrayType(new IntType()))),
                 TestSpec.forString("ROW<name STRING, age INT>")
                         .expectType(
                                 new RowType(
                                         Arrays.asList(
-                                                new DataField(
-                                                        0,
-                                                        "name",
-                                                        VarCharType.STRING_TYPE),
+                                                new DataField(0, "name", VarCharType.STRING_TYPE),
                                                 new DataField(1, "age", new IntType())))),
                 TestSpec.forString("ROW<f0 INT, f1 ROW<s0 STRING, s1 BIGINT>>")
                         .expectType(
