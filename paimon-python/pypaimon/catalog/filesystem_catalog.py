@@ -64,10 +64,8 @@ class FileSystemCatalog(Catalog):
             import pyarrow.fs as pafs
             is_directory = hasattr(status, 'type') and status.type == pafs.FileType.Directory
             name = status.base_name if hasattr(status, 'base_name') else ""
-            if is_directory and name:
-                db_path = f"{self.warehouse.rstrip('/')}/{name}/{Catalog.DB_HOUSE}/{name}{Catalog.DB_SUFFIX}"
-                if self.file_io.exists(db_path):
-                    database_names.append(name)
+            if is_directory and name and name.endswith(Catalog.DB_SUFFIX):
+                database_names.append(name[:-len(Catalog.DB_SUFFIX)])
         return sorted(database_names)
 
     def get_database(self, name: str) -> Database:
@@ -176,7 +174,7 @@ class FileSystemCatalog(Catalog):
 
     def get_database_path(self, name) -> str:
         warehouse = self.warehouse.rstrip('/')
-        return f"{warehouse}/{name}/{Catalog.DB_HOUSE}/{name}{Catalog.DB_SUFFIX}"
+        return f"{warehouse}/{name}{Catalog.DB_SUFFIX}"
 
     def get_table_path(self, identifier: Identifier) -> str:
         db_path = self.get_database_path(identifier.get_database_name())

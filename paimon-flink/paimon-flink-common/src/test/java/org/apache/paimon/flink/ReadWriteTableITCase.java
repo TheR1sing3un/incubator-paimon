@@ -1468,7 +1468,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
 
         // validate schema options
         SchemaManager schemaManager =
-                new SchemaManager(LocalFileIO.create(), new Path(warehouse, "default/dw/default.db/T"));
+                new SchemaManager(LocalFileIO.create(), new Path(warehouse, "default.db/T"));
         TableSchema schema = schemaManager.latest().get();
         Map<String, String> expected = new HashMap<>();
         // metadata column
@@ -1530,7 +1530,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                         .build();
 
         SchemaManager schemaManager =
-                new SchemaManager(LocalFileIO.create(), new Path(warehouse, "default/dw/default.db/T"));
+                new SchemaManager(LocalFileIO.create(), new Path(warehouse, "default.db/T"));
         schemaManager.createTable(schema);
 
         validateSchemaOptionResult();

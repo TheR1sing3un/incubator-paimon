@@ -76,7 +76,7 @@ class PkReaderTest(unittest.TestCase):
         for split in splits:
             for file in split.files:
                 file_path = file.file_path
-                table_path = os.path.join(self.warehouse, 'default', 'dw', 'default.db', 'test_pk_parquet')
+                table_path = os.path.join(self.warehouse, 'default.db', 'test_pk_parquet')
                 full_path = os.path.join(table_path, file_path)
                 if os.path.exists(full_path) and file_path.endswith('.parquet'):
                     import pyarrow.parquet as pq
@@ -155,7 +155,7 @@ class PkReaderTest(unittest.TestCase):
         for split in splits:
             for file in split.files:
                 file_path = file.file_path
-                table_path = os.path.join(self.warehouse, 'default', 'dw', 'default.db', 'test_pk_lance')
+                table_path = os.path.join(self.warehouse, 'default.db', 'test_pk_lance')
                 full_path = os.path.join(table_path, file_path)
                 if os.path.exists(full_path):
                     self.assertTrue(os.path.exists(full_path))

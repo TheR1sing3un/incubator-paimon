@@ -95,7 +95,7 @@ public abstract class SparkReadTestBase {
     public void beforeEach() throws Exception {
 
         // Paimon sink
-        tablePath1 = new Path(warehousePath, "default/dw/default.db/t1");
+        tablePath1 = new Path(warehousePath, "default.db/t1");
         createTable("t1");
         writeTable(
                 "t1",
@@ -107,7 +107,7 @@ public abstract class SparkReadTestBase {
         // a int not null
         // b array<varchar> not null
         // c row<row<double, array<boolean> not null> not null, bigint> not null
-        tablePath2 = new Path(warehousePath, "default/dw/default.db/t2");
+        tablePath2 = new Path(warehousePath, "default.db/t2");
         spark.sql(
                 "CREATE TABLE paimon.default.t2 ("
                         + "a INT NOT NULL COMMENT 'comment about a', "
@@ -191,7 +191,7 @@ public abstract class SparkReadTestBase {
     protected static FileStoreTable getTable(String tableName) {
         return FileStoreTableFactory.create(
                 LocalFileIO.create(),
-                new Path(warehousePath, String.format("default/dw/default.db/%s", tableName)));
+                new Path(warehousePath, String.format("default.db/%s", tableName)));
     }
 
     protected static void writeTable(String tableName, GenericRow... rows) throws Exception {

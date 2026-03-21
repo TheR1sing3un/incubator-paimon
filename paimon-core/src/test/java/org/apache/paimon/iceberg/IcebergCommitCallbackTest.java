@@ -44,7 +44,7 @@ public class IcebergCommitCallbackTest {
     @BeforeEach
     void setUp() {
         mockTable = mock(FileStoreTable.class);
-        when(mockTable.location()).thenReturn(new Path("file:/tmp/paimon/mydb/dw/mydb.db/mytable"));
+        when(mockTable.location()).thenReturn(new Path("file:/tmp/paimon/mydb.db/mytable"));
 
         mockCoreOptions = mock(CoreOptions.class);
         when(mockTable.coreOptions()).thenReturn(mockCoreOptions);
@@ -119,7 +119,7 @@ public class IcebergCommitCallbackTest {
         return Stream.of(
                 Arguments.of(
                         IcebergOptions.StorageType.TABLE_LOCATION,
-                        "file:/tmp/paimon/mydb/dw/mydb.db/mytable/metadata"),
+                        "file:/tmp/paimon/mydb.db/mytable/metadata"),
                 Arguments.of(
                         IcebergOptions.StorageType.HIVE_CATALOG,
                         "file:/tmp/paimon/iceberg/mydb/mytable/metadata"),
@@ -134,7 +134,7 @@ public class IcebergCommitCallbackTest {
                 Arguments.of(
                         IcebergOptions.StorageType.TABLE_LOCATION,
                         IcebergOptions.StorageLocation.TABLE_LOCATION,
-                        "file:/tmp/paimon/mydb/dw/mydb.db/mytable/metadata"),
+                        "file:/tmp/paimon/mydb.db/mytable/metadata"),
                 Arguments.of(
                         IcebergOptions.StorageType.TABLE_LOCATION,
                         IcebergOptions.StorageLocation.CATALOG_STORAGE,
@@ -142,7 +142,7 @@ public class IcebergCommitCallbackTest {
                 Arguments.of(
                         IcebergOptions.StorageType.HIVE_CATALOG,
                         IcebergOptions.StorageLocation.TABLE_LOCATION,
-                        "file:/tmp/paimon/mydb/dw/mydb.db/mytable/metadata"),
+                        "file:/tmp/paimon/mydb.db/mytable/metadata"),
                 Arguments.of(
                         IcebergOptions.StorageType.HIVE_CATALOG,
                         IcebergOptions.StorageLocation.CATALOG_STORAGE,
@@ -150,7 +150,7 @@ public class IcebergCommitCallbackTest {
                 Arguments.of(
                         IcebergOptions.StorageType.HADOOP_CATALOG,
                         IcebergOptions.StorageLocation.TABLE_LOCATION,
-                        "file:/tmp/paimon/mydb/dw/mydb.db/mytable/metadata"),
+                        "file:/tmp/paimon/mydb.db/mytable/metadata"),
                 Arguments.of(
                         IcebergOptions.StorageType.HADOOP_CATALOG,
                         IcebergOptions.StorageLocation.CATALOG_STORAGE,
@@ -160,7 +160,7 @@ public class IcebergCommitCallbackTest {
                 Arguments.of(
                         IcebergOptions.StorageType.TABLE_LOCATION,
                         null,
-                        "file:/tmp/paimon/mydb/dw/mydb.db/mytable/metadata"), // Defaults to TABLE_LOCATION
+                        "file:/tmp/paimon/mydb.db/mytable/metadata"), // Defaults to TABLE_LOCATION
                 Arguments.of(
                         IcebergOptions.StorageType.HIVE_CATALOG,
                         null,
@@ -176,7 +176,7 @@ public class IcebergCommitCallbackTest {
 
     private static Stream<Arguments> provideDatabasePathsWithStorageType() {
         return Stream.of(
-                Arguments.of(IcebergOptions.StorageType.TABLE_LOCATION, "file:/tmp/paimon/mydb/dw/mydb.db"),
+                Arguments.of(IcebergOptions.StorageType.TABLE_LOCATION, "file:/tmp/paimon/mydb.db"),
                 Arguments.of(
                         IcebergOptions.StorageType.HIVE_CATALOG, "file:/tmp/paimon/iceberg/mydb"),
                 Arguments.of(
@@ -189,7 +189,7 @@ public class IcebergCommitCallbackTest {
                 Arguments.of(
                         IcebergOptions.StorageType.TABLE_LOCATION,
                         IcebergOptions.StorageLocation.TABLE_LOCATION,
-                        "file:/tmp/paimon/mydb/dw/mydb.db"),
+                        "file:/tmp/paimon/mydb.db"),
                 Arguments.of(
                         IcebergOptions.StorageType.TABLE_LOCATION,
                         IcebergOptions.StorageLocation.CATALOG_STORAGE,
@@ -197,7 +197,7 @@ public class IcebergCommitCallbackTest {
                 Arguments.of(
                         IcebergOptions.StorageType.HIVE_CATALOG,
                         IcebergOptions.StorageLocation.TABLE_LOCATION,
-                        "file:/tmp/paimon/mydb/dw/mydb.db"),
+                        "file:/tmp/paimon/mydb.db"),
                 Arguments.of(
                         IcebergOptions.StorageType.HIVE_CATALOG,
                         IcebergOptions.StorageLocation.CATALOG_STORAGE,
@@ -205,7 +205,7 @@ public class IcebergCommitCallbackTest {
                 Arguments.of(
                         IcebergOptions.StorageType.HADOOP_CATALOG,
                         IcebergOptions.StorageLocation.TABLE_LOCATION,
-                        "file:/tmp/paimon/mydb/dw/mydb.db"),
+                        "file:/tmp/paimon/mydb.db"),
                 Arguments.of(
                         IcebergOptions.StorageType.HADOOP_CATALOG,
                         IcebergOptions.StorageLocation.CATALOG_STORAGE,
@@ -214,7 +214,7 @@ public class IcebergCommitCallbackTest {
                 Arguments.of(
                         IcebergOptions.StorageType.TABLE_LOCATION,
                         null,
-                        "file:/tmp/paimon/mydb/dw/mydb.db"), // Defaults to TABLE_LOCATION
+                        "file:/tmp/paimon/mydb.db"), // Defaults to TABLE_LOCATION
                 Arguments.of(
                         IcebergOptions.StorageType.HIVE_CATALOG,
                         null,

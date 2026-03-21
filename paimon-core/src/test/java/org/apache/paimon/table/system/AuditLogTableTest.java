@@ -100,7 +100,7 @@ public class AuditLogTableTest extends TableTestBase {
 
     private AuditLogTable createAuditLogTable(String tableName, boolean enableSequenceNumber)
             throws Exception {
-        Path tablePath = new Path(String.format("%s/%s/dw/%s.db/%s", warehouse, database, database, tableName));
+        Path tablePath = new Path(String.format("%s/%s.db/%s", warehouse, database, tableName));
         FileIO fileIO = LocalFileIO.create();
 
         Schema.Builder schemaBuilder =

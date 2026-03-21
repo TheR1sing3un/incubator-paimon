@@ -18,6 +18,9 @@
 
 package org.apache.paimon.rest.server.metadata;
 
+import org.apache.paimon.rest.server.metadata.model.DatabaseInfo;
+import org.apache.paimon.utils.JsonSerdeUtil;
+
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,7 +31,9 @@ import javax.sql.DataSource;
 import java.io.IOException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Map;
 
 /** JDBC-based implementation of {@link MetadataStore} backed by MySQL (or H2 for testing). */
 public class JdbcMetadataStore implements MetadataStore {
@@ -55,6 +60,78 @@ public class JdbcMetadataStore implements MetadataStore {
             }
         }
         return conn;
+    }
+
+    // ---- Database metadata ----
+
+    @Override
+    public void saveDatabase(
+            String databaseName, @Nullable Map<String, String> properties, String createdBy) {
+        String sql =
+                "INSERT INTO paimon_database "
+                        + "(database_name, properties, created_by, created_at, updated_at) "
+                        + "VALUES (?, ?, ?, ?, ?)";
+        long now = System.currentTimeMillis();
+        try (Connection conn = getConnection();
+                PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, databaseName);
+            ps.setString(2, properties != null ? JsonSerdeUtil.toJson(properties) : null);
+            ps.setString(3, createdBy);
+            ps.setLong(4, now);
+            ps.setLong(5, now);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to save database: " + databaseName, e);
+        }
+    }
+
+    @Override
+    @Nullable
+    public DatabaseInfo getDatabase(String databaseName) {
+        String sql =
+                "SELECT database_name, properties, created_by, created_at, updated_at "
+                        + "FROM paimon_database WHERE database_name = ?";
+        try (Connection conn = getConnection();
+                PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, databaseName);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return mapDatabaseResultSet(rs);
+                }
+                return null;
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to get database: " + databaseName, e);
+        }
+    }
+
+    @Override
+    public void updateDatabaseProperties(
+            String databaseName, @Nullable Map<String, String> properties) {
+        String sql =
+                "UPDATE paimon_database SET properties = ?, updated_at = ? "
+                        + "WHERE database_name = ?";
+        try (Connection conn = getConnection();
+                PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, properties != null ? JsonSerdeUtil.toJson(properties) : null);
+            ps.setLong(2, System.currentTimeMillis());
+            ps.setString(3, databaseName);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to update database: " + databaseName, e);
+        }
+    }
+
+    @Override
+    public void deleteDatabase(String databaseName) {
+        String sql = "DELETE FROM paimon_database WHERE database_name = ?";
+        try (Connection conn = getConnection();
+                PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, databaseName);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to delete database: " + databaseName, e);
+        }
     }
 
     // ---- Audit logging ----
@@ -116,6 +193,19 @@ public class JdbcMetadataStore implements MetadataStore {
     }
 
     // ---- Internal helpers ----
+
+    @SuppressWarnings("unchecked")
+    private DatabaseInfo mapDatabaseResultSet(ResultSet rs) throws SQLException {
+        String propsJson = rs.getString("properties");
+        Map<String, String> properties =
+                propsJson != null ? JsonSerdeUtil.fromJson(propsJson, Map.class) : null;
+        return new DatabaseInfo(
+                rs.getString("database_name"),
+                properties,
+                rs.getString("created_by"),
+                rs.getLong("created_at"),
+                rs.getLong("updated_at"));
+    }
 
     private void doLogOperation(
             Connection conn,

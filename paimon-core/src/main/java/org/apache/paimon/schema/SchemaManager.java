@@ -1201,7 +1201,7 @@ public class SchemaManager implements Serializable {
             if (!ignoreIfUnknownDatabase) {
                 throw new IllegalArgumentException(
                         String.format(
-                                "Path '%s' is not a valid path, please use catalog table path instead: 'warehouse_path/your_database/dw/your_database.db/your_table'.",
+                                "Path '%s' is not a valid path, please use catalog table path instead: 'warehouse_path/your_database.db/your_table'.",
                                 tablePath));
             }
             return new Identifier(UNKNOWN_DATABASE, paths[0]);
@@ -1213,7 +1213,7 @@ public class SchemaManager implements Serializable {
             if (!ignoreIfUnknownDatabase) {
                 throw new IllegalArgumentException(
                         String.format(
-                                "Path '%s' is not a valid path, please use catalog table path instead: 'warehouse_path/your_database/dw/your_database.db/your_table'.",
+                                "Path '%s' is not a valid path, please use catalog table path instead: 'warehouse_path/your_database.db/your_table'.",
                                 tablePath));
             }
             return new Identifier(UNKNOWN_DATABASE, paths[paths.length - 1], branchName, null);

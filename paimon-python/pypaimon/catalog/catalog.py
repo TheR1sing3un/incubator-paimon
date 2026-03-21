@@ -32,7 +32,6 @@ class Catalog(ABC):
     metadata such as database/table from a paimon catalog.
     """
     DB_SUFFIX = ".db"
-    DB_HOUSE = "dw"
     DEFAULT_DATABASE = "default"
     SYSTEM_DATABASE_NAME = "sys"
 

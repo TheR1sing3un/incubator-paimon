@@ -59,7 +59,7 @@ public class SyncDatabaseActionBaseTest {
     @BeforeEach
     public void setUp() throws Exception {
         LocalFileIO localFileIO = new LocalFileIO();
-        Path defaultDb = new Path(tmp.toString(), "default/dw/default.db");
+        Path defaultDb = new Path(tmp.toString(), "default.db");
         localFileIO.mkdirs(defaultDb);
 
         kafkaSyncDbAction =

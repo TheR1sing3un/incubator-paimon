@@ -43,7 +43,7 @@ class FileSystemCatalogTest(unittest.TestCase):
             "warehouse": self.warehouse
         })
         catalog.create_database("test_db", False)
-        self.assertTrue(os.path.exists(self.warehouse + "/test_db/dw/test_db.db"))
+        self.assertTrue(os.path.exists(self.warehouse + "/test_db.db"))
 
         with self.assertRaises(DatabaseAlreadyExistException):
             catalog.create_database("test_db", False)
@@ -67,7 +67,7 @@ class FileSystemCatalogTest(unittest.TestCase):
         })
         catalog.create_database("test_db", False)
         catalog.create_table("test_db.test_table", Schema(fields=fields), False)
-        self.assertTrue(os.path.exists(self.warehouse + "/test_db/dw/test_db.db/test_table/schema/schema-0"))
+        self.assertTrue(os.path.exists(self.warehouse + "/test_db.db/test_table/schema/schema-0"))
 
         with self.assertRaises(TableAlreadyExistException):
             catalog.create_table("test_db.test_table", Schema(fields=fields), False)

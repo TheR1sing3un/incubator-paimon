@@ -737,7 +737,7 @@ class ReaderBasicTest(unittest.TestCase):
         table_write.close()
         table_commit.close()
 
-        snapshot_path = os.path.join(self.warehouse, f"{db_name}/dw/{db_name}.db", table_name, "snapshot", "snapshot-2")
+        snapshot_path = os.path.join(self.warehouse, f"{db_name}.db", table_name, "snapshot", "snapshot-2")
         with open(snapshot_path, 'r', encoding='utf-8') as file:
             content = ''.join(file.readlines())
             self.assertTrue(content.__contains__('\"totalRecordCount\": 6'))
@@ -803,7 +803,7 @@ class ReaderBasicTest(unittest.TestCase):
             self, file_format: str, compression: str,
             db_name: str, table_name: str, expected_rows: int = 3, expected_zstd_level: int = 1):
         if file_format == 'parquet':
-            parquet_files = glob.glob(self.warehouse + f"/{db_name}/dw/{db_name}.db/{table_name}/bucket-0/*.parquet")
+            parquet_files = glob.glob(self.warehouse + f"/{db_name}.db/{table_name}/bucket-0/*.parquet")
             self.assertEqual(len(parquet_files), 1)
             import pyarrow.parquet as pq
             parquet_file_path = parquet_files[0]
@@ -822,7 +822,7 @@ class ReaderBasicTest(unittest.TestCase):
                         actual_level, expected_zstd_level,
                         f"Expected zstd compression level to be {expected_zstd_level}, but got {actual_level}")
         elif file_format == 'orc':
-            orc_files = glob.glob(self.warehouse + f"/{db_name}/dw/{db_name}.db/{table_name}/bucket-0/*.orc")
+            orc_files = glob.glob(self.warehouse + f"/{db_name}.db/{table_name}/bucket-0/*.orc")
             self.assertEqual(len(orc_files), 1)
             import pyarrow.orc as orc
             orc_file_path = orc_files[0]
@@ -833,7 +833,7 @@ class ReaderBasicTest(unittest.TestCase):
             except Exception as e:
                 self.fail(f"Failed to read ORC file (compression may be incorrect): {e}")
         elif file_format == 'avro':
-            avro_files = glob.glob(self.warehouse + f"/{db_name}/dw/{db_name}.db/{table_name}/bucket-0/*.avro")
+            avro_files = glob.glob(self.warehouse + f"/{db_name}.db/{table_name}/bucket-0/*.avro")
             self.assertEqual(len(avro_files), 1)
             import fastavro
             avro_file_path = avro_files[0]
@@ -855,7 +855,7 @@ class ReaderBasicTest(unittest.TestCase):
     def _verify_file_compression(self, file_format: str, db_name: str, table_name: str,
                                  expected_rows: int = 3, expected_zstd_level: int = 1):
         if file_format == 'parquet':
-            parquet_files = glob.glob(self.warehouse + f"/{db_name}/dw/{db_name}.db/{table_name}/bucket-0/*.parquet")
+            parquet_files = glob.glob(self.warehouse + f"/{db_name}.db/{table_name}/bucket-0/*.parquet")
             self.assertEqual(len(parquet_files), 1)
             import pyarrow.parquet as pq
             parquet_file_path = parquet_files[0]
@@ -874,7 +874,7 @@ class ReaderBasicTest(unittest.TestCase):
                         actual_level, expected_zstd_level,
                         f"Expected zstd compression level to be {expected_zstd_level}, but got {actual_level}")
         elif file_format == 'orc':
-            orc_files = glob.glob(self.warehouse + f"/{db_name}/dw/{db_name}.db/{table_name}/bucket-0/*.orc")
+            orc_files = glob.glob(self.warehouse + f"/{db_name}.db/{table_name}/bucket-0/*.orc")
             self.assertEqual(len(orc_files), 1)
             import pyarrow.orc as orc
             orc_file_path = orc_files[0]
@@ -885,7 +885,7 @@ class ReaderBasicTest(unittest.TestCase):
             except Exception as e:
                 self.fail(f"Failed to read ORC file (compression may be incorrect): {e}")
         elif file_format == 'avro':
-            avro_files = glob.glob(self.warehouse + f"/{db_name}/dw/{db_name}.db/{table_name}/bucket-0/*.avro")
+            avro_files = glob.glob(self.warehouse + f"/{db_name}.db/{table_name}/bucket-0/*.avro")
             self.assertEqual(len(avro_files), 1)
             import fastavro
             avro_file_path = avro_files[0]

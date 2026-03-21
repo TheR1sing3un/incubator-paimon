@@ -242,7 +242,7 @@ public abstract class HiveCatalogITCaseBase {
         tEnv.executeSql("CREATE TABLE t ( a INT, b STRING ) WITH ( 'file.format' = 'avro' )")
                 .await();
         tEnv.executeSql("INSERT INTO t VALUES (1, 'Hi'), (2, 'Hello')").await();
-        Path tablePath = new Path(path, "test_db2/dw/test_db2.db/t");
+        Path tablePath = new Path(path, "test_db2.db/t");
         assertThat(fileIO.exists(tablePath)).isTrue();
         assertThatThrownBy(() -> tEnv.executeSql("DROP DATABASE test_db2").await())
                 .hasRootCauseInstanceOf(ValidationException.class)
@@ -282,7 +282,7 @@ public abstract class HiveCatalogITCaseBase {
 
         // drop table
         tEnv.executeSql("INSERT INTO s VALUES (1, 'Hi'), (2, 'Hello')").await();
-        Path tablePath = new Path(path, "test_db/dw/test_db.db/s");
+        Path tablePath = new Path(path, "test_db.db/s");
         assertThat(fileIO.exists(tablePath)).isTrue();
         tEnv.executeSql("DROP TABLE s").await();
         assertThat(collect("SHOW TABLES"))
@@ -343,7 +343,7 @@ public abstract class HiveCatalogITCaseBase {
         assertThat(hiveShell.executeQuery("DESC FORMATTED t"))
                 .contains("Table Type:         \tEXTERNAL_TABLE      \tNULL");
         tEnv.executeSql("DROP TABLE t").await();
-        Path tablePath = new Path(path, "test_db/dw/test_db.db/t");
+        Path tablePath = new Path(path, "test_db.db/t");
         assertThat(fileIO.exists(tablePath)).isTrue();
     }
 
@@ -491,7 +491,7 @@ public abstract class HiveCatalogITCaseBase {
         assertThat(hiveShell.executeQuery("DESC FORMATTED t"))
                 .contains("Table Type:         \tEXTERNAL_TABLE      \tNULL");
         tEnv.executeSql("DROP TABLE t").await();
-        Path tablePath = new Path(path, "test_db/dw/test_db.db/t");
+        Path tablePath = new Path(path, "test_db.db/t");
         assertThat(fileIO.exists(tablePath)).isTrue();
     }
 
@@ -579,7 +579,7 @@ public abstract class HiveCatalogITCaseBase {
         assertThat(hiveShell.executeQuery("SHOW PARTITIONS t"))
                 .containsExactlyInAnyOrder("pt=1", "pt=2", "pt=3", "pt=4");
 
-        Path tablePath = new Path(path, "test_db/dw/test_db.db/t");
+        Path tablePath = new Path(path, "test_db.db/t");
 
         tEnv.executeSql("ALTER TABLE `t$branch_test` DROP PARTITION (pt = 1)");
         assertThat(hiveShell.executeQuery("SHOW PARTITIONS t"))
@@ -1189,7 +1189,7 @@ public abstract class HiveCatalogITCaseBase {
                         "ptb=3a/pta=3",
                         "ptb=3b/pta=3");
 
-        Path tablePath = new Path(path, "test_db/dw/test_db.db/t");
+        Path tablePath = new Path(path, "test_db.db/t");
         assertThat(fileIO.exists(new Path(tablePath, "ptb=1a/pta=1"))).isTrue();
     }
 
@@ -1461,7 +1461,7 @@ public abstract class HiveCatalogITCaseBase {
                 .containsExactlyInAnyOrder("dt=20240501", "dt=20240501.done");
 
         // check partition.mark-done-action=success-file
-        Path successFile = new Path(path, "test_db/dw/test_db.db/mark_done_t2/dt=20240501/_SUCCESS");
+        Path successFile = new Path(path, "test_db.db/mark_done_t2/dt=20240501/_SUCCESS");
         String successText = fileIO.readFileUtf8(successFile);
 
         assertThat(successText).contains("creationTime").contains("modificationTime");
@@ -1604,7 +1604,7 @@ public abstract class HiveCatalogITCaseBase {
     private void testRepairTableWithCustomLocation(boolean isNamedArgument) throws Exception {
         TableEnvironment fileCatalog = useFileCatalog("test_db");
         // Database exists in hive metastore and uses custom location.
-        String databaseLocation = path + "test_db/dw/test_db.db";
+        String databaseLocation = path + "test_db.db";
         hiveShell.execute("CREATE DATABASE my_database\n" + "LOCATION '" + databaseLocation + "';");
         hiveShell.execute("USE my_database");
 

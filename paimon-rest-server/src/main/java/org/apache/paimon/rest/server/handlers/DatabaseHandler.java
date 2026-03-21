@@ -31,7 +31,12 @@ import org.apache.paimon.rest.responses.ListDatabasesResponse;
 import org.apache.paimon.rest.server.RouteRegistrar;
 import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
+import org.apache.paimon.rest.server.metadata.MetadataStore;
+import org.apache.paimon.rest.server.metadata.model.DatabaseInfo;
 import org.apache.paimon.utils.JsonSerdeUtil;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -47,10 +52,18 @@ import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
 /** Handler for database-related REST endpoints. */
 public class DatabaseHandler implements RouteRegistrar {
 
+    private static final Logger LOG = LoggerFactory.getLogger(DatabaseHandler.class);
+
     private final Catalog catalog;
+    @Nullable private final MetadataStore metadataStore;
 
     public DatabaseHandler(Catalog catalog) {
+        this(catalog, null);
+    }
+
+    public DatabaseHandler(Catalog catalog, @Nullable MetadataStore metadataStore) {
         this.catalog = catalog;
+        this.metadataStore = metadataStore;
     }
 
     @Override
@@ -115,10 +128,33 @@ public class DatabaseHandler implements RouteRegistrar {
         Map<String, String> options =
                 request.getOptions() != null ? request.getOptions() : new HashMap<>();
         catalog.createDatabase(request.getName(), false, options);
+
+        if (metadataStore != null) {
+            try {
+                metadataStore.saveDatabase(request.getName(), options, userId);
+            } catch (Exception e) {
+                LOG.warn(
+                        "Failed to save database metadata for {} (catalog created successfully)",
+                        request.getName(),
+                        e);
+            }
+        }
     }
 
     public RESTResponse getDatabase(String databaseName) throws Exception {
         Database database = catalog.getDatabase(databaseName);
+
+        String createdBy = null;
+        long createdAt = 0L;
+        long updatedAt = 0L;
+        if (metadataStore != null) {
+            DatabaseInfo dbInfo = metadataStore.getDatabase(databaseName);
+            if (dbInfo != null) {
+                createdBy = dbInfo.createdBy();
+                createdAt = dbInfo.createdAt();
+                updatedAt = dbInfo.updatedAt();
+            }
+        }
 
         return new GetDatabaseResponse(
                 databaseName,
@@ -126,14 +162,25 @@ public class DatabaseHandler implements RouteRegistrar {
                 "",
                 database.options(),
                 null,
-                0L,
-                null,
-                0L,
+                createdAt,
+                createdBy,
+                updatedAt,
                 null);
     }
 
     public void dropDatabase(String databaseName) throws Exception {
         catalog.dropDatabase(databaseName, false, false);
+
+        if (metadataStore != null) {
+            try {
+                metadataStore.deleteDatabase(databaseName);
+            } catch (Exception e) {
+                LOG.warn(
+                        "Failed to delete database metadata for {} (catalog dropped successfully)",
+                        databaseName,
+                        e);
+            }
+        }
     }
 
     public RESTResponse alterDatabase(String databaseName, String body) throws Exception {
@@ -150,6 +197,18 @@ public class DatabaseHandler implements RouteRegistrar {
             }
         }
         catalog.alterDatabase(databaseName, changes, false);
+
+        if (metadataStore != null) {
+            try {
+                Database updated = catalog.getDatabase(databaseName);
+                metadataStore.updateDatabaseProperties(databaseName, updated.options());
+            } catch (Exception e) {
+                LOG.warn(
+                        "Failed to update database metadata for {} (catalog altered successfully)",
+                        databaseName,
+                        e);
+            }
+        }
 
         List<String> removed =
                 request.getRemovals() != null ? request.getRemovals() : new ArrayList<>();

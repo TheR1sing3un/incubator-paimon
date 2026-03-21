@@ -1095,7 +1095,7 @@ public class LookupTableTest extends TableTestBase {
         FileIO fileIO = LocalFileIO.create();
         org.apache.paimon.fs.Path tablePath =
                 new org.apache.paimon.fs.Path(
-                        String.format("%s/%s/dw/%s.db/%s", warehouse, database, database, "T"));
+                        String.format("%s/%s.db/%s", warehouse, database, "T"));
         Schema schema =
                 Schema.newBuilder()
                         .column("pk1", INT())

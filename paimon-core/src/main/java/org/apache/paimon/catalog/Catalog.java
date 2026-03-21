@@ -1237,7 +1237,6 @@ public interface Catalog extends AutoCloseable {
     // constants for database
     String DEFAULT_DATABASE = "default";
     String DB_SUFFIX = ".db";
-    String DB_HOUSE = "dw";
     String DB_LOCATION_PROP = "location";
 
     // constants for table

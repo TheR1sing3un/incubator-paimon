@@ -98,7 +98,7 @@ public class FileSystemCatalogITCase extends AbstractTestBase {
                 ((FlinkCatalog) tEnv.getCatalog(tEnv.getCurrentCatalog()).get()).catalog();
         Path tablePath = new Path(catalog.getTable(identifier).options().get("path"));
         assertThat(tablePath.toString())
-                .isEqualTo(new File(path, DB_NAME + "/dw/" + DB_NAME + ".db" + File.separator + "t3").toString());
+                .isEqualTo(new File(path, DB_NAME + ".db" + File.separator + "t3").toString());
 
         BlockingIterator<Row, Row> iterator =
                 BlockingIterator.of(tEnv.from("t3").execute().collect());

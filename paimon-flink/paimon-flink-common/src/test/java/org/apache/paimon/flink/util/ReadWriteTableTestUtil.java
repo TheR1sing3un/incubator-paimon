@@ -249,7 +249,7 @@ public class ReadWriteTableTestUtil {
     }
 
     public static void checkFileStorePath(String table, List<String> partitionSpec) {
-        String relativeFilePath = String.format("/%s/dw/%s.db/%s", sEnv.getCurrentDatabase(), sEnv.getCurrentDatabase(), table);
+        String relativeFilePath = String.format("/%s.db/%s", sEnv.getCurrentDatabase(), table);
         // check snapshot file path
         assertThat(Paths.get(warehouse, relativeFilePath, "snapshot")).exists();
         // check manifest file path

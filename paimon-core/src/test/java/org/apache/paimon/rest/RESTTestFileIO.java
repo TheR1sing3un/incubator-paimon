@@ -120,19 +120,8 @@ public class RESTTestFileIO extends LocalFileIO {
         String basePath = dataPath.replaceAll(RESTFileIOTestLoader.SCHEME + "://", "");
         String filePath = path.toString().split(":")[1].replaceAll(basePath, "");
         String[] paths = filePath.split("/");
-        // Layout: {db}/dw/{db}.db/{table}/...
-        // Find the component ending with .db and extract database name
-        String database = null;
-        String table = null;
-        for (int i = 0; i < paths.length; i++) {
-            if (paths[i].endsWith(".db")) {
-                database = paths[i].replaceAll("\\.db", "");
-                if (i + 1 < paths.length) {
-                    table = paths[i + 1];
-                }
-                break;
-            }
-        }
+        String database = paths[0].replaceAll("\\.db", "");
+        String table = paths[1];
         return DataTokenStore.getDataToken(
                 options.get(CatalogOptions.WAREHOUSE.key()),
                 Identifier.create(database, table).getFullName());

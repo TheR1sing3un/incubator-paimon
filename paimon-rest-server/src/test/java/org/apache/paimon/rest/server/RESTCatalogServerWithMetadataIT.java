@@ -85,6 +85,16 @@ class RESTCatalogServerWithMetadataIT {
         try (Connection conn = metadataDs.getConnection();
                 Statement stmt = conn.createStatement()) {
             stmt.execute(
+                    "CREATE TABLE IF NOT EXISTS paimon_database ("
+                            + "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
+                            + "database_name VARCHAR(256) NOT NULL, "
+                            + "properties CLOB NULL, "
+                            + "created_by VARCHAR(64) NOT NULL, "
+                            + "created_at BIGINT NOT NULL, "
+                            + "updated_at BIGINT NOT NULL, "
+                            + "UNIQUE (database_name)"
+                            + ")");
+            stmt.execute(
                     "CREATE TABLE IF NOT EXISTS paimon_op_log ("
                             + "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
                             + "database_name VARCHAR(256) NOT NULL, "
@@ -292,6 +302,63 @@ class RESTCatalogServerWithMetadataIT {
 
         httpDelete(tablePath);
         httpDelete("/v1/test-prefix/databases/commit_404_db");
+    }
+
+    @Test
+    void testDatabaseMetadataPersistedOnCreate() throws Exception {
+        String createBody = "{\"name\": \"meta_db\", \"options\": {\"key1\": \"val1\"}}";
+        int status = httpPostStatus("/v1/test-prefix/databases", createBody);
+        assertThat(status).isEqualTo(201);
+
+        // Verify metadata was persisted in paimon_database
+        try (Connection conn = metadataDs.getConnection();
+                PreparedStatement ps =
+                        conn.prepareStatement(
+                                "SELECT * FROM paimon_database WHERE database_name = 'meta_db'")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getString("created_by")).isEqualTo("anonymous");
+                assertThat(rs.getLong("created_at")).isGreaterThan(0);
+            }
+        }
+
+        // Verify GET returns the metadata timestamps
+        String getResponse = httpGet("/v1/test-prefix/databases/meta_db");
+        assertThat(getResponse).contains("meta_db");
+        assertThat(getResponse).contains("\"createdAt\"");
+
+        httpDelete("/v1/test-prefix/databases/meta_db");
+    }
+
+    @Test
+    void testDatabaseMetadataDeletedOnDrop() throws Exception {
+        httpPost("/v1/test-prefix/databases", "{\"name\": \"drop_meta_db\", \"options\": {}}");
+
+        // Verify exists
+        try (Connection conn = metadataDs.getConnection();
+                PreparedStatement ps =
+                        conn.prepareStatement(
+                                "SELECT COUNT(*) FROM paimon_database "
+                                        + "WHERE database_name = 'drop_meta_db'")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                assertThat(rs.getInt(1)).isEqualTo(1);
+            }
+        }
+
+        httpDelete("/v1/test-prefix/databases/drop_meta_db");
+
+        // Verify deleted
+        try (Connection conn = metadataDs.getConnection();
+                PreparedStatement ps =
+                        conn.prepareStatement(
+                                "SELECT COUNT(*) FROM paimon_database "
+                                        + "WHERE database_name = 'drop_meta_db'")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                assertThat(rs.getInt(1)).isEqualTo(0);
+            }
+        }
     }
 
     // -- Test helper methods --

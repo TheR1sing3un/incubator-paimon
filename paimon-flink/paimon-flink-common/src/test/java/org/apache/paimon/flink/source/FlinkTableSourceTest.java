@@ -48,7 +48,7 @@ public class FlinkTableSourceTest extends TableTestBase {
     @Test
     public void testApplyFilterNonPartitionTable() throws Exception {
         FileIO fileIO = LocalFileIO.create();
-        Path tablePath = new Path(String.format("%s/%s/dw/%s.db/%s", warehouse, database, database, "T"));
+        Path tablePath = new Path(String.format("%s/%s.db/%s", warehouse, database, "T"));
         Schema schema = Schema.newBuilder().column("col1", DataTypes.INT()).build();
         TableSchema tableSchema = new SchemaManager(fileIO, tablePath).createTable(schema);
         Table table = FileStoreTableFactory.create(LocalFileIO.create(), tablePath, tableSchema);
@@ -65,7 +65,7 @@ public class FlinkTableSourceTest extends TableTestBase {
     @Test
     public void testApplyPartitionTable() throws Exception {
         FileIO fileIO = LocalFileIO.create();
-        Path tablePath = new Path(String.format("%s/%s/dw/%s.db/%s", warehouse, database, database, "T"));
+        Path tablePath = new Path(String.format("%s/%s.db/%s", warehouse, database, "T"));
         Schema schema =
                 Schema.newBuilder()
                         .column("col1", DataTypes.INT())

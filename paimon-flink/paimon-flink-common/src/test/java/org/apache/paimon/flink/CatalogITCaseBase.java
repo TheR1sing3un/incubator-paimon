@@ -209,7 +209,7 @@ public abstract class CatalogITCaseBase extends AbstractTestBase {
 
     protected Path getTableDirectory(String tableName) {
         return new Path(
-                new File(path, String.format("%s/dw/%s.db/%s", tEnv.getCurrentDatabase(), tEnv.getCurrentDatabase(), tableName))
+                new File(path, String.format("%s.db/%s", tEnv.getCurrentDatabase(), tableName))
                         .toString());
     }
 
