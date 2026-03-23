@@ -367,6 +367,7 @@ class FileStoreCommit:
                     delta_record_count -= entry.file.row_count
 
             total_record_count += delta_record_count
+            properties = self._build_commit_properties()
             snapshot_data = Snapshot(
                 version=3,
                 id=new_snapshot_id,
@@ -380,6 +381,7 @@ class FileStoreCommit:
                 commit_kind=commit_kind,
                 time_millis=int(time.time() * 1000),
                 next_row_id=next_row_id,
+                properties=properties or None,
             )
             # Generate partition statistics for the commit
             statistics = self._generate_partition_statistics(commit_entries)
@@ -551,6 +553,26 @@ class FileStoreCommit:
                 self.table.file_io.delete_quietly(base_path)
         except Exception as e:
             logger.warning(f"Failed to clean up temporary files during preparation failure: {e}", exc_info=True)
+
+    def _build_commit_properties(self):
+        """Build snapshot properties from commit.committer, commit.message, and commit.metadata.* options."""
+        from pypaimon.common.options.core_options import CoreOptions
+        properties = {}
+        self._inject_commit_option(properties, "commit.committer")
+        self._inject_commit_option(properties, "commit.message")
+        for key, value in self.table.options.options.to_map().items():
+            if key.startswith(CoreOptions.COMMIT_METADATA_PREFIX) and value is not None:
+                prop_key = CoreOptions.SNAPSHOT_COMMIT_PREFIX + key
+                properties.setdefault(prop_key, value)
+        return properties
+
+    def _inject_commit_option(self, properties, option_key):
+        """Inject a single commit option into properties dict."""
+        from pypaimon.common.options.core_options import CoreOptions
+        value = self.table.options.options.to_map().get(option_key)
+        if value is not None:
+            prop_key = CoreOptions.SNAPSHOT_COMMIT_PREFIX + option_key
+            properties.setdefault(prop_key, value)
 
     def abort(self, commit_messages: List[CommitMessage]):
         """Abort commit and delete files. Uses external_path if available to ensure proper scheme handling."""

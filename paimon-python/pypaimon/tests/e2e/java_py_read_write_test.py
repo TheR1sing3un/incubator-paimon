@@ -398,6 +398,77 @@ class JavaPyReadWriteTest(unittest.TestCase):
         })
         self.assertEqual(expected, actual)
 
+    def test_py_write_commit_properties(self):
+        """Test that commit.committer, commit.message, and commit.metadata.* options
+        are injected into snapshot properties during commit."""
+        pa_schema = pa.schema([
+            ('id', pa.int32()),
+            ('name', pa.string()),
+        ])
+        schema = Schema.from_pyarrow_schema(
+            pa_schema,
+            options={
+                'commit.committer': 'e2e-test-user',
+                'commit.message': 'e2e initial load',
+                'commit.metadata.env': 'test',
+                'commit.metadata.pipeline': 'e2e-pipeline',
+            }
+        )
+        table_name = 'default.test_commit_properties'
+        self.catalog.create_table(table_name, schema, False)
+        table = self.catalog.get_table(table_name)
+
+        # Write data
+        data = pa.Table.from_pydict(
+            {'id': [1, 2, 3], 'name': ['a', 'b', 'c']}, schema=pa_schema)
+        write_builder = table.new_batch_write_builder()
+        table_write = write_builder.new_write()
+        table_commit = write_builder.new_commit()
+        table_write.write_arrow(data)
+        table_commit.commit(table_write.prepare_commit())
+        table_write.close()
+        table_commit.close()
+
+        # Verify snapshot properties
+        snapshot = table.snapshot_manager().get_latest_snapshot()
+        self.assertIsNotNone(snapshot.properties)
+        self.assertEqual(snapshot.properties.get('paimon.commit.committer'), 'e2e-test-user')
+        self.assertEqual(snapshot.properties.get('paimon.commit.message'), 'e2e initial load')
+        self.assertEqual(snapshot.properties.get('paimon.commit.metadata.env'), 'test')
+        self.assertEqual(snapshot.properties.get('paimon.commit.metadata.pipeline'), 'e2e-pipeline')
+        self.assertEqual(len(snapshot.properties), 4)
+
+        # Verify data is still readable
+        read_builder = table.new_read_builder()
+        table_read = read_builder.new_read()
+        splits = read_builder.new_scan().plan().splits()
+        result = table_sort_by(table_read.to_arrow(splits), 'id')
+        self.assertEqual(data, result)
+
+    def test_py_write_no_commit_properties(self):
+        """Test that snapshot has no properties when commit options are not set."""
+        pa_schema = pa.schema([
+            ('id', pa.int32()),
+            ('name', pa.string()),
+        ])
+        schema = Schema.from_pyarrow_schema(pa_schema)
+        table_name = 'default.test_no_commit_properties'
+        self.catalog.create_table(table_name, schema, False)
+        table = self.catalog.get_table(table_name)
+
+        data = pa.Table.from_pydict(
+            {'id': [1, 2], 'name': ['a', 'b']}, schema=pa_schema)
+        write_builder = table.new_batch_write_builder()
+        table_write = write_builder.new_write()
+        table_commit = write_builder.new_commit()
+        table_write.write_arrow(data)
+        table_commit.commit(table_write.prepare_commit())
+        table_write.close()
+        table_commit.close()
+
+        snapshot = table.snapshot_manager().get_latest_snapshot()
+        self.assertIsNone(snapshot.properties)
+
     def _test_read_btree_index_null(self):
         table = self.catalog.get_table('default.test_btree_index_null')
 

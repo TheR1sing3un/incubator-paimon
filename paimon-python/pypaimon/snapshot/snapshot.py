@@ -17,7 +17,7 @@
 ################################################################################
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, Optional
 
 from pypaimon.common.json_util import json_field, optional_json_field
 
@@ -45,3 +45,4 @@ class Snapshot:
     watermark: Optional[int] = optional_json_field("watermark", "non_null")
     statistics: Optional[str] = optional_json_field("statistics", "non_null")
     next_row_id: Optional[int] = optional_json_field("nextRowId", "non_null")
+    properties: Optional[Dict[str, str]] = optional_json_field("properties", "non_null")

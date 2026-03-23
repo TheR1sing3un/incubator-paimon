@@ -313,6 +313,23 @@ class CoreOptions:
         .with_description("The prefix for commit user.")
     )
 
+    COMMIT_COMMITTER: ConfigOption[str] = (
+        ConfigOptions.key("commit.committer")
+        .string_type()
+        .no_default_value()
+        .with_description("The committer name for snapshot properties.")
+    )
+
+    COMMIT_MESSAGE: ConfigOption[str] = (
+        ConfigOptions.key("commit.message")
+        .string_type()
+        .no_default_value()
+        .with_description("The commit message for snapshot properties.")
+    )
+
+    COMMIT_METADATA_PREFIX = "commit.metadata."
+    SNAPSHOT_COMMIT_PREFIX = "paimon."
+
     COMMIT_MAX_RETRIES: ConfigOption[int] = (
         ConfigOptions.key("commit.max-retries")
         .int_type()
@@ -606,6 +623,12 @@ class CoreOptions:
 
     def commit_user_prefix(self, default=None):
         return self.options.get(CoreOptions.COMMIT_USER_PREFIX, default)
+
+    def commit_committer(self, default=None):
+        return self.options.get(CoreOptions.COMMIT_COMMITTER, default)
+
+    def commit_message(self, default=None):
+        return self.options.get(CoreOptions.COMMIT_MESSAGE, default)
 
     def row_tracking_enabled(self, default=None):
         return self.options.get(CoreOptions.ROW_TRACKING_ENABLED, default)
