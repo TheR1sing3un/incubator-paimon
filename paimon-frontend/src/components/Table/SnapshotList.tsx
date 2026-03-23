@@ -48,6 +48,18 @@ export default function SnapshotList({ database, table, branch }: Props) {
     },
     { title: 'Schema ID', dataIndex: 'schemaId', width: 100 },
     {
+      title: 'Committer',
+      dataIndex: 'properties',
+      render: (props: Record<string, string> | undefined) =>
+        props?.['paimon.commit.committer'] ?? '-',
+    },
+    {
+      title: 'Message',
+      dataIndex: 'properties',
+      render: (props: Record<string, string> | undefined) =>
+        props?.['paimon.commit.message'] ?? '-',
+    },
+    {
       title: 'Total Records',
       dataIndex: 'totalRecordCount',
       render: formatNumber,

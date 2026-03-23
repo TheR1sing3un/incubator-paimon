@@ -379,6 +379,12 @@ export default function BranchGraph({ database, table }: Props) {
                           ))}
                         </div>
                       )}
+                      {node.snapshot.properties?.['paimon.commit.committer'] && (
+                        <div>Committer: {node.snapshot.properties['paimon.commit.committer']}</div>
+                      )}
+                      {node.snapshot.properties?.['paimon.commit.message'] && (
+                        <div>Message: {node.snapshot.properties['paimon.commit.message']}</div>
+                      )}
                       <div>Records: {node.snapshot.totalRecordCount} (+{node.snapshot.deltaRecordCount})</div>
                       <div>{formatTimestamp(node.snapshot.timeMillis)}</div>
                       {nodeTags.length > 0 && (

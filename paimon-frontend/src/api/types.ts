@@ -74,6 +74,7 @@ export interface SnapshotInfo {
   changelogFileCount?: number;
   watermark: number;
   timeMillis: number;
+  properties?: Record<string, string>;
 }
 
 export interface BranchInfo {

@@ -166,7 +166,7 @@ echo "[3/5] Committing snapshots..."
 
 # Helper: commit a snapshot
 commit_snapshot() {
-  local db="$1" table="$2" snap_id="$3" schema_id="$4" commit_kind="$5" total_records="$6" delta_records="$7" time_millis="$8"
+  local db="$1" table="$2" snap_id="$3" schema_id="$4" commit_kind="$5" total_records="$6" delta_records="$7" time_millis="$8" properties="${9:-null}"
   local table_uuid
   # Get table UUID
   table_uuid=$(api GET "databases/${db}/tables/${table}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('uuid',''))" 2>/dev/null || echo "")
@@ -185,7 +185,8 @@ commit_snapshot() {
       \"timeMillis\": ${time_millis},
       \"totalRecordCount\": ${total_records},
       \"deltaRecordCount\": ${delta_records},
-      \"changelogRecordCount\": 0
+      \"changelogRecordCount\": 0,
+      \"properties\": ${properties}
     }
   }" > /dev/null
 }
@@ -194,7 +195,7 @@ commit_snapshot() {
 BASE_TS=1774060800000
 HOUR=$((3600 * 1000))
 
-# test_db.user_events - 5 snapshots
+# test_db.user_events - 5 snapshots (with committer/message properties)
 echo "  Committing snapshots for test_db.user_events..."
 for i in 1 2 3 4 5; do
   ts=$((BASE_TS + i * HOUR))
@@ -202,7 +203,8 @@ for i in 1 2 3 4 5; do
   [ "$i" -eq 3 ] && kind="COMPACT"
   total=$((i * 10000))
   delta=$((i * 2000))
-  commit_snapshot "test_db" "user_events" "$i" "0" "$kind" "$total" "$delta" "$ts"
+  props="{\"paimon.commit.committer\": \"flink-job-01\", \"paimon.commit.message\": \"Batch ingestion #${i}\"}"
+  commit_snapshot "test_db" "user_events" "$i" "0" "$kind" "$total" "$delta" "$ts" "$props"
   echo "    Snapshot $i committed (${kind})"
 done
 
@@ -218,7 +220,7 @@ for i in 1 2 3 4; do
   echo "    Snapshot $i committed (${kind})"
 done
 
-# production.click_stream - 6 snapshots
+# production.click_stream - 6 snapshots (with metadata properties)
 echo "  Committing snapshots for production.click_stream..."
 for i in 1 2 3 4 5 6; do
   ts=$((BASE_TS + i * HOUR))
@@ -227,7 +229,8 @@ for i in 1 2 3 4 5 6; do
   [ "$i" -eq 6 ] && kind="COMPACT"
   total=$((i * 20000))
   delta=$((i * 5000))
-  commit_snapshot "production" "click_stream" "$i" "0" "$kind" "$total" "$delta" "$ts"
+  props="{\"paimon.commit.committer\": \"streaming-etl\", \"paimon.commit.message\": \"Streaming sync batch ${i}\"}"
+  commit_snapshot "production" "click_stream" "$i" "0" "$kind" "$total" "$delta" "$ts" "$props"
   echo "    Snapshot $i committed (${kind})"
 done
 
