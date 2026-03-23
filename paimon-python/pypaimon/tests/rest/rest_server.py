@@ -379,7 +379,7 @@ class RESTCatalogServer:
                     # Individual resource operations
                     resource_type = path_parts[1]
                     resource_name = RESTUtil.decode_string(path_parts[2])
-                    identifier = Identifier.create(database_name, resource_name)
+                    identifier = Identifier(database_name, resource_name)
 
                     if resource_type == ResourcePaths.TABLES:
                         return self._handle_table_resource(method, path_parts, identifier, data, parameters)
