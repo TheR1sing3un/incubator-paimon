@@ -17,7 +17,12 @@
  */
 
 import apiClient, { getCurrentPrefix } from './client';
-import type { DatabaseInfo } from './types';
+import type {
+  DatabaseInfo,
+  CreateDatabaseRequest,
+  AlterDatabaseRequest,
+  AlterDatabaseResponse,
+} from './types';
 
 export async function listDatabases(): Promise<string[]> {
   const resp = await apiClient.get(`/${getCurrentPrefix()}/databases`);
@@ -26,5 +31,21 @@ export async function listDatabases(): Promise<string[]> {
 
 export async function getDatabase(database: string): Promise<DatabaseInfo> {
   const resp = await apiClient.get(`/${getCurrentPrefix()}/databases/${database}`);
+  return resp.data;
+}
+
+export async function createDatabase(request: CreateDatabaseRequest): Promise<void> {
+  await apiClient.post(`/${getCurrentPrefix()}/databases`, request);
+}
+
+export async function dropDatabase(database: string): Promise<void> {
+  await apiClient.delete(`/${getCurrentPrefix()}/databases/${database}`);
+}
+
+export async function alterDatabase(
+  database: string,
+  request: AlterDatabaseRequest
+): Promise<AlterDatabaseResponse> {
+  const resp = await apiClient.post(`/${getCurrentPrefix()}/databases/${database}`, request);
   return resp.data;
 }

@@ -16,11 +16,11 @@
  * limitations under the License.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Layout, Menu, Spin, Empty } from 'antd';
 import { DatabaseOutlined, TableOutlined } from '@ant-design/icons';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueries } from '@tanstack/react-query';
 import { listDatabases } from '../../api/databases';
 import { listTables } from '../../api/tables';
 import { useCatalog } from '../../store/catalogStore';
@@ -34,8 +34,6 @@ export default function Sidebar() {
   const location = useLocation();
   const { active } = useCatalog();
   const [openKeys, setOpenKeys] = useState<string[]>([]);
-  const [loadedDbs, setLoadedDbs] = useState<Set<string>>(new Set());
-  const [dbTables, setDbTables] = useState<Record<string, string[]>>({});
 
   const { data: databases = [], isLoading } = useQuery({
     queryKey: ['databases', active?.name],
@@ -46,8 +44,6 @@ export default function Sidebar() {
   // Reset sidebar state when catalog changes
   useEffect(() => {
     setOpenKeys([]);
-    setLoadedDbs(new Set());
-    setDbTables({});
   }, [active?.name]);
 
   // Auto-expand current database from URL
@@ -59,17 +55,21 @@ export default function Sidebar() {
     }
   }, [location.pathname]);
 
-  // Load tables when a database is expanded
-  useEffect(() => {
-    for (const key of openKeys) {
-      if (!loadedDbs.has(key)) {
-        setLoadedDbs((prev) => new Set(prev).add(key));
-        listTables(key).then((tables) => {
-          setDbTables((prev) => ({ ...prev, [key]: tables }));
-        });
-      }
-    }
-  }, [openKeys, loadedDbs]);
+  // Load tables via React Query for each expanded database
+  const tableQueries = useQueries({
+    queries: openKeys.map((db) => ({
+      queryKey: ['tables', db],
+      queryFn: () => listTables(db),
+    })),
+  });
+
+  const dbTables = useMemo(() => {
+    const result: Record<string, string[] | undefined> = {};
+    openKeys.forEach((db, idx) => {
+      result[db] = tableQueries[idx].data;
+    });
+    return result;
+  }, [openKeys, tableQueries]);
 
   const menuItems: ItemType[] = databases.map((db) => ({
     key: db,

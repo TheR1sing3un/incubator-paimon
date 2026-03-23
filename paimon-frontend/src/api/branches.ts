@@ -17,7 +17,7 @@
  */
 
 import apiClient, { getCurrentPrefix } from './client';
-import type { BranchInfo } from './types';
+import type { BranchInfo, CreateBranchRequest } from './types';
 
 export async function listBranches(
   database: string,
@@ -45,4 +45,39 @@ export async function listBranches(
   const mainBranch = mainResp.data as BranchInfo;
 
   return [mainBranch, ...details];
+}
+
+export async function createBranch(
+  database: string,
+  table: string,
+  request: CreateBranchRequest
+): Promise<void> {
+  const prefix = getCurrentPrefix();
+  await apiClient.post(
+    `/${prefix}/databases/${database}/tables/${table}/branches`,
+    request
+  );
+}
+
+export async function dropBranch(
+  database: string,
+  table: string,
+  branch: string
+): Promise<void> {
+  const prefix = getCurrentPrefix();
+  await apiClient.delete(
+    `/${prefix}/databases/${database}/tables/${table}/branches/${branch}`
+  );
+}
+
+export async function fastForwardBranch(
+  database: string,
+  table: string,
+  branch: string
+): Promise<void> {
+  const prefix = getCurrentPrefix();
+  await apiClient.post(
+    `/${prefix}/databases/${database}/tables/${table}/branches/${branch}/forward`,
+    {}
+  );
 }

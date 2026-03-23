@@ -18,7 +18,7 @@
 
 import apiClient, { getCurrentPrefix } from './client';
 import { encodeBranchTable } from './tables';
-import type { TagInfo } from './types';
+import type { TagInfo, CreateTagRequest } from './types';
 
 export async function listTags(
   database: string,
@@ -39,4 +39,31 @@ export async function listTags(
     )
   );
   return details;
+}
+
+export async function createTag(
+  database: string,
+  table: string,
+  request: CreateTagRequest,
+  branch?: string
+): Promise<void> {
+  const prefix = getCurrentPrefix();
+  const t = encodeBranchTable(table, branch);
+  await apiClient.post(
+    `/${prefix}/databases/${database}/tables/${t}/tags`,
+    request
+  );
+}
+
+export async function dropTag(
+  database: string,
+  table: string,
+  tagName: string,
+  branch?: string
+): Promise<void> {
+  const prefix = getCurrentPrefix();
+  const t = encodeBranchTable(table, branch);
+  await apiClient.delete(
+    `/${prefix}/databases/${database}/tables/${t}/tags/${tagName}`
+  );
 }
