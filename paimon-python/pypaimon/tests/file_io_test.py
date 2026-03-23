@@ -458,5 +458,66 @@ class FileIOTest(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+class HdfsFileIOTest(unittest.TestCase):
+    """Test cases for HDFS and ViewFS initialization in PyArrowFileIO."""
+
+    def _make_hdfs_env(self, env_patch):
+        """Set up environment variables for HDFS tests."""
+        env_patch.setdefault('HADOOP_HOME', '/opt/hadoop')
+        env_patch.setdefault('HADOOP_CONF_DIR', '/opt/hadoop/etc/hadoop')
+        env_patch.setdefault('CLASSPATH', '')
+        env_patch.setdefault('LD_LIBRARY_PATH', '')
+        return env_patch
+
+    @patch('pypaimon.filesystem.pyarrow_file_io.subprocess.run')
+    @patch('pypaimon.filesystem.pyarrow_file_io.pafs.HadoopFileSystem')
+    def test_viewfs_uses_default_host(self, mock_hadoop_fs, mock_run):
+        mock_run.return_value = MagicMock(stdout='/opt/hadoop/share/hadoop/common/*')
+        mock_hadoop_fs.return_value = MagicMock()
+        env = self._make_hdfs_env({})
+        with patch.dict(os.environ, env, clear=True):
+            file_io = PyArrowFileIO.__new__(PyArrowFileIO)
+            file_io._initialize_hdfs_fs('viewfs', 'clusterName')
+        mock_hadoop_fs.assert_called_once_with(host='default', port=0, user='hadoop')
+
+    @patch('pypaimon.filesystem.pyarrow_file_io.subprocess.run')
+    @patch('pypaimon.filesystem.pyarrow_file_io.pafs.HadoopFileSystem')
+    def test_hdfs_with_port_uses_explicit_host(self, mock_hadoop_fs, mock_run):
+        mock_run.return_value = MagicMock(stdout='/opt/hadoop/share/hadoop/common/*')
+        mock_hadoop_fs.return_value = MagicMock()
+        env = self._make_hdfs_env({})
+        with patch.dict(os.environ, env, clear=True):
+            file_io = PyArrowFileIO.__new__(PyArrowFileIO)
+            file_io._initialize_hdfs_fs('hdfs', 'namenode:8020')
+        mock_hadoop_fs.assert_called_once_with(host='namenode', port=8020, user='hadoop')
+
+    @patch('pypaimon.filesystem.pyarrow_file_io.subprocess.run')
+    @patch('pypaimon.filesystem.pyarrow_file_io.pafs.HadoopFileSystem')
+    def test_hdfs_without_port_uses_default_host(self, mock_hadoop_fs, mock_run):
+        mock_run.return_value = MagicMock(stdout='/opt/hadoop/share/hadoop/common/*')
+        mock_hadoop_fs.return_value = MagicMock()
+        env = self._make_hdfs_env({})
+        with patch.dict(os.environ, env, clear=True):
+            file_io = PyArrowFileIO.__new__(PyArrowFileIO)
+            file_io._initialize_hdfs_fs('hdfs', 'nameservice1')
+        mock_hadoop_fs.assert_called_once_with(host='default', port=0, user='hadoop')
+
+    def test_hdfs_missing_hadoop_home_raises(self):
+        env = {'HADOOP_CONF_DIR': '/opt/hadoop/etc/hadoop'}
+        with patch.dict(os.environ, env, clear=True):
+            file_io = PyArrowFileIO.__new__(PyArrowFileIO)
+            with self.assertRaises(RuntimeError) as ctx:
+                file_io._initialize_hdfs_fs('hdfs', 'namenode:8020')
+            self.assertIn('HADOOP_HOME', str(ctx.exception))
+
+    def test_hdfs_missing_hadoop_conf_dir_raises(self):
+        env = {'HADOOP_HOME': '/opt/hadoop'}
+        with patch.dict(os.environ, env, clear=True):
+            file_io = PyArrowFileIO.__new__(PyArrowFileIO)
+            with self.assertRaises(RuntimeError) as ctx:
+                file_io._initialize_hdfs_fs('hdfs', 'namenode:8020')
+            self.assertIn('HADOOP_CONF_DIR', str(ctx.exception))
+
+
 if __name__ == '__main__':
     unittest.main()

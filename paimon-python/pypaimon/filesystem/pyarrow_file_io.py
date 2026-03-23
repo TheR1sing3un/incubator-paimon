@@ -170,12 +170,20 @@ class PyArrowFileIO(FileIO):
         )
         os.environ['CLASSPATH'] = class_paths.stdout.strip()
 
-        host, port_str = splitport(netloc)
-        return pafs.HadoopFileSystem(
-            host=host,
-            port=int(port_str),
-            user=os.environ.get('HADOOP_USER_NAME', 'hadoop')
-        )
+        user = os.environ.get('HADOOP_USER_NAME', 'hadoop')
+
+        # ViewFS: always delegate to Hadoop configuration for mount table resolution
+        if scheme == 'viewfs':
+            return pafs.HadoopFileSystem(host='default', port=0, user=user)
+
+        # HDFS: check for an explicit port
+        if netloc:
+            host, port_str = splitport(netloc)
+            if port_str is not None:
+                return pafs.HadoopFileSystem(host=host, port=int(port_str), user=user)
+
+        # HDFS without port (HA nameservice) or without netloc — use Hadoop configuration
+        return pafs.HadoopFileSystem(host='default', port=0, user=user)
 
     def new_input_stream(self, path: str):
         path_str = self.to_filesystem_path(path)
