@@ -17,7 +17,12 @@
  */
 
 import apiClient, { getCurrentPrefix } from './client';
-import type { TableInfo } from './types';
+import type {
+  TableInfo,
+  CreateTableRequest,
+  AlterTableRequest,
+  RenameTableRequest,
+} from './types';
 
 export function encodeBranchTable(table: string, branch?: string): string {
   if (!branch || branch === 'main') return table;
@@ -33,4 +38,25 @@ export async function getTable(database: string, table: string, branch?: string)
   const t = encodeBranchTable(table, branch);
   const resp = await apiClient.get(`/${getCurrentPrefix()}/databases/${database}/tables/${t}`);
   return resp.data;
+}
+
+export async function createTable(request: CreateTableRequest): Promise<void> {
+  const database = request.identifier.database;
+  await apiClient.post(`/${getCurrentPrefix()}/databases/${database}/tables`, request);
+}
+
+export async function dropTable(database: string, table: string): Promise<void> {
+  await apiClient.delete(`/${getCurrentPrefix()}/databases/${database}/tables/${table}`);
+}
+
+export async function alterTable(
+  database: string,
+  table: string,
+  request: AlterTableRequest
+): Promise<void> {
+  await apiClient.post(`/${getCurrentPrefix()}/databases/${database}/tables/${table}`, request);
+}
+
+export async function renameTable(request: RenameTableRequest): Promise<void> {
+  await apiClient.post(`/${getCurrentPrefix()}/tables/rename`, request);
 }

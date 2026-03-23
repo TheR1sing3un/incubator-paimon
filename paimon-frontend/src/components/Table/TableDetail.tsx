@@ -17,11 +17,11 @@
  */
 
 import { useState } from 'react';
-import { Tabs, Typography, Spin, Alert, Select, Space } from 'antd';
-import { BranchesOutlined } from '@ant-design/icons';
-import { useParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { getTable } from '../../api/tables';
+import { Tabs, Typography, Spin, Alert, Select, Space, Button, Popconfirm, Modal, Form, Input, message } from 'antd';
+import { BranchesOutlined, DeleteOutlined, EditOutlined } from '@ant-design/icons';
+import { useParams, useNavigate } from 'react-router-dom';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { getTable, dropTable, renameTable } from '../../api/tables';
 import { listBranches } from '../../api/branches';
 import SchemaView from './SchemaView';
 import OptionsView from './OptionsView';
@@ -37,7 +37,11 @@ const { Title } = Typography;
 
 export default function TableDetail() {
   const { db, table } = useParams<{ db: string; table: string }>();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [currentBranch, setCurrentBranch] = useState('main');
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameForm] = Form.useForm();
 
   const { data: tableInfo, isLoading, error } = useQuery({
     queryKey: ['table', db, table, currentBranch],
@@ -49,6 +53,28 @@ export default function TableDetail() {
     queryKey: ['branches', db, table],
     queryFn: () => listBranches(db!, table!),
     enabled: !!db && !!table,
+  });
+
+  const dropMutation = useMutation({
+    mutationFn: () => dropTable(db!, table!),
+    onSuccess: () => {
+      message.success('Table deleted');
+      queryClient.invalidateQueries({ queryKey: ['tables', db] });
+      queryClient.invalidateQueries({ queryKey: ['databases'] });
+      navigate(`/databases/${db}`);
+    },
+    onError: (err: Error) => message.error(err.message || 'Failed to delete table'),
+  });
+
+  const renameMutation = useMutation({
+    mutationFn: renameTable,
+    onSuccess: (_data, variables) => {
+      message.success('Table renamed');
+      queryClient.invalidateQueries({ queryKey: ['tables'] });
+      setRenameOpen(false);
+      navigate(`/databases/${variables.destination.database}/tables/${variables.destination.object}`);
+    },
+    onError: (err: Error) => message.error(err.message || 'Failed to rename table'),
   });
 
   if (isLoading) return <Spin size="large" />;
@@ -64,7 +90,7 @@ export default function TableDetail() {
     {
       key: 'schema',
       label: 'Schema',
-      children: <SchemaView schema={tableInfo.schema} />,
+      children: <SchemaView database={db!} table={table!} schema={tableInfo.schema} />,
     },
     {
       key: 'options',
@@ -110,23 +136,69 @@ export default function TableDetail() {
 
   return (
     <div>
-      <Space align="center" style={{ marginBottom: 8 }}>
-        <Title level={3} style={{ margin: 0 }}>
-          {db}.{table}
-        </Title>
-        {branchOptions.length > 0 && (
-          <>
-            <BranchesOutlined style={{ marginLeft: 16, color: '#999' }} />
-            <Select
-              value={currentBranch}
-              onChange={(val: string) => setCurrentBranch(val)}
-              options={branchOptions}
-              style={{ minWidth: 140 }}
-            />
-          </>
-        )}
-      </Space>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <Space align="center">
+          <Title level={3} style={{ margin: 0 }}>
+            {db}.{table}
+          </Title>
+          {branchOptions.length > 0 && (
+            <>
+              <BranchesOutlined style={{ marginLeft: 16, color: '#999' }} />
+              <Select
+                value={currentBranch}
+                onChange={(val: string) => setCurrentBranch(val)}
+                options={branchOptions}
+                style={{ minWidth: 140 }}
+              />
+            </>
+          )}
+        </Space>
+        <Space>
+          <Button
+            icon={<EditOutlined />}
+            onClick={() => {
+              renameForm.setFieldsValue({ destDb: db, destTable: table });
+              setRenameOpen(true);
+            }}
+          >
+            Rename
+          </Button>
+          <Popconfirm
+            title={`Delete table "${table}"?`}
+            description="This action cannot be undone."
+            onConfirm={() => dropMutation.mutate()}
+            okText="Delete"
+            okButtonProps={{ danger: true }}
+          >
+            <Button danger icon={<DeleteOutlined />}>Delete Table</Button>
+          </Popconfirm>
+        </Space>
+      </div>
       <Tabs defaultActiveKey="schema" items={tabItems} destroyOnHidden />
+
+      <Modal
+        title={`Rename Table: ${table}`}
+        open={renameOpen}
+        onOk={() => {
+          renameForm.validateFields().then((values) => {
+            renameMutation.mutate({
+              source: { database: db!, object: table! },
+              destination: { database: values.destDb, object: values.destTable },
+            });
+          });
+        }}
+        onCancel={() => { setRenameOpen(false); renameForm.resetFields(); }}
+        confirmLoading={renameMutation.isPending}
+      >
+        <Form form={renameForm} layout="vertical">
+          <Form.Item name="destDb" label="Destination Database" rules={[{ required: true }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="destTable" label="New Table Name" rules={[{ required: true }]}>
+            <Input />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 }

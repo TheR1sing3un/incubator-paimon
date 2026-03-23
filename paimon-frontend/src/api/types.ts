@@ -127,3 +127,71 @@ export interface ErrorResponse {
   message: string;
   code: number;
 }
+
+// Write operation request types
+
+export interface CreateDatabaseRequest {
+  name: string;
+  options?: Record<string, string>;
+}
+
+export interface AlterDatabaseRequest {
+  removals?: string[];
+  updates?: Record<string, string>;
+}
+
+export interface AlterDatabaseResponse {
+  removed: string[];
+  updated: string[];
+  missing: string[];
+}
+
+export interface TableIdentifier {
+  database: string;
+  object: string;
+}
+
+export interface CreateTableRequest {
+  identifier: TableIdentifier;
+  schema: {
+    fields: CreateFieldInfo[];
+    partitionKeys?: string[];
+    primaryKeys?: string[];
+    options?: Record<string, string>;
+    comment?: string;
+  };
+}
+
+export interface CreateFieldInfo {
+  id: number;
+  name: string;
+  type: string;
+  description?: string;
+}
+
+export type SchemaChange =
+  | { action: 'addColumn'; fieldNames: string[]; dataType: string; comment?: string }
+  | { action: 'dropColumn'; fieldNames: string[] }
+  | { action: 'renameColumn'; fieldNames: string[]; newName: string }
+  | { action: 'updateColumnType'; fieldNames: string[]; newDataType: string };
+
+export interface AlterTableRequest {
+  changes: SchemaChange[];
+}
+
+export interface RenameTableRequest {
+  source: TableIdentifier;
+  destination: TableIdentifier;
+}
+
+export interface CreateBranchRequest {
+  branch: string;
+  fromTag?: string;
+  fromSnapshotId?: number;
+}
+
+export interface CreateTagRequest {
+  tagName: string;
+  snapshotId?: number;
+  timeRetained?: string;
+}
