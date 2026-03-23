@@ -36,17 +36,25 @@ public class KeyValueThinSerializer extends ObjectSerializer<KeyValue> {
     public KeyValueThinSerializer(RowType keyType, RowType valueType) {
         super(KeyValue.schema(keyType, valueType));
 
-        this.reusedMeta = new GenericRow(2);
+        this.reusedMeta = new GenericRow(3);
         this.reusedKeyWithMeta = new JoinedRow();
     }
 
     public InternalRow toRow(KeyValue record) {
-        return toRow(record.sequenceNumber(), record.valueKind(), record.value());
+        return toRow(
+                record.sequenceNumber(), record.valueKind(), record.value(), record.snapshotId());
     }
 
     public InternalRow toRow(long sequenceNumber, RowKind valueKind, InternalRow value) {
+        return toRow(sequenceNumber, valueKind, value, 0L);
+    }
+
+    public InternalRow toRow(
+            long sequenceNumber, RowKind valueKind, InternalRow value, long snapshotId) {
         reusedMeta.setField(0, sequenceNumber);
         reusedMeta.setField(1, valueKind.toByteValue());
+        boolean validSnapshotId = snapshotId > 0 && snapshotId != Long.MAX_VALUE;
+        reusedMeta.setField(2, validSnapshotId ? (Long) snapshotId : null);
         return reusedKeyWithMeta.replace(reusedMeta, value);
     }
 

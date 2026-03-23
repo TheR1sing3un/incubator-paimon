@@ -52,24 +52,44 @@ public class KeyValueSerializer extends ObjectSerializer<KeyValue> {
         this.keyArity = keyType.getFieldCount();
         this.valueArity = valueType.getFieldCount();
 
-        this.reusedMeta = new GenericRow(2);
+        this.reusedMeta = new GenericRow(3);
         this.reusedKeyWithMeta = new JoinedRow();
         this.reusedRow = new JoinedRow();
 
         this.reusedKey = new OffsetRow(keyArity, 0);
-        this.reusedValue = new OffsetRow(valueArity, keyArity + 2);
+        this.reusedValue = new OffsetRow(valueArity, keyArity + 3);
         this.reusedKv = new KeyValue().replace(reusedKey, -1, null, reusedValue);
     }
 
     @Override
     public InternalRow toRow(KeyValue record) {
-        return toRow(record.key(), record.sequenceNumber(), record.valueKind(), record.value());
+        return toRow(
+                record.key(),
+                record.sequenceNumber(),
+                record.valueKind(),
+                record.value(),
+                record.snapshotId());
     }
 
     public InternalRow toRow(
             InternalRow key, long sequenceNumber, RowKind valueKind, InternalRow value) {
+        return toRow(key, sequenceNumber, valueKind, value, 0L);
+    }
+
+    public InternalRow toRow(
+            InternalRow key,
+            long sequenceNumber,
+            RowKind valueKind,
+            InternalRow value,
+            long snapshotId) {
         reusedMeta.setField(0, sequenceNumber);
         reusedMeta.setField(1, valueKind.toByteValue());
+        // Only persist valid positive snapshotIds. UNKNOWN_SNAPSHOT_ID (-1) and
+        // Long.MAX_VALUE (ordering marker for uncommitted records) are written as null.
+        // The real snapshotId is resolved via file-level fallback after commit and
+        // materialized into the physical column during the next compaction.
+        boolean validSnapshotId = snapshotId > 0 && snapshotId != Long.MAX_VALUE;
+        reusedMeta.setField(2, validSnapshotId ? (Long) snapshotId : null);
         return reusedRow.replace(reusedKeyWithMeta.replace(key, reusedMeta), value);
     }
 
@@ -79,7 +99,12 @@ public class KeyValueSerializer extends ObjectSerializer<KeyValue> {
         reusedValue.replace(row);
         long sequenceNumber = row.getLong(keyArity);
         RowKind valueKind = RowKind.fromByteValue(row.getByte(keyArity + 1));
+        long snapshotId =
+                row.isNullAt(keyArity + 2)
+                        ? KeyValue.UNKNOWN_SNAPSHOT_ID
+                        : row.getLong(keyArity + 2);
         reusedKv.replace(reusedKey, sequenceNumber, valueKind, reusedValue);
+        reusedKv.setSnapshotId(snapshotId);
         return reusedKv;
     }
 
@@ -94,6 +119,7 @@ public class KeyValueSerializer extends ObjectSerializer<KeyValue> {
                         new OffsetRow(keyArity, 0).replace(row),
                         reusedKv.sequenceNumber(),
                         reusedKv.valueKind(),
-                        new OffsetRow(valueArity, keyArity + 2).replace(row));
+                        new OffsetRow(valueArity, keyArity + 3).replace(row))
+                .setSnapshotId(reusedKv.snapshotId());
     }
 }

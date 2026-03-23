@@ -239,6 +239,17 @@ public class SchemaValidation {
             validateForDeletionVectors(options);
         }
 
+        if (options.snapshotSequenceOrdering()) {
+            checkArgument(
+                    !schema.primaryKeys().isEmpty(),
+                    "sequence.snapshot-ordering requires a primary key table.");
+            checkArgument(
+                    options.sequenceField().isEmpty(),
+                    "sequence.snapshot-ordering cannot be used together with sequence.field. "
+                            + "Snapshot ordering determines record precedence by commit order; "
+                            + "sequence.field would override this behavior.");
+        }
+
         validateMergeFunctionFactory(schema);
 
         validateRowTracking(schema, options);

@@ -925,6 +925,13 @@ public class FileStoreCommitImpl implements FileStoreCommit {
                 deltaFiles = assigned.assignedEntries;
             }
 
+            if (options.snapshotSequenceOrdering()) {
+                deltaFiles = assignCommitSnapshotId(newSnapshotId, deltaFiles);
+                if (!changelogFiles.isEmpty()) {
+                    changelogFiles = assignCommitSnapshotId(newSnapshotId, changelogFiles);
+                }
+            }
+
             // the added records subtract the deleted records from
             long deltaRecordCount = recordCountAdd(deltaFiles) - recordCountDelete(deltaFiles);
             long totalRecordCount = previousTotalRecordCount + deltaRecordCount;
@@ -1210,5 +1217,24 @@ public class FileStoreCommitImpl implements FileStoreCommit {
         IOUtils.closeAllQuietly(commitPreCallbacks);
         IOUtils.closeAllQuietly(commitCallbacks);
         IOUtils.closeQuietly(snapshotCommit);
+    }
+
+    /**
+     * Assign commitSnapshotId to ADD entries that don't already have one. Files pre-stamped by
+     * compaction rewriters (dedicated compaction) are left untouched.
+     */
+    private static List<ManifestEntry> assignCommitSnapshotId(
+            long snapshotId, List<ManifestEntry> files) {
+        List<ManifestEntry> result = new ArrayList<>(files.size());
+        for (ManifestEntry entry : files) {
+            if (entry.kind() == FileKind.ADD
+                    && (entry.file().commitSnapshotId() == null
+                            || entry.file().commitSnapshotId() == Long.MAX_VALUE)) {
+                result.add(entry.assignCommitSnapshotId(snapshotId));
+            } else {
+                result.add(entry);
+            }
+        }
+        return result;
     }
 }

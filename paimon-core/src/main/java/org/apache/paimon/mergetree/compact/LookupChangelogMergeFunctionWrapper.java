@@ -177,7 +177,12 @@ public class LookupChangelogMergeFunctionWrapper<T>
     private Comparator<KeyValue> createSequenceComparator(
             @Nullable FieldsComparator userDefinedSeqComparator) {
         if (userDefinedSeqComparator == null) {
-            return Comparator.comparingLong(KeyValue::sequenceNumber);
+            return (o1, o2) -> {
+                if (o1.snapshotId() != o2.snapshotId()) {
+                    return Long.compare(o1.snapshotId(), o2.snapshotId());
+                }
+                return Long.compare(o1.sequenceNumber(), o2.sequenceNumber());
+            };
         }
 
         return (o1, o2) -> {

@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import static org.apache.paimon.table.SpecialFields.COMMIT_SNAPSHOT_ID;
 import static org.apache.paimon.table.SpecialFields.LEVEL;
 import static org.apache.paimon.table.SpecialFields.SEQUENCE_NUMBER;
 import static org.apache.paimon.table.SpecialFields.VALUE_KIND;
@@ -43,6 +44,7 @@ public class KeyValue {
 
     public static final long UNKNOWN_SEQUENCE = -1;
     public static final int UNKNOWN_LEVEL = -1;
+    public static final long UNKNOWN_SNAPSHOT_ID = -1;
 
     private InternalRow key;
     // determined after written into memory table or read from file
@@ -51,6 +53,7 @@ public class KeyValue {
     private InternalRow value;
     // determined after read from file
     private int level;
+    private long snapshotId;
 
     public KeyValue replace(InternalRow key, RowKind valueKind, InternalRow value) {
         return replace(key, UNKNOWN_SEQUENCE, valueKind, value);
@@ -63,6 +66,7 @@ public class KeyValue {
         this.valueKind = valueKind;
         this.value = value;
         this.level = UNKNOWN_LEVEL;
+        this.snapshotId = UNKNOWN_SNAPSHOT_ID;
         return this;
     }
 
@@ -110,6 +114,15 @@ public class KeyValue {
         return this;
     }
 
+    public long snapshotId() {
+        return snapshotId;
+    }
+
+    public KeyValue setSnapshotId(long snapshotId) {
+        this.snapshotId = snapshotId;
+        return this;
+    }
+
     public static RowType schema(RowType keyType, RowType valueType) {
         return new RowType(false, createKeyValueFields(keyType.getFields(), valueType.getFields()));
     }
@@ -129,17 +142,18 @@ public class KeyValue {
      */
     public static List<DataField> createKeyValueFields(
             List<DataField> keyFields, List<DataField> valueFields) {
-        List<DataField> fields = new ArrayList<>(keyFields.size() + valueFields.size() + 2);
+        List<DataField> fields = new ArrayList<>(keyFields.size() + valueFields.size() + 3);
         fields.addAll(keyFields);
         fields.add(SEQUENCE_NUMBER);
         fields.add(VALUE_KIND);
+        fields.add(COMMIT_SNAPSHOT_ID);
         fields.addAll(valueFields);
         return fields;
     }
 
     public static int[][] project(
             int[][] keyProjection, int[][] valueProjection, int numKeyFields) {
-        int[][] projection = new int[keyProjection.length + 2 + valueProjection.length][];
+        int[][] projection = new int[keyProjection.length + 3 + valueProjection.length][];
 
         // key
         for (int i = 0; i < keyProjection.length; i++) {
@@ -153,12 +167,15 @@ public class KeyValue {
         // value kind
         projection[keyProjection.length + 1] = new int[] {numKeyFields + 1};
 
+        // commit snapshot id
+        projection[keyProjection.length + 2] = new int[] {numKeyFields + 2};
+
         // value
         for (int i = 0; i < valueProjection.length; i++) {
-            int idx = keyProjection.length + 2 + i;
+            int idx = keyProjection.length + 3 + i;
             projection[idx] = new int[valueProjection[i].length];
             System.arraycopy(valueProjection[i], 0, projection[idx], 0, valueProjection[i].length);
-            projection[idx][0] += numKeyFields + 2;
+            projection[idx][0] += numKeyFields + 3;
         }
 
         return projection;
@@ -173,7 +190,8 @@ public class KeyValue {
                         sequenceNumber,
                         valueKind,
                         valueSerializer.copy(value))
-                .setLevel(level);
+                .setLevel(level)
+                .setSnapshotId(snapshotId);
     }
 
     @VisibleForTesting

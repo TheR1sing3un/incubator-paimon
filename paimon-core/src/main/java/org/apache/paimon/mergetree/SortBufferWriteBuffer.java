@@ -83,7 +83,7 @@ public class SortBufferWriteBuffer implements WriteBuffer {
         if (userDefinedSeqComparator != null) {
             IntStream udsFields =
                     IntStream.of(userDefinedSeqComparator.compareFields())
-                            .map(operand -> operand + keyType.getFieldCount() + 2);
+                            .map(operand -> operand + keyType.getFieldCount() + 3);
             sortFields = IntStream.concat(sortFields, udsFields);
         }
 
@@ -96,6 +96,7 @@ public class SortBufferWriteBuffer implements WriteBuffer {
         List<DataType> fieldTypes = new ArrayList<>(keyType.getFieldTypes());
         fieldTypes.add(new BigIntType(false));
         fieldTypes.add(new TinyIntType(false));
+        fieldTypes.add(new BigIntType(true));
         fieldTypes.addAll(valueType.getFieldTypes());
 
         NormalizedKeyComputer normalizedKeyComputer =
@@ -202,7 +203,7 @@ public class SortBufferWriteBuffer implements WriteBuffer {
             this.mergeFunctionWrapper = new ReducerMergeFunctionWrapper(mergeFunction);
             this.requireCopy = mergeFunction.requireCopy();
 
-            int totalFieldCount = keyType.getFieldCount() + 2 + valueType.getFieldCount();
+            int totalFieldCount = keyType.getFieldCount() + 3 + valueType.getFieldCount();
             this.previous = new KeyValueSerializer(keyType, valueType);
             this.previousRow = new BinaryRow(totalFieldCount);
             this.current = new KeyValueSerializer(keyType, valueType);

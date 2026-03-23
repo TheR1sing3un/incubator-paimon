@@ -40,6 +40,7 @@ import org.apache.paimon.utils.IOUtils;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
@@ -52,6 +53,7 @@ public class MergeTreeCompactRewriter extends AbstractCompactRewriter {
     @Nullable protected final FieldsComparator userDefinedSeqComparator;
     protected final MergeFunctionFactory<KeyValue> mfFactory;
     protected final MergeSorter mergeSorter;
+    protected final boolean snapshotSequenceOrdering;
     @Nullable private CompactionMetrics.Reporter metricsReporter;
 
     public MergeTreeCompactRewriter(
@@ -60,13 +62,15 @@ public class MergeTreeCompactRewriter extends AbstractCompactRewriter {
             Comparator<InternalRow> keyComparator,
             @Nullable FieldsComparator userDefinedSeqComparator,
             MergeFunctionFactory<KeyValue> mfFactory,
-            MergeSorter mergeSorter) {
+            MergeSorter mergeSorter,
+            boolean snapshotSequenceOrdering) {
         this.readerFactory = readerFactory;
         this.writerFactory = writerFactory;
         this.keyComparator = keyComparator;
         this.userDefinedSeqComparator = userDefinedSeqComparator;
         this.mfFactory = mfFactory;
         this.mergeSorter = mergeSorter;
+        this.snapshotSequenceOrdering = snapshotSequenceOrdering;
     }
 
     @Override
@@ -107,6 +111,7 @@ public class MergeTreeCompactRewriter extends AbstractCompactRewriter {
         List<DataFileMeta> before = extractFilesFromSections(sections);
         notifyRewriteCompactBefore(before);
         List<DataFileMeta> after = writer.result();
+        after = preAssignCommitSnapshotId(after, sections);
         after = notifyRewriteCompactAfter(after);
         if (metricsReporter != null) {
             metricsReporter.reportSortBufferMetrics(
@@ -125,6 +130,39 @@ public class MergeTreeCompactRewriter extends AbstractCompactRewriter {
                 userDefinedSeqComparator,
                 mergeFunctionWrapper,
                 mergeSorter);
+    }
+
+    protected List<DataFileMeta> preAssignCommitSnapshotId(
+            List<DataFileMeta> outputFiles, List<List<SortedRun>> sections) {
+        if (!snapshotSequenceOrdering) {
+            return outputFiles;
+        }
+        long maxSnapshotId = Long.MIN_VALUE;
+        boolean allStamped = true;
+        boolean found = false;
+        for (List<SortedRun> runs : sections) {
+            for (SortedRun run : runs) {
+                for (DataFileMeta file : run.files()) {
+                    Long id = file.commitSnapshotId();
+                    if (id != null && id != Long.MAX_VALUE) {
+                        if (id > maxSnapshotId) {
+                            maxSnapshotId = id;
+                        }
+                        found = true;
+                    } else {
+                        allStamped = false;
+                    }
+                }
+            }
+        }
+        if (!allStamped || !found) {
+            return outputFiles;
+        }
+        List<DataFileMeta> result = new ArrayList<>(outputFiles.size());
+        for (DataFileMeta file : outputFiles) {
+            result.add(file.assignCommitSnapshotId(maxSnapshotId));
+        }
+        return result;
     }
 
     protected void notifyRewriteCompactBefore(List<DataFileMeta> files) {}
