@@ -38,13 +38,7 @@ export async function listBranches(
     )
   );
 
-  // API doesn't return 'main' in the list — always prepend it
-  const mainResp = await apiClient.get(
-    `/${prefix}/databases/${database}/tables/${table}/branches/main`
-  );
-  const mainBranch = mainResp.data as BranchInfo;
-
-  return [mainBranch, ...details];
+  return details;
 }
 
 export async function createBranch(
