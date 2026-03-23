@@ -37,6 +37,9 @@ import org.apache.paimon.view.View;
 import org.apache.paimon.view.ViewImpl;
 import org.apache.paimon.view.ViewSchema;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.ArrayList;
@@ -51,6 +54,8 @@ import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
 
 /** Handler for view-related REST endpoints. */
 public class ViewHandler implements RouteRegistrar {
+
+    private static final Logger LOG = LoggerFactory.getLogger(ViewHandler.class);
 
     private final Catalog catalog;
 
@@ -124,6 +129,7 @@ public class ViewHandler implements RouteRegistrar {
         String pattern = params.get(VIEW_NAME_PATTERN);
         Integer maxResults = parseMaxResults(params);
         String pageToken = HandlerUtils.getPageToken(params);
+        LOG.info("Listing views in database: {}, pattern={}", databaseName, pattern);
 
         if (catalog.supportsListObjectsPaged() && catalog.supportsListByPattern()) {
             PagedList<String> pagedResult =
@@ -142,6 +148,7 @@ public class ViewHandler implements RouteRegistrar {
     public RESTResponse listViewDetails(String databaseName, Map<String, String> params)
             throws Exception {
         String pattern = params.get(VIEW_NAME_PATTERN);
+        LOG.info("Listing view details in database: {}, pattern={}", databaseName, pattern);
         Integer maxResults = parseMaxResults(params);
         String pageToken = HandlerUtils.getPageToken(params);
 
@@ -177,6 +184,7 @@ public class ViewHandler implements RouteRegistrar {
     public RESTResponse listViewsGlobally(Map<String, String> params) throws Exception {
         String dbPattern = params.get(DATABASE_NAME_PATTERN);
         String viewPattern = params.get(VIEW_NAME_PATTERN);
+        LOG.info("Listing views globally, dbPattern={}, viewPattern={}", dbPattern, viewPattern);
         Integer maxResults = parseMaxResults(params);
         String pageToken = HandlerUtils.getPageToken(params);
 
@@ -213,6 +221,10 @@ public class ViewHandler implements RouteRegistrar {
     public void createView(String databaseName, String body) throws Exception {
         CreateViewRequest request = JsonSerdeUtil.fromJson(body, CreateViewRequest.class);
         Identifier identifier = request.getIdentifier();
+        LOG.info(
+                "Creating view: {}.{}",
+                databaseName,
+                identifier != null ? identifier.getTableName() : "null");
         if (identifier == null) {
             throw new IllegalArgumentException("View identifier is required");
         }
@@ -237,21 +249,25 @@ public class ViewHandler implements RouteRegistrar {
     }
 
     public RESTResponse getView(Identifier identifier) throws Exception {
+        LOG.info("Getting view: {}.{}", identifier.getDatabaseName(), identifier.getTableName());
         View view = catalog.getView(identifier);
         return toGetViewResponse(identifier.getDatabaseName(), view);
     }
 
     public void alterView(Identifier identifier, String body) throws Exception {
+        LOG.info("Altering view: {}.{}", identifier.getDatabaseName(), identifier.getTableName());
         AlterViewRequest request = JsonSerdeUtil.fromJson(body, AlterViewRequest.class);
         catalog.alterView(identifier, request.viewChanges(), false);
     }
 
     public void dropView(Identifier identifier) throws Exception {
+        LOG.info("Dropping view: {}.{}", identifier.getDatabaseName(), identifier.getTableName());
         catalog.dropView(identifier, false);
     }
 
     public RESTResponse renameView(String body) throws Exception {
         RenameTableRequest request = JsonSerdeUtil.fromJson(body, RenameTableRequest.class);
+        LOG.info("Renaming view: {} -> {}", request.getSource(), request.getDestination());
         catalog.renameView(request.getSource(), request.getDestination(), false);
         return null;
     }

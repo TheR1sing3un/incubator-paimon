@@ -119,8 +119,12 @@ public class RouteDispatcher {
 
         Router.RouteMatch match = router.findMatch(method, path);
         if (match == null) {
+            LOG.warn("REST route not found: {} {} params={}", method, path, params);
             return new RouteResult(404, null);
         }
+
+        LOG.info("REST request: {} {} params={}", method, path, params);
+        long startTime = System.currentTimeMillis();
 
         boolean shouldAudit = metadataStore != null && isMutatingMethod(method);
 
@@ -128,11 +132,27 @@ public class RouteDispatcher {
         try {
             result = match.handler().handle(authContext, match.pathVariables(), params, body);
         } catch (Exception e) {
+            long duration = System.currentTimeMillis() - startTime;
+            LOG.warn(
+                    "REST error: {} {} exception={} message={} duration={}ms",
+                    method,
+                    path,
+                    e.getClass().getSimpleName(),
+                    e.getMessage(),
+                    duration);
             if (shouldAudit) {
                 auditLog(authContext, match, body, "FAILED", truncateMessage(e.getMessage()));
             }
             throw e;
         }
+
+        long duration = System.currentTimeMillis() - startTime;
+        LOG.info(
+                "REST response: {} {} status={} duration={}ms",
+                method,
+                path,
+                result.status(),
+                duration);
 
         if (shouldAudit) {
             if (result.status() < 400) {

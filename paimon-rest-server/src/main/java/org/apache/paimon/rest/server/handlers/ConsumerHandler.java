@@ -30,6 +30,9 @@ import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.Map;
@@ -39,6 +42,8 @@ import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
 
 /** Handler for consumer-related REST endpoints. */
 public class ConsumerHandler implements RouteRegistrar {
+
+    private static final Logger LOG = LoggerFactory.getLogger(ConsumerHandler.class);
 
     private final Catalog catalog;
 
@@ -71,6 +76,7 @@ public class ConsumerHandler implements RouteRegistrar {
 
     public RESTResponse listConsumers(Identifier identifier, Map<String, String> params)
             throws Exception {
+        LOG.info("Listing consumers for table: {}", identifier.getFullName());
         Integer maxResults = parseMaxResults(params);
         String pageToken = HandlerUtils.getPageToken(params);
 
@@ -81,6 +87,10 @@ public class ConsumerHandler implements RouteRegistrar {
 
     public void resetConsumer(Identifier identifier, String body) throws Exception {
         ResetConsumerRequest request = JsonSerdeUtil.fromJson(body, ResetConsumerRequest.class);
+        LOG.info(
+                "Resetting consumer: {} for table: {}",
+                request.consumerId(),
+                identifier.getFullName());
         catalog.resetConsumer(identifier, request.consumerId(), request.nextSnapshotId());
     }
 }

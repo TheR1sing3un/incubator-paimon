@@ -30,6 +30,9 @@ import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.Map;
@@ -40,6 +43,8 @@ import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
 
 /** Handler for tag-related REST endpoints. */
 public class TagHandler implements RouteRegistrar {
+
+    private static final Logger LOG = LoggerFactory.getLogger(TagHandler.class);
 
     private final Catalog catalog;
 
@@ -87,6 +92,7 @@ public class TagHandler implements RouteRegistrar {
     public RESTResponse listTags(Identifier identifier, Map<String, String> params)
             throws Exception {
         String prefix = params.get(TAG_NAME_PREFIX);
+        LOG.info("Listing tags for table: {}, prefix={}", identifier.getFullName(), prefix);
         Integer maxResults = parseMaxResults(params);
         String pageToken = HandlerUtils.getPageToken(params);
 
@@ -96,12 +102,14 @@ public class TagHandler implements RouteRegistrar {
     }
 
     public RESTResponse getTag(Identifier identifier, String tagName) throws Exception {
+        LOG.info("Getting tag: {} for table: {}", tagName, identifier.getFullName());
         GetTagResponse response = catalog.getTag(identifier, tagName);
         return response;
     }
 
     public void createTag(Identifier identifier, String body) throws Exception {
         CreateTagRequest request = JsonSerdeUtil.fromJson(body, CreateTagRequest.class);
+        LOG.info("Creating tag: {} for table: {}", request.tagName(), identifier.getFullName());
         catalog.createTag(
                 identifier,
                 request.tagName(),
@@ -111,6 +119,7 @@ public class TagHandler implements RouteRegistrar {
     }
 
     public void deleteTag(Identifier identifier, String tagName) throws Exception {
+        LOG.info("Deleting tag: {} for table: {}", tagName, identifier.getFullName());
         catalog.deleteTag(identifier, tagName);
     }
 }

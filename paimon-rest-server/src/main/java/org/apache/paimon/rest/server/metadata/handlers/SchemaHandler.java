@@ -35,6 +35,9 @@ import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonIgn
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonInclude;
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.ArrayList;
@@ -49,6 +52,8 @@ import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
  * an {@link AbstractCatalog} to resolve table paths and access the file system.
  */
 public class SchemaHandler implements RouteRegistrar {
+
+    private static final Logger LOG = LoggerFactory.getLogger(SchemaHandler.class);
 
     private final AbstractCatalog catalog;
 
@@ -80,6 +85,7 @@ public class SchemaHandler implements RouteRegistrar {
     }
 
     public RESTResponse listSchemas(Identifier identifier) throws Exception {
+        LOG.info("Listing schemas for table: {}", identifier.getFullName());
         SchemaManager schemaManager = createSchemaManager(identifier);
         List<TableSchema> schemas = schemaManager.listAll();
         if (schemas.isEmpty()) {
@@ -93,6 +99,7 @@ public class SchemaHandler implements RouteRegistrar {
     }
 
     public RESTResponse getSchema(Identifier identifier, long schemaId) throws Exception {
+        LOG.info("Getting schema: {} for table: {}", schemaId, identifier.getFullName());
         SchemaManager schemaManager = createSchemaManager(identifier);
         if (schemaManager.listAllIds().isEmpty()) {
             throw new Catalog.TableNotExistException(identifier);

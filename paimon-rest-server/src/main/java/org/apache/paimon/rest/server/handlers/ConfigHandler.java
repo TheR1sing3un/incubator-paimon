@@ -26,6 +26,9 @@ import org.apache.paimon.rest.server.RouteRegistrar;
 import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.Collections;
@@ -34,6 +37,8 @@ import java.util.Map;
 
 /** Handler for the config endpoint. */
 public class ConfigHandler implements RouteRegistrar {
+
+    private static final Logger LOG = LoggerFactory.getLogger(ConfigHandler.class);
 
     @Nullable private final String prefix;
     private final String warehouse;
@@ -54,6 +59,7 @@ public class ConfigHandler implements RouteRegistrar {
     }
 
     public RESTResponse getConfig(Map<String, String> params) {
+        LOG.info("Getting config");
         Map<String, String> defaults = new HashMap<>();
         defaults.put(CatalogOptions.WAREHOUSE.key(), warehouse);
         if (prefix != null) {

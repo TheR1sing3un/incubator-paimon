@@ -30,6 +30,9 @@ import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.Collections;
@@ -38,6 +41,8 @@ import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
 
 /** Handler for table token and auth REST endpoints. */
 public class TableTokenHandler implements RouteRegistrar {
+
+    private static final Logger LOG = LoggerFactory.getLogger(TableTokenHandler.class);
 
     private final Catalog catalog;
 
@@ -68,11 +73,13 @@ public class TableTokenHandler implements RouteRegistrar {
     }
 
     public RESTResponse getTableToken(Identifier identifier) throws Exception {
+        LOG.info("Getting table token for: {}", identifier.getFullName());
         long expireAtMillis = System.currentTimeMillis() + 4000 * 1000L;
         return new GetTableTokenResponse(Collections.emptyMap(), expireAtMillis);
     }
 
     public RESTResponse authTable(Identifier identifier, String body) throws Exception {
+        LOG.info("Authenticating table query for: {}", identifier.getFullName());
         AuthTableQueryRequest request = JsonSerdeUtil.fromJson(body, AuthTableQueryRequest.class);
         TableQueryAuthResult result = catalog.authTableQuery(identifier, request.select());
         return new AuthTableQueryResponse(result.filter(), result.columnMasking());

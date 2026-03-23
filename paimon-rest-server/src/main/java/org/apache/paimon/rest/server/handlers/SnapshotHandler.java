@@ -36,6 +36,9 @@ import org.apache.paimon.table.TableSnapshot;
 import org.apache.paimon.utils.JsonSerdeUtil;
 import org.apache.paimon.utils.SnapshotNotExistException;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.Map;
@@ -46,6 +49,8 @@ import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
 
 /** Handler for snapshot-related REST endpoints. */
 public class SnapshotHandler implements RouteRegistrar {
+
+    private static final Logger LOG = LoggerFactory.getLogger(SnapshotHandler.class);
 
     private final Catalog catalog;
 
@@ -100,6 +105,7 @@ public class SnapshotHandler implements RouteRegistrar {
     }
 
     public RESTResponse getLatestSnapshot(Identifier identifier) throws Exception {
+        LOG.info("Getting latest snapshot for table: {}", identifier.getFullName());
         Optional<TableSnapshot> snapshot = catalog.loadSnapshot(identifier);
         if (!snapshot.isPresent()) {
             throw new SnapshotNotExistException(
@@ -110,6 +116,7 @@ public class SnapshotHandler implements RouteRegistrar {
 
     public RESTResponse listSnapshots(Identifier identifier, Map<String, String> params)
             throws Exception {
+        LOG.info("Listing snapshots for table: {}", identifier.getFullName());
         Integer maxResults = parseMaxResults(params);
         String pageToken = HandlerUtils.getPageToken(params);
 
@@ -119,6 +126,7 @@ public class SnapshotHandler implements RouteRegistrar {
     }
 
     public RESTResponse loadSnapshot(Identifier identifier, String version) throws Exception {
+        LOG.info("Loading snapshot version: {} for table: {}", version, identifier.getFullName());
         Optional<Snapshot> snapshot = catalog.loadSnapshot(identifier, version);
         if (!snapshot.isPresent()) {
             throw new SnapshotNotExistException("Snapshot not found for version: " + version);
@@ -127,6 +135,7 @@ public class SnapshotHandler implements RouteRegistrar {
     }
 
     public RESTResponse commitSnapshot(Identifier identifier, String body) throws Exception {
+        LOG.info("Committing snapshot for table: {}", identifier.getFullName());
         CommitTableRequest request = JsonSerdeUtil.fromJson(body, CommitTableRequest.class);
         boolean success =
                 catalog.commitSnapshot(
@@ -138,6 +147,7 @@ public class SnapshotHandler implements RouteRegistrar {
     }
 
     public void rollbackTable(Identifier identifier, String body) throws Exception {
+        LOG.info("Rolling back table: {}", identifier.getFullName());
         RollbackTableRequest request = JsonSerdeUtil.fromJson(body, RollbackTableRequest.class);
         catalog.rollbackTo(identifier, request.getInstant(), request.getFromSnapshot());
     }

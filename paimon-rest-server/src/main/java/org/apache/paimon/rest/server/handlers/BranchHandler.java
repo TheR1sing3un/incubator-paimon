@@ -33,6 +33,9 @@ import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Table;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.List;
@@ -42,6 +45,8 @@ import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
 
 /** Handler for branch-related REST endpoints. */
 public class BranchHandler implements RouteRegistrar {
+
+    private static final Logger LOG = LoggerFactory.getLogger(BranchHandler.class);
 
     private final Catalog catalog;
 
@@ -109,21 +114,25 @@ public class BranchHandler implements RouteRegistrar {
     }
 
     public RESTResponse listBranches(Identifier identifier) throws Exception {
+        LOG.info("Listing branches for table: {}", identifier.getFullName());
         List<String> branches = catalog.listBranches(identifier);
         return new ListBranchesResponse(branches);
     }
 
     public void createBranch(Identifier identifier, String body) throws Exception {
         CreateBranchRequest request = JsonSerdeUtil.fromJson(body, CreateBranchRequest.class);
+        LOG.info("Creating branch: {} for table: {}", request.branch(), identifier.getFullName());
         catalog.createBranch(
                 identifier, request.branch(), request.fromTag(), request.fromSnapshotId());
     }
 
     public void dropBranch(Identifier identifier, String branchName) throws Exception {
+        LOG.info("Dropping branch: {} for table: {}", branchName, identifier.getFullName());
         catalog.dropBranch(identifier, branchName);
     }
 
     public void fastForward(Identifier identifier, String branchName) throws Exception {
+        LOG.info("Fast-forwarding branch: {} for table: {}", branchName, identifier.getFullName());
         catalog.fastForward(identifier, branchName);
     }
 
@@ -135,6 +144,7 @@ public class BranchHandler implements RouteRegistrar {
      * @param body request body containing source branch, message, strategy, etc.
      */
     public RouteResult mergeBranch(Identifier identifier, String targetBranch, String body) {
+        LOG.info("Merging branch into: {} for table: {}", targetBranch, identifier.getFullName());
         MergeBranchRequest request = JsonSerdeUtil.fromJson(body, MergeBranchRequest.class);
         // TODO Phase 2: implement branch merge logic
         throw new UnsupportedOperationException(
@@ -154,6 +164,11 @@ public class BranchHandler implements RouteRegistrar {
     public RouteResult diffRefs(Identifier identifier, Map<String, String> params) {
         String left = params.get("left");
         String right = params.get("right");
+        LOG.info(
+                "Diffing refs for table: {}, left={}, right={}",
+                identifier.getFullName(),
+                left,
+                right);
         if (left == null || right == null) {
             throw new IllegalArgumentException(
                     "Both 'left' and 'right' query parameters are required for diff");
@@ -164,6 +179,7 @@ public class BranchHandler implements RouteRegistrar {
     }
 
     public RESTResponse getBranch(Identifier identifier, String branchName) throws Exception {
+        LOG.info("Getting branch: {} for table: {}", branchName, identifier.getFullName());
         Identifier branchId =
                 new Identifier(identifier.getDatabaseName(), identifier.getTableName(), branchName);
         Table branchTable;

@@ -35,6 +35,9 @@ import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonIgn
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonInclude;
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.ArrayList;
@@ -54,6 +57,8 @@ import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
  * Committer, message, and custom metadata are extracted from Snapshot.properties.
  */
 public class CommitHandler implements RouteRegistrar {
+
+    private static final Logger LOG = LoggerFactory.getLogger(CommitHandler.class);
 
     private final Catalog catalog;
 
@@ -93,6 +98,7 @@ public class CommitHandler implements RouteRegistrar {
     }
 
     public CommitInfo getCommit(Identifier identifier, String commitId) throws Exception {
+        LOG.info("Getting commit: {} for table: {}", commitId, identifier.getFullName());
         Optional<Snapshot> snapshot = catalog.loadSnapshot(identifier, commitId);
         if (!snapshot.isPresent()) {
             throw new CommitNotExistException(
@@ -103,6 +109,7 @@ public class CommitHandler implements RouteRegistrar {
 
     public RESTResponse listCommits(Identifier identifier, Map<String, String> params)
             throws Exception {
+        LOG.info("Listing commits for table: {}", identifier.getFullName());
         int effectiveLimit = getMaxResults(params);
         String pageToken = getPageToken(params);
 
@@ -118,6 +125,7 @@ public class CommitHandler implements RouteRegistrar {
     }
 
     public CommitInfo resetCommit(Identifier identifier, String commitId) throws Exception {
+        LOG.info("Resetting commit: {} for table: {}", commitId, identifier.getFullName());
         // Look up the target snapshot
         Optional<Snapshot> snapshot = catalog.loadSnapshot(identifier, commitId);
         if (!snapshot.isPresent()) {

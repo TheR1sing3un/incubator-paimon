@@ -35,6 +35,9 @@ import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.ArrayList;
@@ -49,6 +52,8 @@ import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
 
 /** Handler for function-related REST endpoints. */
 public class FunctionHandler implements RouteRegistrar {
+
+    private static final Logger LOG = LoggerFactory.getLogger(FunctionHandler.class);
 
     private final Catalog catalog;
 
@@ -113,6 +118,7 @@ public class FunctionHandler implements RouteRegistrar {
     public RESTResponse listFunctions(String databaseName, Map<String, String> params)
             throws Exception {
         String pattern = params.get(FUNCTION_NAME_PATTERN);
+        LOG.info("Listing functions in database: {}, pattern={}", databaseName, pattern);
         Integer maxResults = parseMaxResults(params);
         String pageToken = HandlerUtils.getPageToken(params);
 
@@ -134,6 +140,7 @@ public class FunctionHandler implements RouteRegistrar {
     public RESTResponse listFunctionDetails(String databaseName, Map<String, String> params)
             throws Exception {
         String pattern = params.get(FUNCTION_NAME_PATTERN);
+        LOG.info("Listing function details in database: {}, pattern={}", databaseName, pattern);
         Integer maxResults = parseMaxResults(params);
         String pageToken = HandlerUtils.getPageToken(params);
 
@@ -169,6 +176,8 @@ public class FunctionHandler implements RouteRegistrar {
     public RESTResponse listFunctionsGlobally(Map<String, String> params) throws Exception {
         String dbPattern = params.get(DATABASE_NAME_PATTERN);
         String funcPattern = params.get(FUNCTION_NAME_PATTERN);
+        LOG.info(
+                "Listing functions globally, dbPattern={}, funcPattern={}", dbPattern, funcPattern);
         Integer maxResults = parseMaxResults(params);
         String pageToken = HandlerUtils.getPageToken(params);
 
@@ -205,6 +214,7 @@ public class FunctionHandler implements RouteRegistrar {
 
     public void createFunction(String databaseName, String body) throws Exception {
         CreateFunctionRequest request = JsonSerdeUtil.fromJson(body, CreateFunctionRequest.class);
+        LOG.info("Creating function: {}.{}", databaseName, request.name());
         Identifier identifier = Identifier.create(databaseName, request.name());
         FunctionImpl function =
                 new FunctionImpl(
@@ -219,16 +229,26 @@ public class FunctionHandler implements RouteRegistrar {
     }
 
     public RESTResponse getFunction(Identifier identifier) throws Exception {
+        LOG.info(
+                "Getting function: {}.{}", identifier.getDatabaseName(), identifier.getTableName());
         Function func = catalog.getFunction(identifier);
         return toGetFunctionResponse(func);
     }
 
     public void alterFunction(Identifier identifier, String body) throws Exception {
+        LOG.info(
+                "Altering function: {}.{}",
+                identifier.getDatabaseName(),
+                identifier.getTableName());
         AlterFunctionRequest request = JsonSerdeUtil.fromJson(body, AlterFunctionRequest.class);
         catalog.alterFunction(identifier, request.changes(), false);
     }
 
     public void dropFunction(Identifier identifier) throws Exception {
+        LOG.info(
+                "Dropping function: {}.{}",
+                identifier.getDatabaseName(),
+                identifier.getTableName());
         catalog.dropFunction(identifier, false);
     }
 

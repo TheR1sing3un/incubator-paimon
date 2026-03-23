@@ -43,6 +43,9 @@ import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.databind.node.ArrayNode;
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.databind.node.ObjectNode;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.ArrayList;
@@ -58,6 +61,8 @@ import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
 
 /** Handler for table-related REST endpoints. */
 public class TableHandler implements RouteRegistrar {
+
+    private static final Logger LOG = LoggerFactory.getLogger(TableHandler.class);
 
     private final Catalog catalog;
 
@@ -147,6 +152,11 @@ public class TableHandler implements RouteRegistrar {
         String tableType = params.get(TABLE_TYPE);
         Integer maxResults = parseMaxResults(params);
         String pageToken = HandlerUtils.getPageToken(params);
+        LOG.info(
+                "Listing tables in database: {}, pattern={}, tableType={}",
+                databaseName,
+                pattern,
+                tableType);
 
         if (catalog.supportsListObjectsPaged() && catalog.supportsListByPattern()) {
             PagedList<String> pagedResult =
@@ -168,6 +178,11 @@ public class TableHandler implements RouteRegistrar {
             throws Exception {
         String pattern = params.get(TABLE_NAME_PATTERN);
         String tableType = params.get(TABLE_TYPE);
+        LOG.info(
+                "Listing table details in database: {}, pattern={}, tableType={}",
+                databaseName,
+                pattern,
+                tableType);
         Integer maxResults = parseMaxResults(params);
         String pageToken = HandlerUtils.getPageToken(params);
 
@@ -203,6 +218,7 @@ public class TableHandler implements RouteRegistrar {
     public RESTResponse listTablesGlobally(Map<String, String> params) throws Exception {
         String dbPattern = params.get(DATABASE_NAME_PATTERN);
         String tablePattern = params.get(TABLE_NAME_PATTERN);
+        LOG.info("Listing tables globally, dbPattern={}, tablePattern={}", dbPattern, tablePattern);
         Integer maxResults = parseMaxResults(params);
         String pageToken = HandlerUtils.getPageToken(params);
 
@@ -244,16 +260,19 @@ public class TableHandler implements RouteRegistrar {
         if (identifier == null) {
             throw new IllegalArgumentException("Table identifier is required");
         }
+        LOG.info("Creating table: {}.{}", databaseName, identifier.getTableName());
         validateDatabaseMatch(databaseName, identifier);
         catalog.createTable(identifier, request.getSchema(), false);
     }
 
     public RESTResponse getTable(Identifier identifier) throws Exception {
+        LOG.info("Getting table: {}.{}", identifier.getDatabaseName(), identifier.getTableName());
         Table table = catalog.getTable(identifier);
         return toGetTableResponse(identifier.getDatabaseName(), table);
     }
 
     public RESTResponse getTableById(String tableId) throws Exception {
+        LOG.info("Getting table by id: {}", tableId);
         Table table = catalog.getTableById(tableId);
         String dbName = "";
         if (table instanceof FileStoreTable) {
@@ -266,17 +285,20 @@ public class TableHandler implements RouteRegistrar {
     }
 
     public void alterTable(Identifier identifier, String body) throws Exception {
+        LOG.info("Altering table: {}.{}", identifier.getDatabaseName(), identifier.getTableName());
         AlterTableRequest request = JsonSerdeUtil.fromJson(body, AlterTableRequest.class);
         List<SchemaChange> changes = request.getChanges();
         catalog.alterTable(identifier, changes, false);
     }
 
     public void dropTable(Identifier identifier) throws Exception {
+        LOG.info("Dropping table: {}.{}", identifier.getDatabaseName(), identifier.getTableName());
         catalog.dropTable(identifier, false);
     }
 
     public RESTResponse renameTable(String body) throws Exception {
         RenameTableRequest request = JsonSerdeUtil.fromJson(body, RenameTableRequest.class);
+        LOG.info("Renaming table: {} -> {}", request.getSource(), request.getDestination());
         catalog.renameTable(request.getSource(), request.getDestination(), false);
         return null;
     }
@@ -284,6 +306,7 @@ public class TableHandler implements RouteRegistrar {
     public void registerTable(String databaseName, String body) throws Exception {
         RegisterTableRequest request = JsonSerdeUtil.fromJson(body, RegisterTableRequest.class);
         Identifier identifier = request.getIdentifier();
+        LOG.info("Registering table: {}.{}", databaseName, identifier.getTableName());
         validateDatabaseMatch(databaseName, identifier);
         catalog.registerTable(identifier, request.getPath());
     }

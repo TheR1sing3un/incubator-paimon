@@ -33,6 +33,9 @@ import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.ArrayList;
@@ -46,6 +49,8 @@ import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
 
 /** Handler for database-related REST endpoints. */
 public class DatabaseHandler implements RouteRegistrar {
+
+    private static final Logger LOG = LoggerFactory.getLogger(DatabaseHandler.class);
 
     private final Catalog catalog;
 
@@ -94,6 +99,7 @@ public class DatabaseHandler implements RouteRegistrar {
         String pattern = params.get(DATABASE_NAME_PATTERN);
         Integer maxResults = parseMaxResults(params);
         String pageToken = HandlerUtils.getPageToken(params);
+        LOG.info("Listing databases, pattern={}", pattern);
 
         if (catalog.supportsListObjectsPaged() && catalog.supportsListByPattern()) {
             PagedList<String> pagedResult =
@@ -112,12 +118,14 @@ public class DatabaseHandler implements RouteRegistrar {
 
     public void createDatabase(String body, String userId) throws Exception {
         CreateDatabaseRequest request = JsonSerdeUtil.fromJson(body, CreateDatabaseRequest.class);
+        LOG.info("Creating database: {}", request.getName());
         Map<String, String> options =
                 request.getOptions() != null ? request.getOptions() : new HashMap<>();
         catalog.createDatabase(request.getName(), false, options);
     }
 
     public RESTResponse getDatabase(String databaseName) throws Exception {
+        LOG.info("Getting database: {}", databaseName);
         Database database = catalog.getDatabase(databaseName);
 
         return new GetDatabaseResponse(
@@ -125,10 +133,12 @@ public class DatabaseHandler implements RouteRegistrar {
     }
 
     public void dropDatabase(String databaseName) throws Exception {
+        LOG.info("Dropping database: {}", databaseName);
         catalog.dropDatabase(databaseName, false, false);
     }
 
     public RESTResponse alterDatabase(String databaseName, String body) throws Exception {
+        LOG.info("Altering database: {}", databaseName);
         AlterDatabaseRequest request = JsonSerdeUtil.fromJson(body, AlterDatabaseRequest.class);
         List<PropertyChange> changes = new ArrayList<>();
         if (request.getRemovals() != null) {

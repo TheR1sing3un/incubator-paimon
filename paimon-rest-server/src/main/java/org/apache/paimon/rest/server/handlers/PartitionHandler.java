@@ -31,6 +31,9 @@ import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.List;
@@ -42,6 +45,8 @@ import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
 
 /** Handler for partition-related REST endpoints. */
 public class PartitionHandler implements RouteRegistrar {
+
+    private static final Logger LOG = LoggerFactory.getLogger(PartitionHandler.class);
 
     private final Catalog catalog;
 
@@ -83,6 +88,7 @@ public class PartitionHandler implements RouteRegistrar {
     public RESTResponse listPartitions(Identifier identifier, Map<String, String> params)
             throws Exception {
         String pattern = params.get(PARTITION_NAME_PATTERN);
+        LOG.info("Listing partitions for table: {}, pattern={}", identifier.getFullName(), pattern);
         Integer maxResults = parseMaxResults(params);
         String pageToken = HandlerUtils.getPageToken(params);
 
@@ -104,6 +110,7 @@ public class PartitionHandler implements RouteRegistrar {
     }
 
     public void markDonePartitions(Identifier identifier, String body) throws Exception {
+        LOG.info("Marking done partitions for table: {}", identifier.getFullName());
         MarkDonePartitionsRequest request =
                 JsonSerdeUtil.fromJson(body, MarkDonePartitionsRequest.class);
         catalog.markDonePartitions(identifier, request.getPartitionSpecs());
@@ -111,6 +118,7 @@ public class PartitionHandler implements RouteRegistrar {
 
     public RESTResponse listPartitionsByNames(
             Identifier identifier, String body, Map<String, String> params) throws Exception {
+        LOG.info("Listing partitions by names for table: {}", identifier.getFullName());
         ListPartitionsByNamesRequest request =
                 JsonSerdeUtil.fromJson(body, ListPartitionsByNamesRequest.class);
         List<Partition> partitions =
