@@ -91,7 +91,7 @@ public class CommitInfo implements RESTResponse {
     public CommitInfo(
             @JsonProperty(FIELD_SNAPSHOT_ID) long snapshotId,
             @JsonProperty(FIELD_SCHEMA_ID) long schemaId,
-            @JsonProperty(FIELD_COMMITTER) String committer,
+            @JsonProperty(FIELD_COMMITTER) @Nullable String committer,
             @JsonProperty(FIELD_MESSAGE) @Nullable String message,
             @JsonProperty(FIELD_COMMIT_KIND) String commitKind,
             @JsonProperty(FIELD_COMMIT_IDENTIFIER) long commitIdentifier,
@@ -116,9 +116,6 @@ public class CommitInfo implements RESTResponse {
         Map<String, String> props = snapshot.properties();
 
         String committer = getProperty(props, PROP_COMMITTER);
-        if (committer == null || committer.isEmpty()) {
-            committer = snapshot.commitUser();
-        }
 
         String message = getProperty(props, PROP_MESSAGE);
 
@@ -148,6 +145,7 @@ public class CommitInfo implements RESTResponse {
     }
 
     @JsonGetter(FIELD_COMMITTER)
+    @Nullable
     public String committer() {
         return committer;
     }
