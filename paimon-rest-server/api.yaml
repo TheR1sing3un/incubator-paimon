@@ -1,0 +1,1799 @@
+openapi: 3.0.3
+info:
+  title: Paimon REST Catalog Server API
+  description: REST API for Apache Paimon Catalog Server
+  version: 1.4-SNAPSHOT
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: https://kling-paimon-rest-catalog-test.test.gifshow.com
+    description: Test environment
+
+paths:
+  # ==================== Config ====================
+  /v1/config:
+    get:
+      tags: [Config]
+      summary: Get catalog configuration
+      operationId: getConfig
+      responses:
+        "200":
+          description: Catalog configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigResponse"
+
+  # ==================== Database ====================
+  /v1/{prefix}/databases:
+    get:
+      tags: [Database]
+      summary: List databases
+      operationId: listDatabases
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - name: databaseNamePattern
+          in: query
+          schema:
+            type: string
+          description: SQL LIKE pattern to filter database names
+        - $ref: "#/components/parameters/maxResults"
+        - $ref: "#/components/parameters/pageToken"
+      responses:
+        "200":
+          description: List of databases
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListDatabasesResponse"
+    post:
+      tags: [Database]
+      summary: Create a database
+      operationId: createDatabase
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDatabaseRequest"
+      responses:
+        "200":
+          description: Database created
+
+  /v1/{prefix}/databases/{database}:
+    get:
+      tags: [Database]
+      summary: Get a database
+      operationId: getDatabase
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+      responses:
+        "200":
+          description: Database details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetDatabaseResponse"
+        "404":
+          description: Database not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      tags: [Database]
+      summary: Alter a database
+      operationId: alterDatabase
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AlterDatabaseRequest"
+      responses:
+        "200":
+          description: Database altered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AlterDatabaseResponse"
+        "501":
+          description: Not supported
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [Database]
+      summary: Drop a database
+      operationId: dropDatabase
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+      responses:
+        "200":
+          description: Database dropped
+
+  # ==================== Table ====================
+  /v1/{prefix}/tables:
+    get:
+      tags: [Table]
+      summary: List tables globally (across all databases)
+      operationId: listTablesGlobally
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - name: databaseNamePattern
+          in: query
+          schema:
+            type: string
+        - name: tableNamePattern
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/maxResults"
+        - $ref: "#/components/parameters/pageToken"
+      responses:
+        "200":
+          description: List of table identifiers
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListTablesGloballyResponse"
+
+  /v1/{prefix}/tables/rename:
+    post:
+      tags: [Table]
+      summary: Rename a table
+      operationId: renameTable
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RenameTableRequest"
+      responses:
+        "200":
+          description: Table renamed
+
+  /v1/{prefix}/tables/id/{tableId}:
+    get:
+      tags: [Table]
+      summary: Get table by UUID
+      operationId: getTableById
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - name: tableId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Table details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetTableResponse"
+
+  /v1/{prefix}/databases/{database}/register:
+    post:
+      tags: [Table]
+      summary: Register an external table
+      operationId: registerTable
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterTableRequest"
+      responses:
+        "200":
+          description: Table registered
+
+  /v1/{prefix}/databases/{database}/tables:
+    get:
+      tags: [Table]
+      summary: List tables in a database
+      operationId: listTables
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - name: tableNamePattern
+          in: query
+          schema:
+            type: string
+        - name: tableType
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/maxResults"
+        - $ref: "#/components/parameters/pageToken"
+      responses:
+        "200":
+          description: List of table names
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListTablesResponse"
+    post:
+      tags: [Table]
+      summary: Create a table
+      operationId: createTable
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTableRequest"
+      responses:
+        "200":
+          description: Table created
+
+  /v1/{prefix}/databases/{database}/table-details:
+    get:
+      tags: [Table]
+      summary: List table details in a database
+      operationId: listTableDetails
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - name: tableNamePattern
+          in: query
+          schema:
+            type: string
+        - name: tableType
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/maxResults"
+        - $ref: "#/components/parameters/pageToken"
+      responses:
+        "200":
+          description: List of table details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListTableDetailsResponse"
+
+  /v1/{prefix}/databases/{database}/tables/{table}:
+    get:
+      tags: [Table]
+      summary: Get a table
+      operationId: getTable
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+      responses:
+        "200":
+          description: Table details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetTableResponse"
+    post:
+      tags: [Table]
+      summary: Alter a table
+      operationId: alterTable
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AlterTableRequest"
+      responses:
+        "200":
+          description: Table altered
+    delete:
+      tags: [Table]
+      summary: Drop a table
+      operationId: dropTable
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+      responses:
+        "200":
+          description: Table dropped
+
+  # ==================== Snapshot ====================
+  /v1/{prefix}/databases/{database}/tables/{table}/snapshot:
+    get:
+      tags: [Snapshot]
+      summary: Get latest snapshot
+      operationId: getLatestSnapshot
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+      responses:
+        "200":
+          description: Latest snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetTableSnapshotResponse"
+        "404":
+          description: No snapshot found
+
+  /v1/{prefix}/databases/{database}/tables/{table}/snapshots:
+    get:
+      tags: [Snapshot]
+      summary: List snapshots
+      operationId: listSnapshots
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+        - $ref: "#/components/parameters/maxResults"
+        - $ref: "#/components/parameters/pageToken"
+      responses:
+        "200":
+          description: List of snapshots
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListSnapshotsResponse"
+
+  /v1/{prefix}/databases/{database}/tables/{table}/snapshots/{version}:
+    get:
+      tags: [Snapshot]
+      summary: Get snapshot by version
+      operationId: getSnapshotByVersion
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Snapshot details
+        "404":
+          description: Snapshot not found
+
+  /v1/{prefix}/databases/{database}/tables/{table}/commit:
+    post:
+      tags: [Snapshot]
+      summary: Commit a snapshot
+      operationId: commitSnapshot
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CommitTableRequest"
+      responses:
+        "200":
+          description: Commit result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommitTableResponse"
+
+  /v1/{prefix}/databases/{database}/tables/{table}/rollback:
+    post:
+      tags: [Snapshot]
+      summary: Rollback table to a snapshot or tag
+      operationId: rollbackTable
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RollbackTableRequest"
+      responses:
+        "200":
+          description: Table rolled back
+
+  # ==================== Branch ====================
+  /v1/{prefix}/databases/{database}/tables/{table}/branches:
+    get:
+      tags: [Branch]
+      summary: List branches
+      operationId: listBranches
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+      responses:
+        "200":
+          description: List of branches
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListBranchesResponse"
+    post:
+      tags: [Branch]
+      summary: Create a branch
+      operationId: createBranch
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBranchRequest"
+      responses:
+        "200":
+          description: Branch created
+
+  /v1/{prefix}/databases/{database}/tables/{table}/branches/{branch}:
+    get:
+      tags: [Branch]
+      summary: Get a branch
+      operationId: getBranch
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+        - $ref: "#/components/parameters/branch"
+      responses:
+        "200":
+          description: Branch details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetBranchResponse"
+    delete:
+      tags: [Branch]
+      summary: Drop a branch
+      operationId: dropBranch
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+        - $ref: "#/components/parameters/branch"
+      responses:
+        "200":
+          description: Branch dropped
+
+  /v1/{prefix}/databases/{database}/tables/{table}/branches/{branch}/merge:
+    post:
+      tags: [Branch]
+      summary: Merge a branch (not yet implemented)
+      operationId: mergeBranch
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+        - $ref: "#/components/parameters/branch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MergeBranchRequest"
+      responses:
+        "501":
+          description: Not yet implemented
+
+  /v1/{prefix}/databases/{database}/tables/{table}/branches/{branch}/forward:
+    post:
+      tags: [Branch]
+      summary: Fast-forward a branch
+      operationId: fastForwardBranch
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+        - $ref: "#/components/parameters/branch"
+      responses:
+        "200":
+          description: Branch fast-forwarded
+
+  /v1/{prefix}/databases/{database}/tables/{table}/diff:
+    get:
+      tags: [Branch]
+      summary: Diff two branches (not yet implemented)
+      operationId: diffBranches
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+        - name: left
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Left branch name or commit ID
+        - name: right
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Right branch name or commit ID
+      responses:
+        "501":
+          description: Not yet implemented
+
+  # ==================== Tag ====================
+  /v1/{prefix}/databases/{database}/tables/{table}/tags:
+    get:
+      tags: [Tag]
+      summary: List tags
+      operationId: listTags
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+        - name: tagNamePrefix
+          in: query
+          schema:
+            type: string
+          description: Filter tags by name prefix
+        - $ref: "#/components/parameters/maxResults"
+        - $ref: "#/components/parameters/pageToken"
+      responses:
+        "200":
+          description: List of tags
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListTagsResponse"
+    post:
+      tags: [Tag]
+      summary: Create a tag
+      operationId: createTag
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTagRequest"
+      responses:
+        "200":
+          description: Tag created
+
+  /v1/{prefix}/databases/{database}/tables/{table}/tags/{tag}:
+    get:
+      tags: [Tag]
+      summary: Get a tag
+      operationId: getTag
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+        - name: tag
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Tag details
+    delete:
+      tags: [Tag]
+      summary: Delete a tag
+      operationId: deleteTag
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+        - name: tag
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Tag deleted
+
+  # ==================== Partition ====================
+  /v1/{prefix}/databases/{database}/tables/{table}/partitions:
+    get:
+      tags: [Partition]
+      summary: List partitions
+      operationId: listPartitions
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+        - name: partitionNamePattern
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/maxResults"
+        - $ref: "#/components/parameters/pageToken"
+      responses:
+        "200":
+          description: List of partitions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListPartitionsResponse"
+
+  /v1/{prefix}/databases/{database}/tables/{table}/partitions/mark:
+    post:
+      tags: [Partition]
+      summary: Mark partitions as done
+      operationId: markPartitionsDone
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MarkDonePartitionsRequest"
+      responses:
+        "200":
+          description: Partitions marked
+
+  /v1/{prefix}/databases/{database}/tables/{table}/partitions/list-by-names:
+    post:
+      tags: [Partition]
+      summary: List partitions by partition specs
+      operationId: listPartitionsByNames
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+        - $ref: "#/components/parameters/maxResults"
+        - $ref: "#/components/parameters/pageToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ListPartitionsByNamesRequest"
+      responses:
+        "200":
+          description: Matching partitions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListPartitionsResponse"
+
+  # ==================== Consumer ====================
+  /v1/{prefix}/databases/{database}/tables/{table}/consumers:
+    get:
+      tags: [Consumer]
+      summary: List consumers
+      operationId: listConsumers
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+        - $ref: "#/components/parameters/maxResults"
+        - $ref: "#/components/parameters/pageToken"
+      responses:
+        "200":
+          description: List of consumers
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListConsumersResponse"
+
+  /v1/{prefix}/databases/{database}/tables/{table}/consumers/reset:
+    post:
+      tags: [Consumer]
+      summary: Reset a consumer
+      operationId: resetConsumer
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResetConsumerRequest"
+      responses:
+        "200":
+          description: Consumer reset
+
+  # ==================== Token & Auth ====================
+  /v1/{prefix}/databases/{database}/tables/{table}/token:
+    get:
+      tags: [Auth]
+      summary: Get table access token
+      operationId: getTableToken
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+      responses:
+        "200":
+          description: Table token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetTableTokenResponse"
+
+  /v1/{prefix}/databases/{database}/tables/{table}/auth:
+    post:
+      tags: [Auth]
+      summary: Authenticate table query
+      operationId: authTableQuery
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthTableQueryRequest"
+      responses:
+        "200":
+          description: Auth result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthTableQueryResponse"
+
+  # ==================== View ====================
+  /v1/{prefix}/views:
+    get:
+      tags: [View]
+      summary: List views globally (across all databases)
+      operationId: listViewsGlobally
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - name: databaseNamePattern
+          in: query
+          schema:
+            type: string
+        - name: viewNamePattern
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/maxResults"
+        - $ref: "#/components/parameters/pageToken"
+      responses:
+        "200":
+          description: List of view identifiers
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListViewsGloballyResponse"
+
+  /v1/{prefix}/views/rename:
+    post:
+      tags: [View]
+      summary: Rename a view
+      operationId: renameView
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RenameTableRequest"
+      responses:
+        "200":
+          description: View renamed
+
+  /v1/{prefix}/databases/{database}/views:
+    get:
+      tags: [View]
+      summary: List views in a database
+      operationId: listViews
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - name: viewNamePattern
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/maxResults"
+        - $ref: "#/components/parameters/pageToken"
+      responses:
+        "200":
+          description: List of view names
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListViewsResponse"
+    post:
+      tags: [View]
+      summary: Create a view
+      operationId: createView
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateViewRequest"
+      responses:
+        "200":
+          description: View created
+
+  /v1/{prefix}/databases/{database}/view-details:
+    get:
+      tags: [View]
+      summary: List view details in a database
+      operationId: listViewDetails
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - name: viewNamePattern
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/maxResults"
+        - $ref: "#/components/parameters/pageToken"
+      responses:
+        "200":
+          description: List of view details
+
+  /v1/{prefix}/databases/{database}/views/{view}:
+    get:
+      tags: [View]
+      summary: Get a view
+      operationId: getView
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - name: view
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: View details
+    post:
+      tags: [View]
+      summary: Alter a view
+      operationId: alterView
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - name: view
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AlterViewRequest"
+      responses:
+        "200":
+          description: View altered
+    delete:
+      tags: [View]
+      summary: Drop a view
+      operationId: dropView
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - name: view
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: View dropped
+
+  # ==================== Function ====================
+  /v1/{prefix}/functions:
+    get:
+      tags: [Function]
+      summary: List functions globally (across all databases)
+      operationId: listFunctionsGlobally
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - name: databaseNamePattern
+          in: query
+          schema:
+            type: string
+        - name: functionNamePattern
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/maxResults"
+        - $ref: "#/components/parameters/pageToken"
+      responses:
+        "200":
+          description: List of function identifiers
+
+  /v1/{prefix}/databases/{database}/functions:
+    get:
+      tags: [Function]
+      summary: List functions in a database
+      operationId: listFunctions
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - name: functionNamePattern
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/maxResults"
+        - $ref: "#/components/parameters/pageToken"
+      responses:
+        "200":
+          description: List of function names
+    post:
+      tags: [Function]
+      summary: Create a function
+      operationId: createFunction
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateFunctionRequest"
+      responses:
+        "200":
+          description: Function created
+
+  /v1/{prefix}/databases/{database}/function-details:
+    get:
+      tags: [Function]
+      summary: List function details in a database
+      operationId: listFunctionDetails
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - name: functionNamePattern
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/maxResults"
+        - $ref: "#/components/parameters/pageToken"
+      responses:
+        "200":
+          description: List of function details
+
+  /v1/{prefix}/databases/{database}/functions/{function}:
+    get:
+      tags: [Function]
+      summary: Get a function
+      operationId: getFunction
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - name: function
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Function details
+    post:
+      tags: [Function]
+      summary: Alter a function
+      operationId: alterFunction
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - name: function
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AlterFunctionRequest"
+      responses:
+        "200":
+          description: Function altered
+    delete:
+      tags: [Function]
+      summary: Drop a function
+      operationId: dropFunction
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - name: function
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Function dropped
+
+  # ==================== Schema ====================
+  /v1/{prefix}/databases/{database}/tables/{table}/schemas:
+    get:
+      tags: [Schema]
+      summary: List all schema versions
+      operationId: listSchemas
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+      responses:
+        "200":
+          description: List of schema versions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListSchemasResponse"
+
+  /v1/{prefix}/databases/{database}/tables/{table}/schemas/{schemaId}:
+    get:
+      tags: [Schema]
+      summary: Get a specific schema version
+      operationId: getSchema
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+        - name: schemaId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Schema details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchemaInfo"
+
+  # ==================== Commit ====================
+  /v1/{prefix}/databases/{database}/tables/{table}/commits:
+    get:
+      tags: [Commit]
+      summary: List commits (snapshots with metadata)
+      operationId: listCommits
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+        - $ref: "#/components/parameters/maxResults"
+        - $ref: "#/components/parameters/pageToken"
+      responses:
+        "200":
+          description: List of commits
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListCommitsResponse"
+
+  /v1/{prefix}/databases/{database}/tables/{table}/commits/{commitId}:
+    get:
+      tags: [Commit]
+      summary: Get a specific commit
+      operationId: getCommit
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+        - name: commitId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Snapshot ID
+      responses:
+        "200":
+          description: Commit details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommitInfo"
+        "404":
+          description: Commit not found
+
+  /v1/{prefix}/databases/{database}/tables/{table}/commits/{commitId}/reset:
+    post:
+      tags: [Commit]
+      summary: Reset (rollback) to a specific commit
+      operationId: resetToCommit
+      parameters:
+        - $ref: "#/components/parameters/prefix"
+        - $ref: "#/components/parameters/database"
+        - $ref: "#/components/parameters/table"
+        - name: commitId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Snapshot ID to reset to
+      responses:
+        "200":
+          description: Reset successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommitInfo"
+
+components:
+  parameters:
+    prefix:
+      name: prefix
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Catalog prefix (e.g. "paimon")
+    database:
+      name: database
+      in: path
+      required: true
+      schema:
+        type: string
+    table:
+      name: table
+      in: path
+      required: true
+      schema:
+        type: string
+    branch:
+      name: branch
+      in: path
+      required: true
+      schema:
+        type: string
+    maxResults:
+      name: maxResults
+      in: query
+      schema:
+        type: integer
+      description: Maximum number of results to return
+    pageToken:
+      name: pageToken
+      in: query
+      schema:
+        type: string
+      description: Pagination token from previous response
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        resourceType:
+          type: string
+          nullable: true
+        resourceName:
+          type: string
+          nullable: true
+        message:
+          type: string
+        code:
+          type: integer
+
+    ConfigResponse:
+      type: object
+      properties:
+        defaults:
+          type: object
+          additionalProperties:
+            type: string
+        overrides:
+          type: object
+          additionalProperties:
+            type: string
+
+    Identifier:
+      type: object
+      properties:
+        database:
+          type: string
+        object:
+          type: string
+
+    Field:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        type:
+          type: string
+
+    Schema:
+      type: object
+      properties:
+        fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/Field"
+        partitionKeys:
+          type: array
+          items:
+            type: string
+        primaryKeys:
+          type: array
+          items:
+            type: string
+        options:
+          type: object
+          additionalProperties:
+            type: string
+        comment:
+          type: string
+
+    # ---- Database ----
+    CreateDatabaseRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        options:
+          type: object
+          additionalProperties:
+            type: string
+
+    ListDatabasesResponse:
+      type: object
+      properties:
+        databases:
+          type: array
+          items:
+            type: string
+        nextPageToken:
+          type: string
+          nullable: true
+
+    GetDatabaseResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        options:
+          type: object
+          additionalProperties:
+            type: string
+        owner:
+          type: string
+          nullable: true
+        createdAt:
+          type: integer
+          format: int64
+        createdBy:
+          type: string
+          nullable: true
+        updatedAt:
+          type: integer
+          format: int64
+        updatedBy:
+          type: string
+          nullable: true
+
+    AlterDatabaseRequest:
+      type: object
+      properties:
+        removals:
+          type: array
+          items:
+            type: string
+        updates:
+          type: object
+          additionalProperties:
+            type: string
+
+    AlterDatabaseResponse:
+      type: object
+      properties:
+        removed:
+          type: array
+          items:
+            type: string
+        updated:
+          type: array
+          items:
+            type: string
+        missing:
+          type: array
+          items:
+            type: string
+
+    # ---- Table ----
+    CreateTableRequest:
+      type: object
+      properties:
+        identifier:
+          $ref: "#/components/schemas/Identifier"
+        schema:
+          $ref: "#/components/schemas/Schema"
+
+    RenameTableRequest:
+      type: object
+      properties:
+        source:
+          $ref: "#/components/schemas/Identifier"
+        destination:
+          $ref: "#/components/schemas/Identifier"
+
+    RegisterTableRequest:
+      type: object
+      properties:
+        identifier:
+          $ref: "#/components/schemas/Identifier"
+        path:
+          type: string
+
+    AlterTableRequest:
+      type: object
+      properties:
+        changes:
+          type: array
+          items:
+            type: object
+            description: SchemaChange (polymorphic)
+
+    ListTablesResponse:
+      type: object
+      properties:
+        tables:
+          type: array
+          items:
+            type: string
+        nextPageToken:
+          type: string
+          nullable: true
+
+    ListTablesGloballyResponse:
+      type: object
+      properties:
+        identifiers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Identifier"
+        nextPageToken:
+          type: string
+          nullable: true
+
+    GetTableResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        database:
+          type: string
+        name:
+          type: string
+        path:
+          type: string
+        isExternal:
+          type: boolean
+        schemaId:
+          type: integer
+          format: int64
+        schema:
+          $ref: "#/components/schemas/Schema"
+        owner:
+          type: string
+          nullable: true
+        createdAt:
+          type: integer
+          format: int64
+        createdBy:
+          type: string
+          nullable: true
+        updatedAt:
+          type: integer
+          format: int64
+        updatedBy:
+          type: string
+          nullable: true
+
+    ListTableDetailsResponse:
+      type: object
+      properties:
+        tableDetails:
+          type: array
+          items:
+            $ref: "#/components/schemas/GetTableResponse"
+        nextPageToken:
+          type: string
+          nullable: true
+
+    # ---- Snapshot ----
+    GetTableSnapshotResponse:
+      type: object
+      description: Latest table snapshot
+
+    ListSnapshotsResponse:
+      type: object
+      properties:
+        snapshots:
+          type: array
+          items:
+            type: object
+        nextPageToken:
+          type: string
+          nullable: true
+
+    CommitTableRequest:
+      type: object
+      properties:
+        tableId:
+          type: string
+        snapshot:
+          type: object
+        committer:
+          type: string
+          nullable: true
+        message:
+          type: string
+          nullable: true
+
+    CommitTableResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+
+    RollbackTableRequest:
+      type: object
+      properties:
+        instant:
+          type: object
+          description: "Polymorphic: SnapshotInstant or TagInstant"
+        fromSnapshot:
+          type: integer
+          format: int64
+          nullable: true
+
+    # ---- Branch ----
+    ListBranchesResponse:
+      type: object
+      properties:
+        branches:
+          type: array
+          items:
+            type: string
+
+    CreateBranchRequest:
+      type: object
+      required: [branch]
+      properties:
+        branch:
+          type: string
+        fromTag:
+          type: string
+          nullable: true
+        fromSnapshotId:
+          type: integer
+          format: int64
+          nullable: true
+
+    GetBranchResponse:
+      type: object
+      properties:
+        branch:
+          type: string
+        latestSnapshotId:
+          type: integer
+          format: int64
+          nullable: true
+        latestSchemaId:
+          type: integer
+          format: int64
+          nullable: true
+
+    MergeBranchRequest:
+      type: object
+      properties:
+        source_branch:
+          type: string
+        message:
+          type: string
+          nullable: true
+        strategy:
+          type: string
+          nullable: true
+        squash:
+          type: boolean
+
+    # ---- Tag ----
+    ListTagsResponse:
+      type: object
+      properties:
+        tags:
+          type: array
+          items:
+            type: string
+        nextPageToken:
+          type: string
+          nullable: true
+
+    CreateTagRequest:
+      type: object
+      required: [tagName]
+      properties:
+        tagName:
+          type: string
+        snapshotId:
+          type: integer
+          format: int64
+          nullable: true
+        timeRetained:
+          type: string
+          nullable: true
+        ignoreIfExists:
+          type: boolean
+          default: false
+
+    # ---- Partition ----
+    ListPartitionsResponse:
+      type: object
+      properties:
+        partitions:
+          type: array
+          items:
+            type: object
+        nextPageToken:
+          type: string
+          nullable: true
+
+    MarkDonePartitionsRequest:
+      type: object
+      properties:
+        partitionSpecs:
+          type: array
+          items:
+            type: object
+            additionalProperties:
+              type: string
+
+    ListPartitionsByNamesRequest:
+      type: object
+      properties:
+        partitionSpecs:
+          type: array
+          items:
+            type: object
+            additionalProperties:
+              type: string
+
+    # ---- Consumer ----
+    ListConsumersResponse:
+      type: object
+      properties:
+        consumers:
+          type: array
+          items:
+            type: object
+        nextPageToken:
+          type: string
+          nullable: true
+
+    ResetConsumerRequest:
+      type: object
+      required: [consumerId]
+      properties:
+        consumerId:
+          type: string
+        nextSnapshotId:
+          type: integer
+          format: int64
+          nullable: true
+
+    # ---- Token & Auth ----
+    GetTableTokenResponse:
+      type: object
+      properties:
+        token:
+          type: object
+          additionalProperties:
+            type: string
+        expiresAtMillis:
+          type: integer
+          format: int64
+
+    AuthTableQueryRequest:
+      type: object
+      properties:
+        select:
+          type: array
+          items:
+            type: string
+          nullable: true
+
+    AuthTableQueryResponse:
+      type: object
+      properties:
+        filter:
+          type: object
+          nullable: true
+        columnMasking:
+          type: object
+          nullable: true
+
+    # ---- View ----
+    ListViewsResponse:
+      type: object
+      properties:
+        views:
+          type: array
+          items:
+            type: string
+        nextPageToken:
+          type: string
+          nullable: true
+
+    ListViewsGloballyResponse:
+      type: object
+      properties:
+        identifiers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Identifier"
+        nextPageToken:
+          type: string
+          nullable: true
+
+    CreateViewRequest:
+      type: object
+      properties:
+        identifier:
+          $ref: "#/components/schemas/Identifier"
+        schema:
+          type: object
+          description: ViewSchema
+
+    AlterViewRequest:
+      type: object
+      properties:
+        changes:
+          type: array
+          items:
+            type: object
+            description: ViewChange
+
+    # ---- Function ----
+    CreateFunctionRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        inputParams:
+          type: array
+          items:
+            type: object
+        returnParams:
+          type: array
+          items:
+            type: object
+        deterministic:
+          type: boolean
+        definitions:
+          type: object
+          additionalProperties:
+            type: object
+        comment:
+          type: string
+        options:
+          type: object
+          additionalProperties:
+            type: string
+
+    AlterFunctionRequest:
+      type: object
+      properties:
+        changes:
+          type: array
+          items:
+            type: object
+            description: FunctionChange
+
+    # ---- Schema (metadata) ----
+    SchemaInfo:
+      type: object
+      properties:
+        schemaId:
+          type: integer
+          format: int64
+        schema:
+          type: object
+          description: Full TableSchema object
+        timeMillis:
+          type: integer
+          format: int64
+
+    ListSchemasResponse:
+      type: object
+      properties:
+        schemas:
+          type: array
+          items:
+            $ref: "#/components/schemas/SchemaInfo"
+
+    # ---- Commit (metadata) ----
+    CommitInfo:
+      type: object
+      properties:
+        snapshotId:
+          type: integer
+          format: int64
+        schemaId:
+          type: integer
+          format: int64
+        committer:
+          type: string
+        message:
+          type: string
+          nullable: true
+        commitKind:
+          type: string
+        commitIdentifier:
+          type: integer
+          format: int64
+        timeMillis:
+          type: integer
+          format: int64
+        totalRecordCount:
+          type: integer
+          format: int64
+        deltaRecordCount:
+          type: integer
+          format: int64
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+          nullable: true
+
+    ListCommitsResponse:
+      type: object
+      properties:
+        commits:
+          type: array
+          items:
+            $ref: "#/components/schemas/CommitInfo"
+        nextPageToken:
+          type: string
+          nullable: true
