@@ -126,7 +126,7 @@ class CommitPropertiesIntegrationTest(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.tempdir, ignore_errors=True)
 
-    def _write_and_get_snapshot(self, table_name, options):
+    def _write_and_get_snapshot(self, table_name, options, committer=None, message=None):
         schema = Schema.from_pyarrow_schema(
             self.pa_schema, partition_keys=['dt'], options=options)
         self.catalog.create_table(f'default.{table_name}', schema, False)
@@ -134,7 +134,7 @@ class CommitPropertiesIntegrationTest(unittest.TestCase):
 
         write_builder = table.new_batch_write_builder()
         table_write = write_builder.new_write()
-        table_commit = write_builder.new_commit()
+        table_commit = write_builder.new_commit(committer=committer, message=message)
 
         data = pa.Table.from_pydict(
             {'id': [1, 2], 'value': ['a', 'b'], 'dt': ['p1', 'p1']},
@@ -147,16 +147,14 @@ class CommitPropertiesIntegrationTest(unittest.TestCase):
         return table.snapshot_manager().get_latest_snapshot()
 
     def test_commit_committer(self):
-        snapshot = self._write_and_get_snapshot('test_committer', {
-            'commit.committer': 'alice',
-        })
+        snapshot = self._write_and_get_snapshot('test_committer', {},
+                                               committer='alice')
         self.assertIsNotNone(snapshot.properties)
         self.assertEqual(snapshot.properties.get('paimon.commit.committer'), 'alice')
 
     def test_commit_message(self):
-        snapshot = self._write_and_get_snapshot('test_message', {
-            'commit.message': 'initial load',
-        })
+        snapshot = self._write_and_get_snapshot('test_message', {},
+                                               message='initial load')
         self.assertIsNotNone(snapshot.properties)
         self.assertEqual(snapshot.properties.get('paimon.commit.message'), 'initial load')
 
@@ -171,11 +169,9 @@ class CommitPropertiesIntegrationTest(unittest.TestCase):
 
     def test_commit_all_properties(self):
         snapshot = self._write_and_get_snapshot('test_all_props', {
-            'commit.committer': 'bob',
-            'commit.message': 'daily sync',
             'commit.metadata.source': 'kafka',
             'commit.metadata.version': 'v2',
-        })
+        }, committer='bob', message='daily sync')
         self.assertIsNotNone(snapshot.properties)
         self.assertEqual(snapshot.properties['paimon.commit.committer'], 'bob')
         self.assertEqual(snapshot.properties['paimon.commit.message'], 'daily sync')
@@ -188,10 +184,9 @@ class CommitPropertiesIntegrationTest(unittest.TestCase):
         self.assertIsNone(snapshot.properties)
 
     def test_commit_properties_persist_in_snapshot_json(self):
-        snapshot = self._write_and_get_snapshot('test_props_json', {
-            'commit.committer': 'charlie',
-            'commit.message': 'test persist',
-        })
+        snapshot = self._write_and_get_snapshot('test_props_json', {},
+                                               committer='charlie',
+                                               message='test persist')
         json_str = JSON.to_json(snapshot)
         restored = JSON.from_json(json_str, Snapshot)
         self.assertEqual(restored.properties['paimon.commit.committer'], 'charlie')

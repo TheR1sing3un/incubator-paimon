@@ -17,9 +17,11 @@
 ################################################################################
 
 import logging
+from dataclasses import replace
 from typing import List
 
 from pypaimon.common.file_io import FileIO
+from pypaimon.common.options.core_options import CoreOptions
 
 logger = logging.getLogger(__name__)
 from pypaimon.common.json_util import JSON
@@ -48,13 +50,16 @@ class RenamingSnapshotCommit(SnapshotCommit):
         self.snapshot_manager = snapshot_manager
         self.file_io: FileIO = snapshot_manager.file_io
 
-    def commit(self, snapshot: Snapshot, statistics: List[PartitionStatistics]) -> bool:
+    def commit(self, snapshot: Snapshot, statistics: List[PartitionStatistics],
+               committer=None, message=None) -> bool:
         """
         Commit the snapshot using file renaming.
 
         Args:
             snapshot: The snapshot to commit
             statistics: List of partition statistics
+            committer: Optional committer name for audit tracking
+            message: Optional commit message for audit tracking
 
         Returns:
             True if commit was successful, False otherwise
@@ -62,6 +67,8 @@ class RenamingSnapshotCommit(SnapshotCommit):
         Raises:
             Exception: If commit fails
         """
+        if committer is not None or message is not None:
+            snapshot = self._inject_commit_properties(snapshot, committer, message)
         new_snapshot_path = self.snapshot_manager.get_snapshot_path(snapshot.id)
         if not self.file_io.exists(new_snapshot_path):
             # Try to write atomically using the file IO
@@ -75,6 +82,18 @@ class RenamingSnapshotCommit(SnapshotCommit):
 
     def close(self):
         """Close the lock and release resources."""
+
+    @staticmethod
+    def _inject_commit_properties(snapshot, committer, message):
+        """Inject committer and message into snapshot properties for filesystem-based commit."""
+        properties = dict(snapshot.properties) if snapshot.properties else {}
+        if committer is not None:
+            properties.setdefault(
+                CoreOptions.SNAPSHOT_COMMIT_PREFIX + CoreOptions.COMMIT_COMMITTER.key(), committer)
+        if message is not None:
+            properties.setdefault(
+                CoreOptions.SNAPSHOT_COMMIT_PREFIX + CoreOptions.COMMIT_MESSAGE.key(), message)
+        return replace(snapshot, properties=properties)
 
     def _commit_latest_hint(self, snapshot_id: int):
         """

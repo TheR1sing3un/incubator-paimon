@@ -110,7 +110,8 @@ class FileStoreCommit:
         table_rollback = table.catalog_environment.catalog_table_rollback()
         self.rollback = CommitRollback(table_rollback) if table_rollback is not None else None
 
-    def commit(self, commit_messages: List[CommitMessage], commit_identifier: int):
+    def commit(self, commit_messages: List[CommitMessage], commit_identifier: int,
+               committer=None, message=None):
         """Commit the given commit messages in normal append mode."""
         if not commit_messages:
             return
@@ -152,9 +153,12 @@ class FileStoreCommit:
                          commit_identifier=commit_identifier,
                          commit_entries_plan=lambda snapshot: commit_entries,
                          detect_conflicts=detect_conflicts,
-                         allow_rollback=allow_rollback)
+                         allow_rollback=allow_rollback,
+                         committer=committer,
+                         message=message)
 
-    def overwrite(self, overwrite_partition, commit_messages: List[CommitMessage], commit_identifier: int):
+    def overwrite(self, overwrite_partition, commit_messages: List[CommitMessage], commit_identifier: int,
+                  committer=None, message=None):
         """Commit the given commit messages in overwrite mode."""
         if not commit_messages:
             return
@@ -186,6 +190,8 @@ class FileStoreCommit:
                 snapshot, partition_filter, commit_messages),
             detect_conflicts=True,
             allow_rollback=False,
+            committer=committer,
+            message=message,
         )
 
     def drop_partitions(self, partitions: List[Dict[str, str]], commit_identifier: int) -> None:
@@ -229,7 +235,8 @@ class FileStoreCommit:
         )
 
     def _try_commit(self, commit_kind, commit_identifier, commit_entries_plan,
-                    detect_conflicts=False, allow_rollback=False):
+                    detect_conflicts=False, allow_rollback=False,
+                    committer=None, message=None):
 
         retry_count = 0
         retry_result = None
@@ -251,6 +258,8 @@ class FileStoreCommit:
                 latest_snapshot=latest_snapshot,
                 detect_conflicts=detect_conflicts,
                 allow_rollback=allow_rollback,
+                committer=committer,
+                message=message,
             )
 
             if result.is_success():
@@ -302,7 +311,8 @@ class FileStoreCommit:
                          commit_entries: List[ManifestEntry], commit_identifier: int,
                          latest_snapshot: Optional[Snapshot],
                          detect_conflicts: bool = False,
-                         allow_rollback: bool = False) -> CommitResult:
+                         allow_rollback: bool = False,
+                         committer=None, message=None) -> CommitResult:
         start_millis = int(time.time() * 1000)
         if self._is_duplicate_commit(retry_result, latest_snapshot, commit_identifier, commit_kind):
             return SuccessResult()
@@ -393,7 +403,7 @@ class FileStoreCommit:
         # Use SnapshotCommit for atomic commit
         try:
             with self.snapshot_commit:
-                success = self.snapshot_commit.commit(snapshot_data, statistics)
+                success = self.snapshot_commit.commit(snapshot_data, statistics, committer, message)
                 if not success:
                     commit_time_s = (int(time.time() * 1000) - start_millis) / 1000
                     logger.warning(
@@ -555,24 +565,14 @@ class FileStoreCommit:
             logger.warning(f"Failed to clean up temporary files during preparation failure: {e}", exc_info=True)
 
     def _build_commit_properties(self):
-        """Build snapshot properties from commit.committer, commit.message, and commit.metadata.* options."""
+        """Build snapshot properties from commit.metadata.* options."""
         from pypaimon.common.options.core_options import CoreOptions
         properties = {}
-        self._inject_commit_option(properties, "commit.committer")
-        self._inject_commit_option(properties, "commit.message")
         for key, value in self.table.options.options.to_map().items():
             if key.startswith(CoreOptions.COMMIT_METADATA_PREFIX) and value is not None:
                 prop_key = CoreOptions.SNAPSHOT_COMMIT_PREFIX + key
                 properties.setdefault(prop_key, value)
         return properties
-
-    def _inject_commit_option(self, properties, option_key):
-        """Inject a single commit option into properties dict."""
-        from pypaimon.common.options.core_options import CoreOptions
-        value = self.table.options.options.to_map().get(option_key)
-        if value is not None:
-            prop_key = CoreOptions.SNAPSHOT_COMMIT_PREFIX + option_key
-            properties.setdefault(prop_key, value)
 
     def abort(self, commit_messages: List[CommitMessage]):
         """Abort commit and delete files. Uses external_path if available to ensure proper scheme handling."""

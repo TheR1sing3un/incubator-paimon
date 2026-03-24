@@ -249,7 +249,9 @@ class FileSystemCatalog(Catalog):
             identifier: Identifier,
             table_uuid: Optional[str],
             snapshot: Snapshot,
-            statistics: List[PartitionStatistics]
+            statistics: List[PartitionStatistics],
+            committer=None,
+            message=None
     ) -> bool:
         raise NotImplementedError("This catalog does not support commit catalog")
 

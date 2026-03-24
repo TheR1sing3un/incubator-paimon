@@ -54,13 +54,15 @@ class CatalogSnapshotCommit(SnapshotCommit):
         self._fallback_commit = fallback_commit
         self._use_fallback = False
 
-    def commit(self, snapshot: Snapshot, statistics: List[PartitionStatistics]) -> bool:
+    def commit(self, snapshot: Snapshot, statistics: List[PartitionStatistics],
+               committer=None, message=None) -> bool:
         if self._use_fallback and self._fallback_commit is not None:
-            return self._fallback_commit.commit(snapshot, statistics)
+            return self._fallback_commit.commit(snapshot, statistics, committer, message)
 
         if hasattr(self.catalog, 'commit_snapshot'):
             try:
-                success = self.catalog.commit_snapshot(self.identifier, self.uuid, snapshot, statistics)
+                success = self.catalog.commit_snapshot(
+                    self.identifier, self.uuid, snapshot, statistics, committer, message)
                 if success:
                     logger.info("Catalog snapshot commit succeeded for %s, snapshot id %d",
                                 self.identifier, snapshot.id)
@@ -72,7 +74,7 @@ class CatalogSnapshotCommit(SnapshotCommit):
                     logger.info("Catalog commitSnapshot not supported (501), "
                                 "falling back to filesystem commit for %s", self.identifier)
                     self._use_fallback = True
-                    return self._fallback_commit.commit(snapshot, statistics)
+                    return self._fallback_commit.commit(snapshot, statistics, committer, message)
                 raise
         else:
             raise NotImplementedError(

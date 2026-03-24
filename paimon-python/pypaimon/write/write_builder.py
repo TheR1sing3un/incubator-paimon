@@ -45,7 +45,7 @@ class WriteBuilder(ABC):
     def new_update(self) -> TableUpdate:
         """Returns a table update."""
 
-    def new_commit(self) -> TableCommit:
+    def new_commit(self, committer=None, message=None) -> TableCommit:
         """Returns a table commit."""
 
     def _create_commit_user(self):
@@ -64,9 +64,9 @@ class BatchWriteBuilder(WriteBuilder):
     def new_update(self) -> TableUpdate:
         return TableUpdate(self.table, self.commit_user)
 
-    def new_commit(self) -> BatchTableCommit:
-        commit = BatchTableCommit(self.table, self.commit_user, self.static_partition)
-        return commit
+    def new_commit(self, committer=None, message=None) -> BatchTableCommit:
+        return BatchTableCommit(self.table, self.commit_user, self.static_partition,
+                                committer=committer, message=message)
 
 
 class StreamWriteBuilder(WriteBuilder):
@@ -77,6 +77,6 @@ class StreamWriteBuilder(WriteBuilder):
     def new_update(self) -> TableUpdate:
         raise ValueError("StreamWriteBuilder.new_update() not supported.")
 
-    def new_commit(self) -> StreamTableCommit:
-        commit = StreamTableCommit(self.table, self.commit_user, self.static_partition)
-        return commit
+    def new_commit(self, committer=None, message=None) -> StreamTableCommit:
+        return StreamTableCommit(self.table, self.commit_user, self.static_partition,
+                                 committer=committer, message=message)

@@ -159,7 +159,9 @@ class Catalog(ABC):
             identifier: Identifier,
             table_uuid: Optional[str],
             snapshot: Snapshot,
-            statistics: List[PartitionStatistics]
+            statistics: List[PartitionStatistics],
+            committer: Optional[str] = None,
+            message: Optional[str] = None
     ) -> bool:
         """
         Commit the Snapshot for table identified by the given Identifier.

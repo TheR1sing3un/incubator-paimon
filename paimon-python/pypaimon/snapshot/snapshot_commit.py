@@ -73,13 +73,16 @@ class SnapshotCommit(ABC):
     """Interface to commit snapshot atomically."""
 
     @abstractmethod
-    def commit(self, snapshot: Snapshot, statistics: List[PartitionStatistics]) -> bool:
+    def commit(self, snapshot: Snapshot, statistics: List[PartitionStatistics],
+               committer=None, message=None) -> bool:
         """
         Commit the given snapshot.
 
         Args:
             snapshot: The snapshot to commit
             statistics: List of partition statistics
+            committer: Optional committer name for audit tracking
+            message: Optional commit message for audit tracking
 
         Returns:
             True if commit was successful, False otherwise

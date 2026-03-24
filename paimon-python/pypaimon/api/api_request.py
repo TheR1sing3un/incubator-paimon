@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from pypaimon.common.identifier import Identifier
-from pypaimon.common.json_util import json_field
+from pypaimon.common.json_util import json_field, optional_json_field
 from pypaimon.schema.schema import Schema
 from pypaimon.schema.schema_change import SchemaChange
 from pypaimon.snapshot.snapshot import Snapshot
@@ -74,10 +74,14 @@ class CommitTableRequest(RESTRequest):
     FIELD_TABLE_ID = "tableId"
     FIELD_SNAPSHOT = "snapshot"
     FIELD_STATISTICS = "statistics"
+    FIELD_COMMITTER = "committer"
+    FIELD_MESSAGE = "message"
 
     table_id: Optional[str] = json_field(FIELD_TABLE_ID)
     snapshot: Snapshot = json_field(FIELD_SNAPSHOT)
     statistics: List[PartitionStatistics] = json_field(FIELD_STATISTICS)
+    committer: Optional[str] = optional_json_field(FIELD_COMMITTER, "non_null")
+    message: Optional[str] = optional_json_field(FIELD_MESSAGE, "non_null")
 
 
 @dataclass

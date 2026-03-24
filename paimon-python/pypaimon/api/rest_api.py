@@ -327,7 +327,9 @@ class RESTApi:
             identifier: Identifier,
             table_uuid: Optional[str],
             snapshot: Snapshot,
-            statistics: List[PartitionStatistics]
+            statistics: List[PartitionStatistics],
+            committer: Optional[str] = None,
+            message: Optional[str] = None
     ) -> bool:
         """
         Commit snapshot for table.
@@ -337,6 +339,8 @@ class RESTApi:
             table_uuid: UUID of the table to avoid wrong commit
             snapshot: Snapshot for committing
             statistics: Statistics for this snapshot incremental
+            committer: Optional committer name for audit tracking
+            message: Optional commit message for audit tracking
 
         Returns:
             True if commit success
@@ -351,7 +355,7 @@ class RESTApi:
         if statistics is None:
             raise ValueError("Statistics cannot be None")
 
-        request = CommitTableRequest(table_uuid, snapshot, statistics)
+        request = CommitTableRequest(table_uuid, snapshot, statistics, committer, message)
         response = self.client.post_with_response_type(
             self.resource_paths.commit_table(
                 database_name, table_name),

@@ -29,12 +29,15 @@ from pypaimon.write.file_store_commit import FileStoreCommit
 class TableCommit:
     """Python implementation of BatchTableCommit for batch writing scenarios."""
 
-    def __init__(self, table, commit_user: str, static_partition: Optional[dict]):
+    def __init__(self, table, commit_user: str, static_partition: Optional[dict],
+                 committer: Optional[str] = None, message: Optional[str] = None):
         from pypaimon.table.file_store_table import FileStoreTable
 
         self.table: FileStoreTable = table
         self.commit_user = commit_user
         self.overwrite_partition = static_partition
+        self.committer = committer
+        self.message = message
 
         # Get SnapshotCommit from table's catalog environment
         snapshot_commit = table.new_snapshot_commit()
@@ -59,12 +62,16 @@ class TableCommit:
             self.file_store_commit.overwrite(
                 overwrite_partition=self.overwrite_partition,
                 commit_messages=non_empty_messages,
-                commit_identifier=commit_identifier
+                commit_identifier=commit_identifier,
+                committer=self.committer,
+                message=self.message
             )
         else:
             self.file_store_commit.commit(
                 commit_messages=non_empty_messages,
-                commit_identifier=commit_identifier
+                commit_identifier=commit_identifier,
+                committer=self.committer,
+                message=self.message
             )
 
     def abort(self, commit_messages: List[CommitMessage]):
