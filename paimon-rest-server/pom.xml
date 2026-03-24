@@ -326,6 +326,13 @@ under the License.
             <artifactId>commons-codec</artifactId>
             <version>1.10</version>
         </dependency>
+        <!-- MyBatis -->
+        <dependency>
+            <groupId>org.mybatis</groupId>
+            <artifactId>mybatis</artifactId>
+            <version>3.5.13</version>
+        </dependency>
+
         <!-- MySQL JDBC driver (runtime) -->
         <dependency>
             <groupId>mysql</groupId>

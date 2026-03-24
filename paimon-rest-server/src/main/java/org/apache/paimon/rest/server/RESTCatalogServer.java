@@ -154,14 +154,12 @@ public class RESTCatalogServer {
     }
 
     private MetadataStore createMetadataStore() {
-        String jdbcCatalog = options.getString(RESTCatalogServerOptions.METADATA_JDBC_CATALOG);
-
         // Priority 1: KsDataSource resource ID
         String resourceId = options.getString(RESTCatalogServerOptions.METADATA_RESOURCE_ID);
         if (resourceId != null && !resourceId.isEmpty()) {
             LOG.info("Metadata store enabled with KsDataSource resource ID: {}", resourceId);
             DataSource dataSource = KsDataSourceFactory.getDataSource(resourceId);
-            return new JdbcMetadataStore(dataSource, jdbcCatalog);
+            return new JdbcMetadataStore(dataSource);
         }
 
         // Priority 2: JDBC URL with HikariCP (for local dev / testing)
@@ -186,7 +184,7 @@ public class RESTCatalogServer {
         config.setPoolName("paimon-metadata");
 
         LOG.info("Metadata store enabled with JDBC URL: {}", jdbcUrl);
-        return new JdbcMetadataStore(new HikariDataSource(config), jdbcCatalog);
+        return new JdbcMetadataStore(new HikariDataSource(config));
     }
 
     public static void main(String[] args) throws Exception {

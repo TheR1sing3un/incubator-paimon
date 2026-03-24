@@ -121,6 +121,15 @@ under the License.
                     <skip>true</skip>
                 </configuration>
             </plugin>
+
+            <!-- Skip RAT license check for frontend module (node_modules, dist, etc.) -->
+            <plugin>
+                <groupId>org.apache.rat</groupId>
+                <artifactId>apache-rat-plugin</artifactId>
+                <configuration>
+                    <skip>true</skip>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 </project>

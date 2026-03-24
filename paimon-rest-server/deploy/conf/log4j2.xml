@@ -47,12 +47,33 @@ under the License.
             </DefaultRolloverStrategy>
         </RollingFile>
 
-        <!-- Error log (separate file for fast troubleshooting) -->
+        <!-- Warn log (WARN level only) -->
+        <RollingFile name="WarnFile"
+                     fileName="${LOG_HOME}/${APP_NAME}-warn.log"
+                     filePattern="${LOG_HOME}/${APP_NAME}-warn.%d{yyyy-MM-dd}.%i.log.gz">
+            <PatternLayout pattern="${LOG_PATTERN}"/>
+            <Filters>
+                <ThresholdFilter level="ERROR" onMatch="DENY" onMismatch="NEUTRAL"/>
+                <ThresholdFilter level="WARN" onMatch="ACCEPT" onMismatch="DENY"/>
+            </Filters>
+            <Policies>
+                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+                <SizeBasedTriggeringPolicy size="1GB"/>
+            </Policies>
+            <DefaultRolloverStrategy max="10">
+                <Delete basePath="${LOG_HOME}" maxDepth="1">
+                    <IfFileName glob="${APP_NAME}-warn.*.log.gz"/>
+                    <IfLastModified age="30d"/>
+                </Delete>
+            </DefaultRolloverStrategy>
+        </RollingFile>
+
+        <!-- Error log (ERROR level only) -->
         <RollingFile name="ErrorFile"
                      fileName="${LOG_HOME}/${APP_NAME}-error.log"
                      filePattern="${LOG_HOME}/${APP_NAME}-error.%d{yyyy-MM-dd}.%i.log.gz">
             <PatternLayout pattern="${LOG_PATTERN}"/>
-            <ThresholdFilter level="WARN" onMatch="ACCEPT" onMismatch="DENY"/>
+            <ThresholdFilter level="ERROR" onMatch="ACCEPT" onMismatch="DENY"/>
             <Policies>
                 <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
                 <SizeBasedTriggeringPolicy size="1GB"/>
@@ -88,30 +109,35 @@ under the License.
         <Logger name="org.apache.paimon.rest.server" level="INFO" additivity="false">
             <AppenderRef ref="Console"/>
             <AppenderRef ref="AppFile"/>
+            <AppenderRef ref="WarnFile"/>
             <AppenderRef ref="ErrorFile"/>
         </Logger>
 
         <!-- Paimon core logs -->
         <Logger name="org.apache.paimon" level="INFO" additivity="false">
             <AppenderRef ref="AppFile"/>
+            <AppenderRef ref="WarnFile"/>
             <AppenderRef ref="ErrorFile"/>
         </Logger>
 
         <!-- Netty logs (reduce noise) -->
         <Logger name="org.apache.paimon.shade.netty4" level="WARN" additivity="false">
             <AppenderRef ref="AppFile"/>
+            <AppenderRef ref="WarnFile"/>
             <AppenderRef ref="ErrorFile"/>
         </Logger>
 
         <!-- HikariCP connection pool logs -->
         <Logger name="com.zaxxer.hikari" level="INFO" additivity="false">
             <AppenderRef ref="AppFile"/>
+            <AppenderRef ref="WarnFile"/>
             <AppenderRef ref="ErrorFile"/>
         </Logger>
 
         <!-- Hadoop logs (reduce noise) -->
         <Logger name="org.apache.hadoop" level="WARN" additivity="false">
             <AppenderRef ref="AppFile"/>
+            <AppenderRef ref="WarnFile"/>
             <AppenderRef ref="ErrorFile"/>
         </Logger>
 
@@ -119,6 +145,7 @@ under the License.
         <Root level="INFO">
             <AppenderRef ref="Console"/>
             <AppenderRef ref="AppFile"/>
+            <AppenderRef ref="WarnFile"/>
             <AppenderRef ref="ErrorFile"/>
         </Root>
     </Loggers>

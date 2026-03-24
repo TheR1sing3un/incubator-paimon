@@ -18,39 +18,18 @@
 
 package org.apache.paimon.rest.server.metadata;
 
-import org.apache.paimon.rest.server.metadata.model.DatabaseInfo;
-
 import javax.annotation.Nullable;
 
 import java.io.Closeable;
-import java.util.Map;
 
 /**
- * Storage interface for catalog metadata and operation audit logs.
+ * Storage interface for operation audit logs.
  *
  * <p>Implementations may use JDBC (MySQL), or other storage backends. The actual table data,
- * schemas, snapshots, and tags are read directly from Paimon storage — this store manages
- * database/table registry metadata and audit logging.
+ * schemas, snapshots, and tags are read directly from Paimon storage — this store manages audit
+ * logging.
  */
 public interface MetadataStore extends Closeable {
-
-    // ---- Database metadata ----
-
-    /** Save a new database record. */
-    void saveDatabase(
-            String databaseName, @Nullable Map<String, String> properties, String createdBy);
-
-    /** Get database metadata by name. Returns null if not found. */
-    @Nullable
-    DatabaseInfo getDatabase(String databaseName);
-
-    /** Update database properties and updated_at timestamp. */
-    void updateDatabaseProperties(String databaseName, @Nullable Map<String, String> properties);
-
-    /** Delete a database record. */
-    void deleteDatabase(String databaseName);
-
-    // ---- Audit logging ----
 
     /**
      * Log an operation for audit purposes.

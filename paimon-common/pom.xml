@@ -48,6 +48,12 @@ under the License.
             <groupId>org.apache.paimon</groupId>
             <artifactId>paimon-shade-guava-30</artifactId>
             <version>${paimon.shade.guava.version}-${paimon.shade.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.google.guava</groupId>
+                    <artifactId>guava</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
@@ -172,6 +178,14 @@ under the License.
         </dependency>
 
         <!-- Test -->
+
+        <!-- Guava 14.0.1 for Hadoop MiniDFSCluster compatibility (CDH Hadoop uses this version) -->
+        <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>14.0.1</version>
+            <scope>test</scope>
+        </dependency>
 
         <dependency>
             <groupId>org.apache.paimon</groupId>
