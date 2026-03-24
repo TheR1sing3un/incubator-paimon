@@ -66,6 +66,13 @@ public class RESTCatalogServer {
     }
 
     public void start() throws Exception {
+        // Set HADOOP_USER_NAME early, before any Hadoop FileSystem is created
+        String hadoopUserName = options.getString(RESTCatalogServerOptions.HADOOP_USER_NAME);
+        if (hadoopUserName != null && !hadoopUserName.isEmpty()) {
+            System.setProperty("HADOOP_USER_NAME", hadoopUserName);
+            LOG.info("HADOOP_USER_NAME set to: {}", hadoopUserName);
+        }
+
         String warehouse = options.get(CatalogOptions.WAREHOUSE);
         if (warehouse == null) {
             throw new IllegalArgumentException(

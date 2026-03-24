@@ -70,16 +70,6 @@ public class RESTCatalogServerOptions {
                                     + "instead of HikariCP with JDBC URL. "
                                     + "Takes priority over rest-server.metadata.jdbc-url.");
 
-    public static final ConfigOption<String> METADATA_JDBC_CATALOG =
-            ConfigOptions.key("rest-server.metadata.jdbc-catalog")
-                    .stringType()
-                    .noDefaultValue()
-                    .withDescription(
-                            "The MySQL database (catalog) name for the metadata store. "
-                                    + "When set, each connection will execute USE <catalog> "
-                                    + "before any SQL. Required when using resource-id mode "
-                                    + "where the default database may differ.");
-
     public static final ConfigOption<String> METADATA_JDBC_URL =
             ConfigOptions.key("rest-server.metadata.jdbc-url")
                     .stringType()
@@ -136,6 +126,15 @@ public class RESTCatalogServerOptions {
                                     + "When set, each request's token (from the Authorization header) "
                                     + "is forwarded to this URL for validation. "
                                     + "When not set, authentication is disabled (all requests allowed).");
+
+    public static final ConfigOption<String> HADOOP_USER_NAME =
+            ConfigOptions.key("rest-server.hadoop-user-name")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The Hadoop user name used to access HDFS. "
+                                    + "When set, the HADOOP_USER_NAME environment variable "
+                                    + "will be set at server startup.");
 
     private RESTCatalogServerOptions() {}
 }
