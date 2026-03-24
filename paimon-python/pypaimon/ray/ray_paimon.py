@@ -93,6 +93,8 @@ def write_paimon(
     overwrite: bool = False,
     concurrency: Optional[int] = None,
     ray_remote_args: Optional[Dict[str, Any]] = None,
+    committer: Optional[str] = None,
+    message: Optional[str] = None,
 ) -> None:
     """Write a Ray Dataset to a Paimon table.
 
@@ -103,6 +105,8 @@ def write_paimon(
         overwrite: If ``True``, overwrite existing data in the table.
         concurrency: Optional max number of Ray write tasks to run concurrently.
         ray_remote_args: Optional kwargs passed to ``ray.remote`` in write tasks.
+        committer: Optional committer name for audit tracking.
+        message: Optional commit message for audit tracking.
     """
     from pypaimon.catalog.catalog_factory import CatalogFactory
     from pypaimon.write.ray_datasink import PaimonDatasink
@@ -110,7 +114,8 @@ def write_paimon(
     catalog = CatalogFactory.create(catalog_options)
     table = catalog.get_table(table_identifier)
 
-    datasink = PaimonDatasink(table, overwrite=overwrite)
+    datasink = PaimonDatasink(table, overwrite=overwrite,
+                              committer=committer, message=message)
 
     write_kwargs = {}
     if ray_remote_args is not None:

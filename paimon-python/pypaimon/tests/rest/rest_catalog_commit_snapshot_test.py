@@ -116,7 +116,9 @@ class TestRESTCatalogCommitSnapshot(unittest.TestCase):
                 self.identifier,
                 "test-uuid",
                 self.test_snapshot,
-                self.test_statistics
+                self.test_statistics,
+                None,
+                None
             )
 
     def test_rest_catalog_commit_snapshot_table_not_exist(self):
@@ -320,8 +322,8 @@ class TestRESTCommit(RESTBaseTest):
 
         real_commit = tc.file_store_commit.snapshot_commit.commit
 
-        def commit_then_raise(sn, br, st):
-            real_commit(sn, br, st)
+        def commit_then_raise(sn, st, committer=None, message=None):
+            real_commit(sn, st, committer, message)
             raise RuntimeError("simulated")
 
         with patch.object(tc.file_store_commit.snapshot_commit, 'commit', side_effect=commit_then_raise):

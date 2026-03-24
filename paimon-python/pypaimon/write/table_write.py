@@ -77,10 +77,12 @@ class TableWrite:
         overwrite: bool = False,
         concurrency: Optional[int] = None,
         ray_remote_args: Optional[Dict[str, Any]] = None,
+        committer: Optional[str] = None,
+        message: Optional[str] = None,
     ) -> None:
         """
         Write a Ray Dataset to Paimon table.
-        
+
         Args:
             dataset: Ray Dataset to write. This is a distributed data collection
                 from Ray Data (ray.data.Dataset).
@@ -89,9 +91,12 @@ class TableWrite:
                 By default, dynamically decided based on available resources.
             ray_remote_args: Optional kwargs passed to :func:`ray.remote` in write tasks.
                 For example, ``{"num_cpus": 2, "max_retries": 3}``.
+            committer: Optional committer name for audit tracking.
+            message: Optional commit message for audit tracking.
         """
         from pypaimon.write.ray_datasink import PaimonDatasink
-        datasink = PaimonDatasink(self.table, overwrite=overwrite)
+        datasink = PaimonDatasink(self.table, overwrite=overwrite,
+                                  committer=committer, message=message)
         dataset.write_datasink(
             datasink,
             concurrency=concurrency,

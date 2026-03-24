@@ -49,9 +49,13 @@ class PaimonDatasink(_DatasinkBase):
         self,
         table: "Table",
         overwrite: bool = False,
+        committer: Optional[str] = None,
+        message: Optional[str] = None,
     ):
         self.table = table
         self.overwrite = overwrite
+        self.committer = committer
+        self.message = message
         self._table_name = table.identifier.get_full_name()
         self._writer_builder: Optional["WriteBuilder"] = None
         self._pending_commit_messages: List["CommitMessage"] = []
@@ -144,7 +148,8 @@ class PaimonDatasink(_DatasinkBase):
                 f"for table {self._table_name}"
             )
 
-            table_commit = self._writer_builder.new_commit()
+            table_commit = self._writer_builder.new_commit(
+                committer=self.committer, message=self.message)
             table_commit.commit(non_empty_messages)
 
             self._pending_commit_messages = []
