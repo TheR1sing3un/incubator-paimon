@@ -167,8 +167,7 @@ public class VersionedPartialUpdateE2ETest extends TableTestBase {
             mapData.put(BinaryString.fromString(version), value);
             mvRow = GenericRow.of(BinaryString.fromString(version), value, new GenericMap(mapData));
         }
-        return GenericRow.of(
-                pk, name == null ? null : BinaryString.fromString(name), mvRow);
+        return GenericRow.of(pk, name == null ? null : BinaryString.fromString(name), mvRow);
     }
 
     private GenericRow deleteRow(int pk) {
@@ -214,8 +213,7 @@ public class VersionedPartialUpdateE2ETest extends TableTestBase {
     private static Map<String, Integer> toIntMap(InternalMap map) {
         Map<String, Integer> result = new HashMap<>();
         for (int i = 0; i < map.size(); i++) {
-            result.put(
-                    map.keyArray().getString(i).toString(), map.valueArray().getInt(i));
+            result.put(map.keyArray().getString(i).toString(), map.valueArray().getInt(i));
         }
         return result;
     }
@@ -350,11 +348,9 @@ public class VersionedPartialUpdateE2ETest extends TableTestBase {
 
         Map<Object, Object> mapB = new HashMap<>();
         mapB.put(BinaryString.fromString("v1"), 100);
-        GenericRow mvB =
-                GenericRow.of(BinaryString.fromString("v1"), 100, new GenericMap(mapB));
+        GenericRow mvB = GenericRow.of(BinaryString.fromString("v1"), 100, new GenericMap(mapB));
 
-        GenericRow row1 =
-                GenericRow.of(1, BinaryString.fromString("label1"), mvA, mvB);
+        GenericRow row1 = GenericRow.of(1, BinaryString.fromString("label1"), mvA, mvB);
         write(upsert, ioManager, row1);
 
         // Second write: add v2 to both mv columns
@@ -368,11 +364,9 @@ public class VersionedPartialUpdateE2ETest extends TableTestBase {
 
         Map<Object, Object> mapB2 = new HashMap<>();
         mapB2.put(BinaryString.fromString("v2"), 200);
-        GenericRow mvB2 =
-                GenericRow.of(BinaryString.fromString("v2"), 200, new GenericMap(mapB2));
+        GenericRow mvB2 = GenericRow.of(BinaryString.fromString("v2"), 200, new GenericMap(mapB2));
 
-        GenericRow row2 =
-                GenericRow.of(1, BinaryString.fromString("label2"), mvA2, mvB2);
+        GenericRow row2 = GenericRow.of(1, BinaryString.fromString("label2"), mvA2, mvB2);
         write(upsert, ioManager, row2);
         compact(upsert, BinaryRow.EMPTY_ROW, 0, ioManager, true);
 
@@ -451,8 +445,7 @@ public class VersionedPartialUpdateE2ETest extends TableTestBase {
             GenericRow[] rows = new GenericRow[numPKs];
             for (int pk = 0; pk < numPKs; pk++) {
                 String version = String.format("v%03d", v);
-                rows[pk] =
-                        stringMvRow(pk, "val_" + pk + "_" + v, version, "data_" + pk + "_" + v);
+                rows[pk] = stringMvRow(pk, "val_" + pk + "_" + v, version, "data_" + pk + "_" + v);
             }
             write(upsert, ioManager, rows);
             // Compact every 3 versions to exercise multi-level compaction
