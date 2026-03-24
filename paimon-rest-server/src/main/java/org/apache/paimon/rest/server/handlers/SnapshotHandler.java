@@ -18,6 +18,7 @@
 
 package org.apache.paimon.rest.server.handlers;
 
+import org.apache.paimon.CoreOptions;
 import org.apache.paimon.PagedList;
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.catalog.Catalog;
@@ -41,6 +42,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
@@ -137,13 +139,57 @@ public class SnapshotHandler implements RouteRegistrar {
     public RESTResponse commitSnapshot(Identifier identifier, String body) throws Exception {
         LOG.info("Committing snapshot for table: {}", identifier.getFullName());
         CommitTableRequest request = JsonSerdeUtil.fromJson(body, CommitTableRequest.class);
+        Snapshot snapshot = injectCommitProperties(request);
         boolean success =
                 catalog.commitSnapshot(
-                        identifier,
-                        request.getTableId(),
-                        request.getSnapshot(),
-                        request.getStatistics());
+                        identifier, request.getTableId(), snapshot, request.getStatistics());
         return new CommitTableResponse(success);
+    }
+
+    private Snapshot injectCommitProperties(CommitTableRequest request) {
+        Snapshot snapshot = request.getSnapshot();
+        String committer = request.getCommitter();
+        String message = request.getMessage();
+        if (committer == null && message == null) {
+            return snapshot;
+        }
+
+        Map<String, String> properties =
+                snapshot.properties() != null
+                        ? new HashMap<>(snapshot.properties())
+                        : new HashMap<>();
+        if (committer != null) {
+            properties.putIfAbsent(
+                    CoreOptions.SNAPSHOT_COMMIT_PREFIX + CoreOptions.COMMIT_COMMITTER.key(),
+                    committer);
+        }
+        if (message != null) {
+            properties.putIfAbsent(
+                    CoreOptions.SNAPSHOT_COMMIT_PREFIX + CoreOptions.COMMIT_MESSAGE.key(), message);
+        }
+
+        return new Snapshot(
+                snapshot.version(),
+                snapshot.id(),
+                snapshot.schemaId(),
+                snapshot.baseManifestList(),
+                snapshot.baseManifestListSize(),
+                snapshot.deltaManifestList(),
+                snapshot.deltaManifestListSize(),
+                snapshot.changelogManifestList(),
+                snapshot.changelogManifestListSize(),
+                snapshot.indexManifest(),
+                snapshot.commitUser(),
+                snapshot.commitIdentifier(),
+                snapshot.commitKind(),
+                snapshot.timeMillis(),
+                snapshot.totalRecordCount(),
+                snapshot.deltaRecordCount(),
+                snapshot.changelogRecordCount(),
+                snapshot.watermark(),
+                snapshot.statistics(),
+                properties,
+                snapshot.nextRowId());
     }
 
     public void rollbackTable(Identifier identifier, String body) throws Exception {

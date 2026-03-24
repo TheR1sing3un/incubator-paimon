@@ -3288,6 +3288,12 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PartitionStatistics'
+        committer:
+          type: string
+          nullable: true
+        message:
+          type: string
+          nullable: true
     RollbackTableRequest:
       type: object
       properties:
@@ -3383,6 +3389,11 @@ components:
           format: int64
         statistics:
           type: string
+        properties:
+          type: object
+          additionalProperties:
+            type: string
+          nullable: true
     TableSnapshot:
       type: object
       properties:
