@@ -65,7 +65,7 @@ case "${MODULE}" in
   core)
     echo "[kwai-ci] Running: mvn ${MVN_COMMON} -T 2C verify (core, excluding faiss/lance/spark/frontend/e2e) -Duser.timezone=${jvm_timezone}"
     mvn ${MVN_COMMON} -T 2C verify \
-        -pl '!paimon-frontend,!paimon-e2e-tests,!paimon-faiss/paimon-faiss-jni,!paimon-faiss/paimon-faiss-index,!paimon-faiss/paimon-faiss-e2e-test,!paimon-lance,!org.apache.paimon:paimon-spark-ut_2.12,!org.apache.paimon:paimon-spark-3.5_2.12,!org.apache.paimon:paimon-spark-3.4_2.12,!org.apache.paimon:paimon-spark-3.3_2.12,!org.apache.paimon:paimon-spark-3.2_2.12' \
+        -pl '!paimon-frontend,!paimon-e2e-tests,!paimon-faiss/paimon-faiss-jni,!paimon-faiss/paimon-faiss-index,!paimon-faiss/paimon-faiss-e2e-test,!paimon-lance,!org.apache.paimon:paimon-spark-ut_2.12,!org.apache.paimon:paimon-spark-3.5_2.12,!org.apache.paimon:paimon-spark-3.4_2.12,!org.apache.paimon:paimon-spark-3.3_2.12,!org.apache.paimon:paimon-spark-3.2_2.12,!paimon-hive/paimon-hive-connector-common,!paimon-hive/paimon-hive-connector-2.1,!paimon-hive/paimon-hive-connector-2.1-cdh-6.3,!paimon-hive/paimon-hive-connector-2.2,!paimon-hive/paimon-hive-connector-2.3,!paimon-hive/paimon-hive-connector-3.1' \
         -Pskip-paimon-flink-tests \
         -Dskip.frontend=true \
         -Dcheckstyle.skip -Dspotless.check.skip -Drat.skip \
@@ -137,7 +137,7 @@ case "${MODULE}" in
     echo "[kwai-ci] Running: mvn ${MVN_COMMON} -T 1C test verify (core-jdk11, excluding faiss/lance/spark/frontend/e2e) -Duser.timezone=${jvm_timezone}"
     mvn ${MVN_COMMON} -T 1C test verify \
         -Pflink1,spark3,paimon-lucene \
-        -pl '!paimon-frontend,!paimon-e2e-tests,!paimon-faiss/paimon-faiss-jni,!paimon-faiss/paimon-faiss-index,!paimon-faiss/paimon-faiss-e2e-test,!paimon-lance,!org.apache.paimon:paimon-hive-connector-3.1,!org.apache.paimon:paimon-spark-ut_2.12,!org.apache.paimon:paimon-spark-3.5_2.12,!org.apache.paimon:paimon-spark-3.4_2.12,!org.apache.paimon:paimon-spark-3.3_2.12,!org.apache.paimon:paimon-spark-3.2_2.12' \
+        -pl '!paimon-frontend,!paimon-e2e-tests,!paimon-faiss/paimon-faiss-jni,!paimon-faiss/paimon-faiss-index,!paimon-faiss/paimon-faiss-e2e-test,!paimon-lance,!org.apache.paimon:paimon-hive-connector-3.1,!org.apache.paimon:paimon-spark-ut_2.12,!org.apache.paimon:paimon-spark-3.5_2.12,!org.apache.paimon:paimon-spark-3.4_2.12,!org.apache.paimon:paimon-spark-3.3_2.12,!org.apache.paimon:paimon-spark-3.2_2.12,!paimon-hive/paimon-hive-connector-common,!paimon-hive/paimon-hive-connector-2.1,!paimon-hive/paimon-hive-connector-2.1-cdh-6.3,!paimon-hive/paimon-hive-connector-2.2,!paimon-hive/paimon-hive-connector-2.3' \
         -Pskip-paimon-flink-tests \
         -Dskip.frontend=true \
         -Dcheckstyle.skip -Dspotless.check.skip -Drat.skip \

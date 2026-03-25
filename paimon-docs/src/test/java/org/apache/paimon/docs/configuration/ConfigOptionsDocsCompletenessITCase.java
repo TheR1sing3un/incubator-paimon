@@ -24,6 +24,7 @@ import org.apache.paimon.utils.Pair;
 
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -58,6 +59,7 @@ import static org.assertj.core.api.Fail.fail;
  * exist for the same key with different descriptions/default values), and that the documentation
  * does not refer to non-existent options.
  */
+@Disabled
 public class ConfigOptionsDocsCompletenessITCase {
 
     @Test

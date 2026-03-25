@@ -50,7 +50,8 @@ case object Delete extends RowLevelOp {
     MergeEngine.DEDUPLICATE,
     MergeEngine.PARTIAL_UPDATE,
     MergeEngine.AGGREGATE,
-    MergeEngine.FIRST_ROW)
+    MergeEngine.FIRST_ROW,
+    MergeEngine.VERSIONED_PARTIAL_UPDATE)
 
   override val supportAppendOnlyTable: Boolean = true
 

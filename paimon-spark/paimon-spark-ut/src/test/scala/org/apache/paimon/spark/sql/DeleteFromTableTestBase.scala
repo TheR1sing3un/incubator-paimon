@@ -242,7 +242,9 @@ abstract class DeleteFromTableTestBase extends PaimonSparkTestBase {
           spark.sql("INSERT INTO T VALUES (2, 'b', NULL)")
           spark.sql("INSERT INTO T VALUES (1, NULL, 16)")
 
-          if (mergeEngine != MergeEngine.DEDUPLICATE) {
+          if (
+            mergeEngine != MergeEngine.DEDUPLICATE && mergeEngine != MergeEngine.VERSIONED_PARTIAL_UPDATE
+          ) {
             assertThatThrownBy(() => spark.sql("DELETE FROM T WHERE id = 1"))
               .hasMessageContaining("please use 'COMPACT' procedure first")
             spark.sql("CALL sys.compact(table => 'T')")
