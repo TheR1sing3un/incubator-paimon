@@ -231,3 +231,42 @@ class TestRayTagSnapshot:
         assert tag_result.count() == 2
         df = tag_result.to_pandas()
         assert sorted(df["user_id"].tolist()) == [1, 2]
+
+    def test_ray_read_paimon_from_tag_name(
+        self, catalog, unique_db, pa_schema, catalog_options, ray_cluster
+    ):
+        """Test reading from a tagged snapshot via read_paimon API."""
+        tbl_id = f"{unique_db}.ray_read_tag_name_api"
+        schema = Schema.from_pyarrow_schema(pa_schema)
+        catalog.create_table(tbl_id, schema, False)
+        table = catalog.get_table(tbl_id)
+
+        # Write first batch
+        data1 = pa.Table.from_pydict({
+            "user_id": [1, 2],
+            "item_id": [101, 102],
+            "behavior": ["buy", "click"],
+            "dt": ["p1", "p1"],
+        }, schema=pa_schema)
+        _write_ray(table, data1)
+
+        catalog.create_tag(tbl_id, "v1")
+
+        # Write second batch
+        data2 = pa.Table.from_pydict({
+            "user_id": [3, 4],
+            "item_id": [103, 104],
+            "behavior": ["view", "buy"],
+            "dt": ["p2", "p2"],
+        }, schema=pa_schema)
+        _write_ray(table, data2)
+
+        # Latest should have 4 rows
+        ds_all = read_paimon(tbl_id, catalog_options)
+        assert ds_all.count() == 4
+
+        # Read from tag should have 2 rows
+        ds_tag = read_paimon(tbl_id, catalog_options, tag_name="v1")
+        assert ds_tag.count() == 2
+        df = ds_tag.to_pandas()
+        assert sorted(df["user_id"].tolist()) == [1, 2]
