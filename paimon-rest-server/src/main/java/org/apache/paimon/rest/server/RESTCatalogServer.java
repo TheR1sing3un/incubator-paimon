@@ -20,7 +20,9 @@ package org.apache.paimon.rest.server;
 
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogContext;
-import org.apache.paimon.catalog.CatalogFactory;
+import org.apache.paimon.catalog.RESTFileSystemCatalog;
+import org.apache.paimon.fs.FileIO;
+import org.apache.paimon.fs.Path;
 import org.apache.paimon.options.CatalogOptions;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.rest.server.auth.AuthChannelHandler;
@@ -81,14 +83,9 @@ public class RESTCatalogServer {
         }
 
         if (this.catalog == null) {
-            if (!options.containsKey(CatalogOptions.METASTORE.key())) {
-                throw new IllegalArgumentException(
-                        "metastore is required. Set it via --"
-                                + CatalogOptions.METASTORE.key()
-                                + " (e.g. filesystem, hive, jdbc).");
-            }
             CatalogContext catalogContext = CatalogContext.create(options);
-            this.catalog = CatalogFactory.createCatalog(catalogContext);
+            FileIO fileIO = FileIO.get(new Path(warehouse), catalogContext);
+            this.catalog = new RESTFileSystemCatalog(fileIO, new Path(warehouse), catalogContext);
         }
 
         String host = options.get(RESTCatalogServerOptions.HOST);

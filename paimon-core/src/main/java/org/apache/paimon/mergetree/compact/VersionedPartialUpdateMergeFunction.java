@@ -416,7 +416,7 @@ public class VersionedPartialUpdateMergeFunction implements MergeFunction<KeyVal
                         "Multi-version field '%s' MAP key must be STRING type.",
                         mvName);
                 checkArgument(
-                        mvRowType.getTypeAt(1).equals(mapType.getValueType()),
+                        mvRowType.getTypeAt(1).equalsIgnoreFieldId(mapType.getValueType()),
                         "Multi-version field '%s' latest_value type (%s) must match MAP value type (%s).",
                         mvName,
                         mvRowType.getTypeAt(1),

@@ -252,6 +252,19 @@ under the License.
             <version>${log4j.version}</version>
         </dependency>
 
+        <!--
+            logback-classic is needed on the classpath at runtime because
+            KsDataSource's Ktrace profiler references logback classes
+            (e.g. ch.qos.logback.classic.spi.IThrowableProxy).
+            Log routing is still handled by log4j2 via log4j-slf4j-impl.
+        -->
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <version>1.2.12</version>
+            <scope>runtime</scope>
+        </dependency>
+
         <!-- Connection pool -->
         <dependency>
             <groupId>com.zaxxer</groupId>
@@ -388,7 +401,7 @@ under the License.
                             <outputDirectory>${project.build.directory}/lib</outputDirectory>
                             <includeScope>runtime</includeScope>
                             <excludeScope>test</excludeScope>
-                            <excludeArtifactIds>infra-logger,logback-classic,logback-classic-kwai,logback-core,slf4j-log4j12</excludeArtifactIds>
+                            <excludeArtifactIds>infra-logger,logback-classic-kwai,slf4j-log4j12</excludeArtifactIds>
                         </configuration>
                     </execution>
                 </executions>

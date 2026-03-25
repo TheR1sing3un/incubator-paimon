@@ -27,6 +27,7 @@ import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.data.InternalMap;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.options.Options;
+import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.types.RowKind;
 import org.apache.paimon.types.RowType;
@@ -815,5 +816,49 @@ public class VersionedPartialUpdateMergeFunctionTest {
         InternalRow resMv2 = result.value().getRow(2, 3);
         assertThat(resMv2.getString(0).toString()).isEqualTo("a");
         assertThat(resMv2.getInt(1)).isEqualTo(42);
+    }
+
+    @Test
+    void testValidationPassesWhenLatestValueAndMapValueHaveDifferentFieldIds() {
+        // Simulate the case where LATEST_VALUE and MAP value ROW types have the same
+        // field names and types but different field IDs (as happens when REST catalog
+        // parses the type string independently for each occurrence).
+        RowType latestValueType =
+                new RowType(
+                        Arrays.asList(
+                                new DataField(
+                                        0, "AUDIO_CLASSIFICATION_VERSION", DataTypes.STRING()),
+                                new DataField(1, "AUDIO_CLASSIFICATION_INFO", DataTypes.STRING())));
+        RowType mapValueType =
+                new RowType(
+                        Arrays.asList(
+                                new DataField(
+                                        2, "AUDIO_CLASSIFICATION_VERSION", DataTypes.STRING()),
+                                new DataField(3, "AUDIO_CLASSIFICATION_INFO", DataTypes.STRING())));
+
+        RowType mvRowType =
+                new RowType(
+                        Arrays.asList(
+                                new DataField(4, "LATEST_VERSION", DataTypes.STRING()),
+                                new DataField(5, "LATEST_VALUE", latestValueType),
+                                new DataField(
+                                        6,
+                                        "ALL_VERSIONED_VALUES",
+                                        DataTypes.MAP(DataTypes.STRING(), mapValueType))));
+        RowType rowType =
+                new RowType(
+                        Arrays.asList(
+                                new DataField(7, "pk", DataTypes.INT()),
+                                new DataField(8, "audio_classification", mvRowType)));
+
+        Options options = new Options();
+        options.set(
+                CoreOptions.VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS, "audio_classification");
+        options.set(CoreOptions.DELETION_VECTORS_ENABLED, true);
+
+        // Before the fix, this would throw because equals() compared field IDs.
+        // After the fix (equalsIgnoreFieldId), this should pass validation.
+        VersionedPartialUpdateMergeFunction.factory(
+                options, rowType, Collections.singletonList("pk"));
     }
 }

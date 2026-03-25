@@ -31,10 +31,12 @@ class LookupCompactionTest extends PaimonSparkTestBase {
     CoreOptions.MergeEngine.values().foreach {
       mergeEngine =>
         withTable("T") {
-          val extraOptions = if (mergeEngine == CoreOptions.MergeEngine.AGGREGATE) {
-            s", 'fields.count.aggregate-function' = 'sum'"
-          } else {
-            ""
+          val extraOptions = mergeEngine match {
+            case CoreOptions.MergeEngine.AGGREGATE =>
+              s", 'fields.count.aggregate-function' = 'sum'"
+            case CoreOptions.MergeEngine.VERSIONED_PARTIAL_UPDATE =>
+              s", 'deletion-vectors.enabled' = 'true', 'sequence.snapshot-ordering' = 'true'"
+            case _ => ""
           }
 
           spark.sql(
@@ -67,7 +69,8 @@ class LookupCompactionTest extends PaimonSparkTestBase {
 
           val df = spark.sql("SELECT * FROM T ORDER BY id")
           mergeEngine match {
-            case CoreOptions.MergeEngine.DEDUPLICATE | CoreOptions.MergeEngine.PARTIAL_UPDATE =>
+            case CoreOptions.MergeEngine.DEDUPLICATE | CoreOptions.MergeEngine.PARTIAL_UPDATE |
+                CoreOptions.MergeEngine.VERSIONED_PARTIAL_UPDATE =>
               checkAnswer(df, Row(1, "aaaaaaaaaaa", 1) :: Row(2, "b", 22) :: Row(3, "c", 3) :: Nil)
             case CoreOptions.MergeEngine.AGGREGATE =>
               checkAnswer(df, Row(1, "aaaaaaaaaaa", 1) :: Row(2, "b", 24) :: Row(3, "c", 3) :: Nil)

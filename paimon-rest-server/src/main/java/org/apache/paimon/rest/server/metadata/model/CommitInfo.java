@@ -25,7 +25,6 @@ import org.apache.paimon.rest.RESTResponse;
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonCreator;
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonGetter;
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonInclude;
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 
 import javax.annotation.Nullable;
@@ -41,7 +40,6 @@ import java.util.Map;
  * from the {@code paimon.commit.metadata.*} property namespace.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
-@JsonInclude(JsonInclude.Include.NON_NULL)
 public class CommitInfo implements RESTResponse {
 
     private static final String FIELD_SNAPSHOT_ID = "snapshotId";
@@ -115,9 +113,9 @@ public class CommitInfo implements RESTResponse {
     public static CommitInfo fromSnapshot(Snapshot snapshot) {
         Map<String, String> props = snapshot.properties();
 
-        String committer = getProperty(props, PROP_COMMITTER);
+        String committer = getProperty(props, PROP_COMMITTER, "");
 
-        String message = getProperty(props, PROP_MESSAGE);
+        String message = getProperty(props, PROP_MESSAGE, "");
 
         Map<String, String> metadata = extractCommitMetadata(props);
 
@@ -202,6 +200,12 @@ public class CommitInfo implements RESTResponse {
             return null;
         }
         return props.get(fullKey);
+    }
+
+    static String getProperty(
+            @Nullable Map<String, String> props, String fullKey, String defaultValue) {
+        String result = getProperty(props, fullKey);
+        return result == null ? defaultValue : result;
     }
 
     static Map<String, String> extractCommitMetadata(@Nullable Map<String, String> props) {

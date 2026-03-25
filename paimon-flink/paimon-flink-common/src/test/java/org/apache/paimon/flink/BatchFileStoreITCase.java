@@ -1286,7 +1286,7 @@ public class BatchFileStoreITCase extends CatalogITCaseBase {
         sql(
                 "CREATE TABLE test_table (a INT, b STRING, pt STRING, PRIMARY KEY (a, pt) NOT ENFORCED) "
                         + "PARTITIONED BY (pt) WITH ('bucket' = '4', 'deletion-vectors.enabled' = 'true', "
-                        + "'write-only' = 'true', 'write-buffer-spillable' = 'false', 'page-size' = '64 b', "
+                        + "'write-only' = 'true', 'write-buffer-spillable' = 'false', 'page-size' = '128 b', "
                         + "'write-buffer-size' = '1 kb')");
         sql("INSERT INTO test_table VALUES (1, 'A', '2025-12-01')");
         assertThat(sql("SELECT * FROM test_table")).isEmpty();

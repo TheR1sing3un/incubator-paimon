@@ -357,7 +357,11 @@ public class RouteDispatcher {
         if (body.length() <= MAX_REQUEST_SUMMARY_LENGTH) {
             return body;
         }
-        return body.substring(0, MAX_REQUEST_SUMMARY_LENGTH);
+        // Wrap the truncated text as a JSON string so the column stays valid JSON
+        String truncated = body.substring(0, MAX_REQUEST_SUMMARY_LENGTH);
+        // Escape for JSON string value: replace \ with \\ and " with \"
+        truncated = truncated.replace("\\", "\\\\").replace("\"", "\\\"");
+        return "{\"truncated\":\"" + truncated + "...\"}";
     }
 
     @Nullable

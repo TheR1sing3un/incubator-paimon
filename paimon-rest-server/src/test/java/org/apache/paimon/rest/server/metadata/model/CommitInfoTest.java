@@ -104,7 +104,7 @@ class CommitInfoTest {
 
         CommitInfo info = CommitInfo.fromSnapshot(snapshot);
 
-        assertThat(info.committer()).isEqualTo("test-commit-user");
+        assertThat(info.committer()).isEmpty();
         assertThat(info.message()).isEqualTo("some message");
     }
 
@@ -135,8 +135,8 @@ class CommitInfoTest {
 
         CommitInfo info = CommitInfo.fromSnapshot(snapshot);
 
-        assertThat(info.committer()).isEqualTo("test-commit-user");
-        assertThat(info.message()).isNull();
+        assertThat(info.committer()).isEmpty();
+        assertThat(info.message()).isEmpty();
         assertThat(info.metadata()).isNull();
     }
 

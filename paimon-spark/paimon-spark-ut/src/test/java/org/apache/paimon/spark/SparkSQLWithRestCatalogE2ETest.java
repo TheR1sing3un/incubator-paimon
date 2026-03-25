@@ -19,7 +19,7 @@
 package org.apache.paimon.spark;
 
 import org.apache.paimon.catalog.Catalog;
-import org.apache.paimon.catalog.FileSystemCatalog;
+import org.apache.paimon.catalog.RESTFileSystemCatalog;
 import org.apache.paimon.fs.local.LocalFileIO;
 import org.apache.paimon.options.CatalogOptions;
 import org.apache.paimon.options.Options;
@@ -81,7 +81,7 @@ public class SparkSQLWithRestCatalogE2ETest {
         LocalFileIO fileIO = new LocalFileIO();
         org.apache.paimon.fs.Path warehousePath = new org.apache.paimon.fs.Path(tempDir.toString());
         fileIO.checkOrMkdirs(warehousePath);
-        Catalog catalog = new FileSystemCatalog(fileIO, warehousePath);
+        Catalog catalog = new RESTFileSystemCatalog(fileIO, warehousePath);
 
         restCatalogServer = new RESTCatalogServer(options, catalog);
         restCatalogServer.start();

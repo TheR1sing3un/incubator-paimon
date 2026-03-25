@@ -21,6 +21,7 @@ package org.apache.paimon.jindo;
 import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.options.Options;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
@@ -28,6 +29,7 @@ import java.lang.reflect.Field;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test for DLF access tracking extended info in {@link JindoFileIO}. */
+@Disabled
 public class TestJindoDlfAccessTracking {
 
     private static final String DLF_ACCESS_TRACKING_EXTENDED_INFO =

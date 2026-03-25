@@ -444,9 +444,9 @@ public class WriterOperatorTest {
 
         Options options = new Options();
         options.set("bucket", "1");
-        options.set("write-buffer-size", "256 b");
+        options.set("write-buffer-size", "512 b");
         options.set("write-buffer-spillable", "false");
-        options.set("page-size", "32 b");
+        options.set("page-size", "64 b");
 
         FileStoreTable fileStoreTable =
                 createFileStoreTable(

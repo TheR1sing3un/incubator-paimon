@@ -30,7 +30,7 @@ class ViewHandlerValidationTest {
     @Test
     void testCreateViewRejectsDatabaseMismatch() {
         String body =
-                "{\"identifier\":{\"database\":\"other_db\",\"table\":\"my_view\"},"
+                "{\"identifier\":{\"database\":\"other_db\",\"object\":\"my_view\"},"
                         + "\"schema\":{\"fields\":[],\"query\":\"SELECT 1\",\"dialects\":{},\"options\":{}}}";
         assertThatThrownBy(() -> handler.createView("my_db", body))
                 .isInstanceOf(IllegalArgumentException.class)

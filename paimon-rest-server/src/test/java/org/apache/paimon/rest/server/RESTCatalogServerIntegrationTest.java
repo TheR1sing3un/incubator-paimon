@@ -19,8 +19,8 @@
 package org.apache.paimon.rest.server;
 
 import org.apache.paimon.catalog.Catalog;
-import org.apache.paimon.catalog.FileSystemCatalog;
 import org.apache.paimon.catalog.Identifier;
+import org.apache.paimon.catalog.RESTFileSystemCatalog;
 import org.apache.paimon.data.BinaryString;
 import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.fs.local.LocalFileIO;
@@ -82,7 +82,7 @@ class RESTCatalogServerIntegrationTest {
         LocalFileIO fileIO = new LocalFileIO();
         org.apache.paimon.fs.Path warehousePath = new org.apache.paimon.fs.Path(tempDir.toString());
         fileIO.checkOrMkdirs(warehousePath);
-        Catalog catalog = new FileSystemCatalog(fileIO, warehousePath);
+        Catalog catalog = new RESTFileSystemCatalog(fileIO, warehousePath);
 
         server = new RESTCatalogServer(options, catalog);
         server.start();

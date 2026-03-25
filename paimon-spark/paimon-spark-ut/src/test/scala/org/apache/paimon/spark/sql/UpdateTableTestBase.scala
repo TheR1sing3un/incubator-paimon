@@ -171,6 +171,8 @@ abstract class UpdateTableTestBase extends PaimonSparkTestBase {
         test(s"test update with merge engine $mergeEngine") {
           val options = if ("first-row".equals(mergeEngine.toString)) {
             s"'primary-key' = 'id', 'merge-engine' = '$mergeEngine', 'changelog-producer' = 'lookup'"
+          } else if ("versioned-partial-update".equals(mergeEngine.toString)) {
+            s"'primary-key' = 'id', 'merge-engine' = '$mergeEngine', 'deletion-vectors.enabled' = 'true', 'sequence.snapshot-ordering' = 'true'"
           } else {
             s"'primary-key' = 'id', 'merge-engine' = '$mergeEngine'"
           }

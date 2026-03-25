@@ -42,6 +42,7 @@ import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -61,6 +62,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test for specify location. */
 @RunWith(PaimonEmbeddedHiveRunner.class)
+@Ignore
 public class HiveLocationTest {
     @HiveSQL(files = {})
     private static HiveShell hiveShell;

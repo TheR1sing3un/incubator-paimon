@@ -91,9 +91,9 @@ public class KeyValueThinDataFileWriterImpl extends KeyValueDataFileWriter {
     @Override
     Pair<SimpleColStats[], SimpleColStats[]> fetchKeyValueStats(SimpleColStats[] rowStats) {
         int numKeyFields = keyType.getFieldCount();
-        // In thin mode, there is no key stats in rowStats, so we only jump
-        // _SEQUENCE_NUMBER_ and _ROW_KIND_ stats. Therefore, the 'from' value is 2.
-        SimpleColStats[] valFieldStats = Arrays.copyOfRange(rowStats, 2, rowStats.length);
+        // In thin mode, there is no key stats in rowStats, so we need to skip the 3 meta
+        // fields: _SEQUENCE_NUMBER_, _VALUE_KIND_, and _COMMIT_SNAPSHOT_ID_.
+        SimpleColStats[] valFieldStats = Arrays.copyOfRange(rowStats, 3, rowStats.length);
         // Thin mode on, so need to map value stats to key stats.
         SimpleColStats[] keyStats = new SimpleColStats[numKeyFields];
         for (int i = 0; i < keyStatMapping.length; i++) {

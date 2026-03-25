@@ -30,7 +30,7 @@ class TableHandlerValidationTest {
     @Test
     void testCreateTableRejectsDatabaseMismatch() {
         String body =
-                "{\"identifier\":{\"database\":\"other_db\",\"table\":\"my_table\"},"
+                "{\"identifier\":{\"database\":\"other_db\",\"object\":\"my_table\"},"
                         + "\"schema\":{\"fields\":[],\"partitionKeys\":[],\"primaryKeys\":[],\"options\":{}}}";
         assertThatThrownBy(() -> handler.createTable("my_db", body))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -40,7 +40,7 @@ class TableHandlerValidationTest {
     @Test
     void testRegisterTableRejectsDatabaseMismatch() {
         String body =
-                "{\"identifier\":{\"database\":\"other_db\",\"table\":\"my_table\"},"
+                "{\"identifier\":{\"database\":\"other_db\",\"object\":\"my_table\"},"
                         + "\"path\":\"/tmp/table\"}";
         assertThatThrownBy(() -> handler.registerTable("my_db", body))
                 .isInstanceOf(IllegalArgumentException.class)

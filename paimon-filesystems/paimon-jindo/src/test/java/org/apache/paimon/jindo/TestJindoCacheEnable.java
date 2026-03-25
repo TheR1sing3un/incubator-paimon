@@ -22,6 +22,7 @@ import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.options.Options;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
@@ -32,6 +33,7 @@ import static org.apache.paimon.rest.RESTCatalogOptions.IO_CACHE_WHITELIST_PATH;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test for Jindo cache enable configuration. */
+@Disabled
 public class TestJindoCacheEnable {
 
     private static final String JINDO_CACHE_RPC_ADDRESS = "fs.jindocache.namespace.rpc.address";

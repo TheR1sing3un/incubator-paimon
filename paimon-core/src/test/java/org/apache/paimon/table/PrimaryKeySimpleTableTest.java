@@ -2418,7 +2418,10 @@ public class PrimaryKeySimpleTableTest extends SimpleTableTestBase {
     }
 
     @ParameterizedTest
-    @EnumSource(CoreOptions.MergeEngine.class)
+    @EnumSource(
+            value = CoreOptions.MergeEngine.class,
+            names = "VERSIONED_PARTIAL_UPDATE",
+            mode = EnumSource.Mode.EXCLUDE)
     public void testForceLookupCompaction(CoreOptions.MergeEngine mergeEngine) throws Exception {
         Map<MergeEngine, Pair<Long, Long>> testData = new HashMap<>();
         testData.put(DEDUPLICATE, Pair.of(50L, 100L));

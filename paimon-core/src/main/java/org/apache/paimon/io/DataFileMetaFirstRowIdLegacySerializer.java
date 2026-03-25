@@ -23,6 +23,7 @@ import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.manifest.FileSource;
 import org.apache.paimon.stats.SimpleStats;
+import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.ObjectSerializer;
 
 import static org.apache.paimon.utils.InternalRowUtils.fromStringArrayData;
@@ -36,7 +37,14 @@ public class DataFileMetaFirstRowIdLegacySerializer extends ObjectSerializer<Dat
     private static final long serialVersionUID = 1L;
 
     public DataFileMetaFirstRowIdLegacySerializer() {
-        super(DataFileMeta.SCHEMA);
+        super(schemaWithoutWriteColsAndLaterFields());
+    }
+
+    private static RowType schemaWithoutWriteColsAndLaterFields() {
+        // Use only the first 20 fields of the current schema (indices 0-19),
+        // but field 19 (writeCols) is included in the RowType even though
+        // it's always serialized as null in this legacy format.
+        return new RowType(false, DataFileMeta.SCHEMA.getFields().subList(0, 20));
     }
 
     @Override

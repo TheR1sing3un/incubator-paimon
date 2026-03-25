@@ -16,28 +16,28 @@
  * limitations under the License.
  */
 
-package org.apache.paimon.rest.server.metadata.mapper;
+package org.apache.paimon.catalog;
 
-import org.apache.ibatis.annotations.Param;
+import org.apache.paimon.fs.FileIO;
+import org.apache.paimon.fs.Path;
 
-import java.util.Map;
+/** Loader to create {@link RESTFileSystemCatalog}. */
+public class RESTFileSystemCatalogLoader implements CatalogLoader {
 
-/** MyBatis mapper for paimon_database table. */
-public interface DatabaseMapper {
+    private static final long serialVersionUID = 1L;
 
-    void insert(
-            @Param("databaseName") String databaseName,
-            @Param("properties") String properties,
-            @Param("createdBy") String createdBy,
-            @Param("createdAt") long createdAt,
-            @Param("updatedAt") long updatedAt);
+    private final FileIO fileIO;
+    private final Path warehouse;
+    private final CatalogContext context;
 
-    Map<String, Object> selectByName(@Param("databaseName") String databaseName);
+    public RESTFileSystemCatalogLoader(FileIO fileIO, Path warehouse, CatalogContext context) {
+        this.fileIO = fileIO;
+        this.warehouse = warehouse;
+        this.context = context;
+    }
 
-    void updateProperties(
-            @Param("databaseName") String databaseName,
-            @Param("properties") String properties,
-            @Param("updatedAt") long updatedAt);
-
-    void deleteByName(@Param("databaseName") String databaseName);
+    @Override
+    public Catalog load() {
+        return new RESTFileSystemCatalog(fileIO, warehouse, context);
+    }
 }

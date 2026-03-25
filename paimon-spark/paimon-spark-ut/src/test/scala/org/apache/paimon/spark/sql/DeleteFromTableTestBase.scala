@@ -225,7 +225,10 @@ abstract class DeleteFromTableTestBase extends PaimonSparkTestBase {
       {
         test(s"test delete with merge engine $mergeEngine") {
           val otherOptions =
-            if ("first-row".equals(mergeEngine.toString)) "'changelog-producer' = 'lookup'," else ""
+            if ("first-row".equals(mergeEngine.toString)) "'changelog-producer' = 'lookup',"
+            else if ("versioned-partial-update".equals(mergeEngine.toString))
+              "'deletion-vectors.enabled' = 'true', 'sequence.snapshot-ordering' = 'true',"
+            else ""
           spark.sql(s"""
                        |CREATE TABLE T (id INT, name STRING, age INT)
                        |TBLPROPERTIES (
@@ -459,6 +462,8 @@ abstract class DeleteFromTableTestBase extends PaimonSparkTestBase {
           val otherOptions = mergeEngine match {
             case MergeEngine.PARTIAL_UPDATE => "'partial-update.remove-record-on-delete' = 'true',"
             case MergeEngine.AGGREGATE => "'aggregation.remove-record-on-delete' = 'true',"
+            case MergeEngine.VERSIONED_PARTIAL_UPDATE =>
+              "'deletion-vectors.enabled' = 'true', 'sequence.snapshot-ordering' = 'true',"
             case _ => ""
           }
 

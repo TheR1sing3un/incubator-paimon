@@ -145,7 +145,7 @@ public class PaimonInputSplitTest {
 
         ChainSplit chainSplit =
                 new ChainSplit(
-                        logicalPartition, dataFiles, fileBucketPathMapping, fileBranchMapping);
+                        logicalPartition, dataFiles, fileBranchMapping, fileBucketPathMapping);
         PaimonInputSplit split = new PaimonInputSplit(tempDir.toString(), chainSplit, null);
 
         PaimonInputSplit actual = writeAndReadSplit(split);

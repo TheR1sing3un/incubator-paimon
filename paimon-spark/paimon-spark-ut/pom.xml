@@ -93,6 +93,26 @@ under the License.
         <artifactId>paimon-rest-server</artifactId>
         <version>1.4-SNAPSHOT</version>
         <scope>test</scope>
+        <exclusions>
+          <exclusion>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-slf4j-impl</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-1.2-api</artifactId>
+          </exclusion>
+          <!-- logback-classic-kwai contains StaticMarkerBinder without getSingleton(),
+               which conflicts with log4j-slf4j-impl's StaticLoggerBinder -->
+          <exclusion>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic-kwai</artifactId>
+          </exclusion>
+        </exclusions>
       </dependency>
       <dependency>
         <groupId>org.apache.paimon</groupId>

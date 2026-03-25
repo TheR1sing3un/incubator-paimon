@@ -21,10 +21,25 @@ package org.apache.paimon.spark.sql
 import org.apache.paimon.spark.PaimonSparkTestBase
 
 import org.apache.spark.sql.Row
+import org.scalatest.BeforeAndAfterAll
 
-class LanceFormatTest extends PaimonSparkTestBase {
+class LanceFormatTest extends PaimonSparkTestBase with BeforeAndAfterAll {
+
+  private var lanceAvailable: Boolean = false
+
+  override def beforeAll(): Unit = {
+    super.beforeAll()
+    lanceAvailable =
+      try {
+        Class.forName("com.lancedb.lance.file.LanceFileWriter")
+        true
+      } catch {
+        case _: Throwable => false
+      }
+  }
 
   test("Lance format: read and write") {
+    assume(lanceAvailable, "Lance native library is not available, skipping")
     withTable("t") {
       sql(
         "CREATE TABLE t (a INT, b STRING, scores ARRAY<DOUBLE>) TBLPROPERTIES ('file.format' = 'lance')")

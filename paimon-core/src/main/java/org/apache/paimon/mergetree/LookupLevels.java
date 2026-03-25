@@ -153,8 +153,15 @@ public class LookupLevels<T> implements Levels.DropFileCallback, Closeable {
         LookupFileCreationResult lookupFileCreation = getOrCreateLookupFile(file);
         LookupFile lookupFile = lookupFileCreation.lookupFile;
 
-        byte[] keyBytes = keySerializer.serializeToBytes(key);
-        byte[] valueBytes = lookupFile.get(keyBytes);
+        byte[] valueBytes;
+        try {
+            byte[] keyBytes = keySerializer.serializeToBytes(key);
+            valueBytes = lookupFile.get(keyBytes);
+        } finally {
+            if (lookupFileCreation.newCreatedLookupFile) {
+                addLocalFile(file, lookupFile);
+            }
+        }
         if (valueBytes == null) {
             return null;
         }
@@ -166,6 +173,9 @@ public class LookupLevels<T> implements Levels.DropFileCallback, Closeable {
     public boolean preheat(DataFileMeta file) {
         try {
             LookupFileCreationResult lookupFileCreation = getOrCreateLookupFile(file);
+            if (lookupFileCreation.newCreatedLookupFile) {
+                addLocalFile(file, lookupFileCreation.lookupFile);
+            }
             return lookupFileCreation.newCreatedLookupFile;
         } catch (IOException e) {
             return false;
@@ -188,7 +198,6 @@ public class LookupLevels<T> implements Levels.DropFileCallback, Closeable {
                 }
 
                 lookupFile = createLookupFile(file);
-                addLocalFile(file, lookupFile);
                 return new LookupFileCreationResult(lookupFile, true);
             }
         } finally {

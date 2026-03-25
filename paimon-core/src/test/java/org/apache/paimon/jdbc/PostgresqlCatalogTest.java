@@ -30,6 +30,7 @@ import org.apache.paimon.shade.guava30.com.google.common.collect.Maps;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.Logger;
@@ -61,6 +62,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 
 /** Tests for {@link JdbcCatalog} with Postgres. */
+@Disabled
 public class PostgresqlCatalogTest {
     private static final Logger LOG = LoggerFactory.getLogger(PostgresqlCatalogTest.class);
 

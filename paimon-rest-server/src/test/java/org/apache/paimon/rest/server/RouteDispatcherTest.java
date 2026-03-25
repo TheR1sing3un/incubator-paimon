@@ -19,7 +19,7 @@
 package org.apache.paimon.rest.server;
 
 import org.apache.paimon.catalog.Catalog;
-import org.apache.paimon.catalog.FileSystemCatalog;
+import org.apache.paimon.catalog.RESTFileSystemCatalog;
 import org.apache.paimon.fs.local.LocalFileIO;
 import org.apache.paimon.rest.server.auth.AuthContext;
 
@@ -50,7 +50,7 @@ class RouteDispatcherTest {
         LocalFileIO fileIO = new LocalFileIO();
         org.apache.paimon.fs.Path warehousePath = new org.apache.paimon.fs.Path(tempDir.toString());
         fileIO.checkOrMkdirs(warehousePath);
-        Catalog catalog = new FileSystemCatalog(fileIO, warehousePath);
+        Catalog catalog = new RESTFileSystemCatalog(fileIO, warehousePath);
         dispatcher = new RouteDispatcher(catalog, "test", tempDir.toString());
     }
 
@@ -80,7 +80,7 @@ class RouteDispatcherTest {
                         "/v1/test/databases",
                         "{\"name\": \"dispatch_test_db\", \"options\": {}}");
         RouteResult result = dispatcher.dispatch(AuthContext.ANONYMOUS, request);
-        assertThat(result.status()).isEqualTo(201);
+        assertThat(result.status()).isEqualTo(200);
         request.release();
     }
 

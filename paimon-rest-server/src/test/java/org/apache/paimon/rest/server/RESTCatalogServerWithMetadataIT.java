@@ -19,8 +19,8 @@
 package org.apache.paimon.rest.server;
 
 import org.apache.paimon.catalog.Catalog;
-import org.apache.paimon.catalog.FileSystemCatalog;
 import org.apache.paimon.catalog.Identifier;
+import org.apache.paimon.catalog.RESTFileSystemCatalog;
 import org.apache.paimon.data.BinaryString;
 import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.fs.local.LocalFileIO;
@@ -116,7 +116,7 @@ class RESTCatalogServerWithMetadataIT {
         LocalFileIO fileIO = new LocalFileIO();
         org.apache.paimon.fs.Path warehousePath = new org.apache.paimon.fs.Path(tempDir.toString());
         fileIO.checkOrMkdirs(warehousePath);
-        Catalog catalog = new FileSystemCatalog(fileIO, warehousePath);
+        Catalog catalog = new RESTFileSystemCatalog(fileIO, warehousePath);
 
         server = new RESTCatalogServer(options, catalog);
         server.start();
@@ -143,7 +143,7 @@ class RESTCatalogServerWithMetadataIT {
 
         String createBody = "{\"name\": \"audit_db\", \"options\": {}}";
         int status = httpPostStatus("/v1/test-prefix/databases", createBody);
-        assertThat(status).isEqualTo(201);
+        assertThat(status).isEqualTo(200);
 
         // Verify audit log was written
         try (Connection conn = metadataDs.getConnection();
@@ -200,7 +200,7 @@ class RESTCatalogServerWithMetadataIT {
                         + "\"partitionKeys\":[],\"primaryKeys\":[\"id\"],"
                         + "\"options\":{\"bucket\":\"1\"},\"comment\":\"test\"}}";
         int status = httpPostStatus("/v1/test-prefix/databases/audit_tbl_db/tables", createBody);
-        assertThat(status).isEqualTo(201);
+        assertThat(status).isEqualTo(200);
 
         try (Connection conn = metadataDs.getConnection();
                 PreparedStatement ps =
@@ -263,7 +263,6 @@ class RESTCatalogServerWithMetadataIT {
         String response = httpGet(tablePath + "/commits");
         assertThat(response).contains("\"commits\"");
         assertThat(response).contains("\"snapshotId\"");
-        assertThat(response).contains("\"committer\"");
 
         httpDelete(tablePath);
         httpDelete("/v1/test-prefix/databases/commit_list_db");

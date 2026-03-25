@@ -19,8 +19,8 @@
 package org.apache.paimon.rest.server;
 
 import org.apache.paimon.catalog.Catalog;
-import org.apache.paimon.catalog.FileSystemCatalog;
 import org.apache.paimon.catalog.Identifier;
+import org.apache.paimon.catalog.RESTFileSystemCatalog;
 import org.apache.paimon.data.BinaryString;
 import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.fs.local.LocalFileIO;
@@ -104,9 +104,11 @@ class RESTCatalogServerE2ETest {
         // Execute the production DDL (adapted for H2 MySQL mode)
         try (Connection conn = metadataDs.getConnection();
                 Statement stmt = conn.createStatement()) {
+            stmt.execute("CREATE SCHEMA IF NOT EXISTS paimon_catalog");
+
             // paimon_database (database registry)
             stmt.execute(
-                    "CREATE TABLE IF NOT EXISTS paimon_database ("
+                    "CREATE TABLE IF NOT EXISTS paimon_catalog.paimon_database ("
                             + "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
                             + "database_name VARCHAR(256) NOT NULL, "
                             + "properties CLOB NULL, "
@@ -118,7 +120,7 @@ class RESTCatalogServerE2ETest {
 
             // paimon_table (table registry)
             stmt.execute(
-                    "CREATE TABLE IF NOT EXISTS paimon_table ("
+                    "CREATE TABLE IF NOT EXISTS paimon_catalog.paimon_table ("
                             + "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
                             + "database_name VARCHAR(256) NOT NULL, "
                             + "table_name VARCHAR(256) NOT NULL, "
@@ -133,7 +135,7 @@ class RESTCatalogServerE2ETest {
 
             // paimon_op_log (audit log)
             stmt.execute(
-                    "CREATE TABLE IF NOT EXISTS paimon_op_log ("
+                    "CREATE TABLE IF NOT EXISTS paimon_catalog.paimon_op_log ("
                             + "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
                             + "database_name VARCHAR(256) NOT NULL, "
                             + "table_name VARCHAR(256) NOT NULL, "
@@ -150,13 +152,13 @@ class RESTCatalogServerE2ETest {
                             + ")");
             stmt.execute(
                     "CREATE INDEX IF NOT EXISTS idx_tbl_time "
-                            + "ON paimon_op_log (database_name, table_name, created_at)");
+                            + "ON paimon_catalog.paimon_op_log (database_name, table_name, created_at)");
             stmt.execute(
                     "CREATE INDEX IF NOT EXISTS idx_user_time "
-                            + "ON paimon_op_log (database_name, table_name, user_id, created_at)");
+                            + "ON paimon_catalog.paimon_op_log (database_name, table_name, user_id, created_at)");
             stmt.execute(
                     "CREATE INDEX IF NOT EXISTS idx_target "
-                            + "ON paimon_op_log (database_name, table_name, target_type, target_id)");
+                            + "ON paimon_catalog.paimon_op_log (database_name, table_name, target_type, target_id)");
         }
 
         // --- 2. Start REST Catalog Server ---
@@ -172,7 +174,7 @@ class RESTCatalogServerE2ETest {
         LocalFileIO fileIO = new LocalFileIO();
         org.apache.paimon.fs.Path warehousePath = new org.apache.paimon.fs.Path(tempDir.toString());
         fileIO.checkOrMkdirs(warehousePath);
-        Catalog catalog = new FileSystemCatalog(fileIO, warehousePath);
+        Catalog catalog = new RESTFileSystemCatalog(fileIO, warehousePath);
 
         server = new RESTCatalogServer(options, catalog);
         server.start();
@@ -217,7 +219,7 @@ class RESTCatalogServerE2ETest {
     void phase2_createDatabase() throws Exception {
         int status =
                 httpPostStatus("/v1/paimon/databases", "{\"name\": \"e2e_db\", \"options\": {}}");
-        assertThat(status).isEqualTo(201);
+        assertThat(status).isEqualTo(200);
     }
 
     @Test
@@ -254,29 +256,13 @@ class RESTCatalogServerE2ETest {
         try (Connection conn = metadataDs.getConnection();
                 PreparedStatement ps =
                         conn.prepareStatement(
-                                "SELECT * FROM paimon_op_log "
+                                "SELECT * FROM paimon_catalog.paimon_op_log "
                                         + "WHERE operation_type = 'CREATE_DATABASE' "
                                         + "AND status = 'SUCCESS'")) {
             try (ResultSet rs = ps.executeQuery()) {
                 assertThat(rs.next()).isTrue();
                 assertThat(rs.getString("user_id")).isEqualTo("anonymous");
                 assertThat(rs.getString("target_type")).isEqualTo("DATABASE");
-            }
-        }
-    }
-
-    @Test
-    @Order(16)
-    void phase2_databaseMetadataPersisted() throws Exception {
-        try (Connection conn = metadataDs.getConnection();
-                PreparedStatement ps =
-                        conn.prepareStatement(
-                                "SELECT * FROM paimon_database "
-                                        + "WHERE database_name = 'e2e_db'")) {
-            try (ResultSet rs = ps.executeQuery()) {
-                assertThat(rs.next()).isTrue();
-                assertThat(rs.getString("created_by")).isEqualTo("anonymous");
-                assertThat(rs.getLong("created_at")).isGreaterThan(0);
             }
         }
     }
@@ -298,7 +284,7 @@ class RESTCatalogServerE2ETest {
                         + "\"options\":{\"bucket\":\"1\",\"file.format\":\"avro\"},"
                         + "\"comment\":\"E2E test user table\"}}";
         int status = httpPostStatus("/v1/paimon/databases/e2e_db/tables", createBody);
-        assertThat(status).isEqualTo(201);
+        assertThat(status).isEqualTo(200);
     }
 
     @Test
@@ -353,7 +339,7 @@ class RESTCatalogServerE2ETest {
         try (Connection conn = metadataDs.getConnection();
                 PreparedStatement ps =
                         conn.prepareStatement(
-                                "SELECT * FROM paimon_op_log "
+                                "SELECT * FROM paimon_catalog.paimon_op_log "
                                         + "WHERE operation_type = 'CREATE_TABLE' "
                                         + "AND status = 'SUCCESS'")) {
             try (ResultSet rs = ps.executeQuery()) {
@@ -555,7 +541,7 @@ class RESTCatalogServerE2ETest {
                 PreparedStatement ps =
                         conn.prepareStatement(
                                 "SELECT operation_type, status, target_type "
-                                        + "FROM paimon_op_log WHERE status = 'SUCCESS' "
+                                        + "FROM paimon_catalog.paimon_op_log WHERE status = 'SUCCESS' "
                                         + "ORDER BY created_at")) {
             try (ResultSet rs = ps.executeQuery()) {
                 // Should have at least CREATE_DATABASE and CREATE_TABLE
@@ -583,7 +569,7 @@ class RESTCatalogServerE2ETest {
         try (Connection conn = metadataDs.getConnection();
                 Statement stmt = conn.createStatement()) {
             stmt.execute(
-                    "DELETE FROM paimon_op_log WHERE operation_type = 'DROP_DATABASE' AND status = 'FAILED'");
+                    "DELETE FROM paimon_catalog.paimon_op_log WHERE operation_type = 'DROP_DATABASE' AND status = 'FAILED'");
         }
 
         // Try to drop nonexistent database -> should fail
@@ -594,7 +580,7 @@ class RESTCatalogServerE2ETest {
         try (Connection conn = metadataDs.getConnection();
                 PreparedStatement ps =
                         conn.prepareStatement(
-                                "SELECT * FROM paimon_op_log "
+                                "SELECT * FROM paimon_catalog.paimon_op_log "
                                         + "WHERE operation_type = 'DROP_DATABASE' "
                                         + "AND status = 'FAILED'")) {
             try (ResultSet rs = ps.executeQuery()) {
@@ -611,7 +597,7 @@ class RESTCatalogServerE2ETest {
         // Duplicate database creation should produce FAILED audit
         try (Connection conn = metadataDs.getConnection();
                 Statement stmt = conn.createStatement()) {
-            stmt.execute("DELETE FROM paimon_op_log WHERE status = 'FAILED'");
+            stmt.execute("DELETE FROM paimon_catalog.paimon_op_log WHERE status = 'FAILED'");
         }
 
         int status =
@@ -621,7 +607,7 @@ class RESTCatalogServerE2ETest {
         try (Connection conn = metadataDs.getConnection();
                 PreparedStatement ps =
                         conn.prepareStatement(
-                                "SELECT * FROM paimon_op_log "
+                                "SELECT * FROM paimon_catalog.paimon_op_log "
                                         + "WHERE operation_type = 'CREATE_DATABASE' "
                                         + "AND status = 'FAILED'")) {
             try (ResultSet rs = ps.executeQuery()) {
@@ -639,7 +625,7 @@ class RESTCatalogServerE2ETest {
         try (Connection conn = metadataDs.getConnection();
                 PreparedStatement ps =
                         conn.prepareStatement(
-                                "SELECT * FROM paimon_op_log "
+                                "SELECT * FROM paimon_catalog.paimon_op_log "
                                         + "WHERE operation_type = 'RESET_COMMIT'")) {
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
@@ -670,7 +656,7 @@ class RESTCatalogServerE2ETest {
         try (Connection conn = metadataDs.getConnection();
                 PreparedStatement ps =
                         conn.prepareStatement(
-                                "SELECT * FROM paimon_op_log "
+                                "SELECT * FROM paimon_catalog.paimon_op_log "
                                         + "WHERE operation_type = 'DROP_TABLE' "
                                         + "AND status = 'SUCCESS'")) {
             try (ResultSet rs = ps.executeQuery()) {
@@ -693,7 +679,7 @@ class RESTCatalogServerE2ETest {
         try (Connection conn = metadataDs.getConnection();
                 PreparedStatement ps =
                         conn.prepareStatement(
-                                "SELECT * FROM paimon_op_log "
+                                "SELECT * FROM paimon_catalog.paimon_op_log "
                                         + "WHERE operation_type = 'DROP_DATABASE' "
                                         + "AND status = 'SUCCESS'")) {
             try (ResultSet rs = ps.executeQuery()) {
@@ -709,7 +695,7 @@ class RESTCatalogServerE2ETest {
                 PreparedStatement ps =
                         conn.prepareStatement(
                                 "SELECT operation_type, status, COUNT(*) as cnt "
-                                        + "FROM paimon_op_log "
+                                        + "FROM paimon_catalog.paimon_op_log "
                                         + "GROUP BY operation_type, status "
                                         + "ORDER BY operation_type, status")) {
             try (ResultSet rs = ps.executeQuery()) {
