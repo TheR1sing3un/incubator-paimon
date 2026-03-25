@@ -21,6 +21,7 @@ import pytest
 import ray.data
 
 from pypaimon import Schema
+from pypaimon.ray import read_paimon
 from pypaimon.table.instant import SnapshotInstant, TagInstant
 
 pytestmark = pytest.mark.e2e_rest
@@ -154,6 +155,46 @@ class TestRayTagSnapshot:
         table = catalog.get_table(tbl_id)
         result = _read_ray(table)
         assert result.count() == 2
+
+    def test_ray_read_paimon_from_snapshot(
+        self, catalog, unique_db, pa_schema, catalog_options, ray_cluster
+    ):
+        """Test reading from a specific snapshot via read_paimon API."""
+        tbl_id = f"{unique_db}.ray_read_snap_api"
+        schema = Schema.from_pyarrow_schema(pa_schema)
+        catalog.create_table(tbl_id, schema, False)
+        table = catalog.get_table(tbl_id)
+
+        # Write first batch
+        data1 = pa.Table.from_pydict({
+            "user_id": [1, 2],
+            "item_id": [101, 102],
+            "behavior": ["buy", "click"],
+            "dt": ["p1", "p1"],
+        }, schema=pa_schema)
+        _write_ray(table, data1)
+
+        snap1 = catalog.load_snapshot(tbl_id)
+        snap1_id = snap1.snapshot.id
+
+        # Write second batch
+        data2 = pa.Table.from_pydict({
+            "user_id": [3, 4],
+            "item_id": [103, 104],
+            "behavior": ["view", "buy"],
+            "dt": ["p2", "p2"],
+        }, schema=pa_schema)
+        _write_ray(table, data2)
+
+        # Latest should have 4 rows
+        ds_all = read_paimon(tbl_id, catalog_options)
+        assert ds_all.count() == 4
+
+        # Read from snapshot 1 should have 2 rows
+        ds_snap1 = read_paimon(tbl_id, catalog_options, snapshot_id=snap1_id)
+        assert ds_snap1.count() == 2
+        df = ds_snap1.to_pandas()
+        assert sorted(df["user_id"].tolist()) == [1, 2]
 
     def test_ray_read_paimon_from_tag(
         self, catalog, unique_db, pa_schema, catalog_options, ray_cluster

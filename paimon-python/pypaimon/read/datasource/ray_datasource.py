@@ -78,6 +78,7 @@ class RayDatasource(Datasource):
         predicate=None,
         projection: Optional[List[str]] = None,
         limit: Optional[int] = None,
+        snapshot_id: Optional[int] = None,
     ):
         """
         Initialize RayDatasource.
@@ -88,12 +89,14 @@ class RayDatasource(Datasource):
             predicate: Optional predicate for filtering.
             projection: Optional list of column names to read.
             limit: Optional row limit for the scan.
+            snapshot_id: Optional snapshot id to read from a specific snapshot.
         """
         self.table_identifier = table_identifier
         self.catalog_options = catalog_options
         self.predicate = predicate
         self.projection = projection
         self.limit = limit
+        self.snapshot_id = snapshot_id
         self._table = None
         self._splits = None
         self._read_type = None
@@ -105,7 +108,10 @@ class RayDatasource(Datasource):
         if self._table is None:
             from pypaimon.catalog.catalog_factory import CatalogFactory
             catalog = CatalogFactory.create(self.catalog_options)
-            self._table = catalog.get_table(self.table_identifier)
+            table = catalog.get_table(self.table_identifier)
+            if self.snapshot_id is not None:
+                table = table.copy({"scan.snapshot-id": str(self.snapshot_id)})
+            self._table = table
         return self._table
 
     @property
