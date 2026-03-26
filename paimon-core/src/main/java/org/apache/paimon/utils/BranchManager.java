@@ -61,6 +61,23 @@ public interface BranchManager {
 
     List<String> branches();
 
+    /** Read fork info for a branch. Returns null for the main branch or unsupported catalogs. */
+    @Nullable
+    default ForkInfo forkInfo(String branchName) {
+        return null;
+    }
+
+    /** Read merge lineage for a branch. Returns null if no lineage file exists. */
+    @Nullable
+    default MergeLineage mergeLineage(String branchName) {
+        return null;
+    }
+
+    /** Write merge lineage for a branch. */
+    default void writeMergeLineage(String branchName, MergeLineage lineage) {
+        throw new UnsupportedOperationException("writeMergeLineage not supported");
+    }
+
     default boolean branchExists(String branchName) {
         return branches().contains(branchName);
     }
@@ -110,4 +127,8 @@ public interface BranchManager {
                 "Fast-forward from the current branch '%s' is not allowed.",
                 branchName);
     }
+
+    String FORK_INFO_FILE = "FORK_INFO";
+
+    String MERGE_LINEAGE_FILE = "MERGE_LINEAGE";
 }

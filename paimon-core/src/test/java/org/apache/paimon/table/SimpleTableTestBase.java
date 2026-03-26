@@ -1443,6 +1443,7 @@ public abstract class SimpleTableTestBase {
                         .filter(p -> !p.getName().startsWith("schema"))
                         .filter(p -> !p.getName().equals(LATEST))
                         .filter(p -> !p.getName().equals(EARLIEST))
+                        .filter(p -> !p.getName().equals("branch-metadata.json"))
                         .map(
                                 p ->
                                         new Path(

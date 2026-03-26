@@ -1950,13 +1950,10 @@ public class CoreOptions implements Serializable {
                                     + "Stored in Snapshot.properties as paimon.commit.message. "
                                     + "Can be set per-job via Flink SQL hints or Spark session config.");
 
-    public static final ConfigOption<String> COMMIT_MERGE_PARENT_ID =
-            key("commit.merge-parent-id")
-                    .stringType()
-                    .noDefaultValue()
-                    .withDescription(
-                            "Merge parent commit ID. "
-                                    + "Stored in Snapshot.properties as paimon.commit.merge-parent-id.");
+    public static final String COMMIT_MERGE_SOURCE_BRANCH_KEY = "commit.merge-source-branch";
+    public static final String COMMIT_MERGE_SOURCE_SNAPSHOT_ID_KEY =
+            "commit.merge-source-snapshot-id";
+    public static final String COMMIT_MERGE_SOURCE_UUID_KEY = "commit.merge-source-uuid";
 
     @Immutable
     public static final ConfigOption<Boolean> FORCE_LOOKUP =

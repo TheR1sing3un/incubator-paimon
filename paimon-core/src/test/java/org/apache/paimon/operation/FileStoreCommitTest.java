@@ -1050,7 +1050,7 @@ public class FileStoreCommitTest {
 
     @Test
     public void testCommitMetadataNotInjectedWithoutPrefix() throws Exception {
-        // Only commit.committer/message/merge-parent-id and commit.metadata.* should be injected
+        // Only commit.committer/message and commit.metadata.* should be injected
         Map<String, String> options = new HashMap<>();
         options.put("commit.committer", "test-user");
         options.put("bucket", "1"); // not a commit option

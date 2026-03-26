@@ -24,6 +24,7 @@ import org.apache.paimon.Snapshot;
 import org.apache.paimon.TableType;
 import org.apache.paimon.annotation.VisibleForTesting;
 import org.apache.paimon.catalog.Catalog;
+import org.apache.paimon.catalog.Catalog.TableNotExistException;
 import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.catalog.CatalogUtils;
 import org.apache.paimon.catalog.Database;
@@ -758,6 +759,24 @@ public class RESTCatalog implements Catalog {
             throw new BranchNotExistException(identifier, branch, e);
         } catch (ForbiddenException e) {
             throw new TableNoPermissionException(identifier, e);
+        }
+    }
+
+    @Override
+    public void mergeBranch(Identifier identifier, String sourceBranch, String targetBranch)
+            throws TableNotExistException, BranchNotExistException {
+        try {
+            api.mergeBranch(identifier, sourceBranch, targetBranch);
+        } catch (NoSuchResourceException e) {
+            String resource = e.resourceName();
+            if (resource != null && resource.contains("branch")) {
+                throw new BranchNotExistException(identifier, resource, e);
+            }
+            throw new TableNotExistException(identifier, e);
+        } catch (ForbiddenException e) {
+            throw new TableNoPermissionException(identifier, e);
+        } catch (BadRequestException e) {
+            throw new IllegalArgumentException(e.getMessage());
         }
     }
 

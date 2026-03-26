@@ -111,7 +111,9 @@ public class ExceptionMapper {
                 e -> new ErrorInfo(404, ErrorResponse.RESOURCE_TYPE_TAG, null));
         mapper.register(
                 Catalog.BranchNotExistException.class,
-                e -> new ErrorInfo(404, ErrorResponse.RESOURCE_TYPE_BRANCH, null));
+                e ->
+                        new ErrorInfo(
+                                404, ErrorResponse.RESOURCE_TYPE_BRANCH, "branch:" + e.branch()));
         mapper.register(
                 Catalog.FunctionNotExistException.class,
                 e -> new ErrorInfo(404, ErrorResponse.RESOURCE_TYPE_FUNCTION, null));

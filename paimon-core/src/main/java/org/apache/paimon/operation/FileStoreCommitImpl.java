@@ -970,10 +970,9 @@ public class FileStoreCommitImpl implements FileStoreCommit {
             }
 
             // Inject commit metadata from table options into snapshot properties
-            // 1. Well-known keys: commit.committer, commit.message, commit.merge-parent-id
+            // 1. Well-known keys: commit.committer, commit.message
             injectCommitOption(properties, CoreOptions.COMMIT_COMMITTER.key());
             injectCommitOption(properties, CoreOptions.COMMIT_MESSAGE.key());
-            injectCommitOption(properties, CoreOptions.COMMIT_MERGE_PARENT_ID.key());
             // 2. Arbitrary metadata: commit.metadata.* -> paimon.commit.metadata.*
             Map<String, String> allOptions = options.toMap();
             for (Map.Entry<String, String> entry : allOptions.entrySet()) {

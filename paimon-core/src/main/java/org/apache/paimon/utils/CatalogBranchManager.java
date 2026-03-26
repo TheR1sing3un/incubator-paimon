@@ -31,10 +31,13 @@ public class CatalogBranchManager implements BranchManager {
 
     private final CatalogLoader catalogLoader;
     private final Identifier identifier;
+    private final BranchManager fileDelegate;
 
-    public CatalogBranchManager(CatalogLoader catalogLoader, Identifier identifier) {
+    public CatalogBranchManager(
+            CatalogLoader catalogLoader, Identifier identifier, BranchManager fileDelegate) {
         this.catalogLoader = catalogLoader;
         this.identifier = identifier;
+        this.fileDelegate = fileDelegate;
     }
 
     private void executePost(ThrowingConsumer<Catalog, Exception> func) {
@@ -111,5 +114,22 @@ public class CatalogBranchManager implements BranchManager {
     @Override
     public List<String> branches() {
         return executeGet(catalog -> catalog.listBranches(identifier));
+    }
+
+    @Override
+    @Nullable
+    public ForkInfo forkInfo(String branchName) {
+        return fileDelegate.forkInfo(branchName);
+    }
+
+    @Override
+    @Nullable
+    public MergeLineage mergeLineage(String branchName) {
+        return fileDelegate.mergeLineage(branchName);
+    }
+
+    @Override
+    public void writeMergeLineage(String branchName, MergeLineage lineage) {
+        fileDelegate.writeMergeLineage(branchName, lineage);
     }
 }

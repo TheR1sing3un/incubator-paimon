@@ -75,8 +75,9 @@ public class BranchHandler implements RouteRegistrar {
                 branchMergePath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    return MetricsHelper.wrapCatalogOp(
+                    MetricsHelper.wrapCatalogOpVoid(
                             "merge_branch", () -> mergeBranch(id, vars.get("branch"), body));
+                    return new RouteResult(200, null);
                 });
         router.post(
                 branchForwardPath,
@@ -144,22 +145,24 @@ public class BranchHandler implements RouteRegistrar {
     }
 
     /**
-     * Merge a source branch into the target branch. Phase 2 — not yet implemented.
+     * Merge a source branch into the target branch.
      *
      * @param identifier table identifier
      * @param targetBranch the branch to merge into (from URL path)
-     * @param body request body containing source branch, message, strategy, etc.
+     * @param body request body containing source branch
      */
-    public RouteResult mergeBranch(Identifier identifier, String targetBranch, String body) {
-        LOG.info("Merging branch into: {} for table: {}", targetBranch, identifier.getFullName());
+    public void mergeBranch(Identifier identifier, String targetBranch, String body)
+            throws Exception {
         MergeBranchRequest request = JsonSerdeUtil.fromJson(body, MergeBranchRequest.class);
-        // TODO Phase 2: implement branch merge logic
-        throw new UnsupportedOperationException(
-                "Branch merge is not yet implemented (Phase 2). "
-                        + "Target: "
-                        + targetBranch
-                        + ", Source: "
-                        + request.sourceBranch());
+        if (request.sourceBranch() == null || request.sourceBranch().isEmpty()) {
+            throw new IllegalArgumentException("sourceBranch is required and must not be empty");
+        }
+        LOG.info(
+                "Merging branch '{}' onto '{}' for table: {}",
+                request.sourceBranch(),
+                targetBranch,
+                identifier.getFullName());
+        catalog.mergeBranch(identifier, request.sourceBranch(), targetBranch);
     }
 
     /**

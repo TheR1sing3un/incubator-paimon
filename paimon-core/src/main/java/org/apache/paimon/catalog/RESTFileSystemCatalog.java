@@ -18,17 +18,21 @@
 
 package org.apache.paimon.catalog;
 
+import org.apache.paimon.FileStore;
 import org.apache.paimon.PagedList;
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
+import org.apache.paimon.operation.BranchMergeOperation;
 import org.apache.paimon.partition.PartitionStatistics;
 import org.apache.paimon.rest.responses.GetTagResponse;
 import org.apache.paimon.schema.SchemaManager;
+import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Instant;
 import org.apache.paimon.table.RollbackHelper;
 import org.apache.paimon.table.TableSnapshot;
 import org.apache.paimon.tag.Tag;
+import org.apache.paimon.utils.BranchManager;
 import org.apache.paimon.utils.ChangelogManager;
 import org.apache.paimon.utils.FileSystemBranchManager;
 import org.apache.paimon.utils.SnapshotManager;
@@ -47,6 +51,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.SortedMap;
+import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 /**
@@ -54,6 +62,32 @@ import java.util.stream.Collectors;
  * rollback). Intended for use as a backend for the REST Catalog Server.
  */
 public class RESTFileSystemCatalog extends FileSystemCatalog {
+
+    /**
+     * Per-branch JVM locks ensuring mutual exclusion between merge and normal commits targeting the
+     * same branch. Lock key format: {@code database.table#branch}.
+     *
+     * <p>Branch-level granularity allows concurrent writes to different branches of the same table
+     * (e.g., writing to branchA while merging onto main). Operations on the same branch (commit,
+     * merge, rollback) are serialized.
+     *
+     * <p>This is sufficient when all writes go through a single REST Server process. For
+     * multi-instance deployments, requests for the same table should be routed to the same
+     * instance, or a distributed lock should be configured via {@code lock.type}.
+     */
+    private final ConcurrentHashMap<String, ReentrantLock> branchLocks = new ConcurrentHashMap<>();
+
+    private <T> T withBranchLock(String database, String table, String branch, Callable<T> callable)
+            throws Exception {
+        String key = database + "." + table + "#" + branch;
+        ReentrantLock lock = branchLocks.computeIfAbsent(key, k -> new ReentrantLock());
+        lock.lock();
+        try {
+            return callable.call();
+        } finally {
+            lock.unlock();
+        }
+    }
 
     public RESTFileSystemCatalog(FileIO fileIO, Path warehouse) {
         super(fileIO, warehouse);
@@ -84,19 +118,25 @@ public class RESTFileSystemCatalog extends FileSystemCatalog {
         SnapshotManager sm = newSnapshotManager(identifier);
         Path snapshotPath = sm.snapshotPath(snapshot.id());
         try {
-            return runWithLock(
-                    identifier,
-                    () -> {
-                        if (fileIO.exists(snapshotPath)) {
-                            return false;
-                        }
-                        boolean committed =
-                                fileIO.tryToWriteAtomic(snapshotPath, snapshot.toJson());
-                        if (committed) {
-                            sm.commitLatestHint(snapshot.id());
-                        }
-                        return committed;
-                    });
+            return withBranchLock(
+                    identifier.getDatabaseName(),
+                    identifier.getTableName(),
+                    identifier.getBranchNameOrDefault(),
+                    () ->
+                            runWithLock(
+                                    identifier,
+                                    () -> {
+                                        if (fileIO.exists(snapshotPath)) {
+                                            return false;
+                                        }
+                                        boolean committed =
+                                                fileIO.tryToWriteAtomic(
+                                                        snapshotPath, snapshot.toJson());
+                                        if (committed) {
+                                            sm.commitLatestHint(snapshot.id());
+                                        }
+                                        return committed;
+                                    }));
         } catch (RuntimeException e) {
             throw e;
         } catch (Exception e) {
@@ -172,6 +212,26 @@ public class RESTFileSystemCatalog extends FileSystemCatalog {
     public void rollbackTo(Identifier identifier, Instant instant, @Nullable Long fromSnapshot)
             throws TableNotExistException {
         assertTableExists(identifier);
+        try {
+            withBranchLock(
+                    identifier.getDatabaseName(),
+                    identifier.getTableName(),
+                    identifier.getBranchNameOrDefault(),
+                    () ->
+                            runWithLock(
+                                    identifier,
+                                    () -> {
+                                        doRollbackTo(identifier, instant, fromSnapshot);
+                                        return null;
+                                    }));
+        } catch (TableNotExistException | RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private void doRollbackTo(Identifier identifier, Instant instant, @Nullable Long fromSnapshot) {
         SnapshotManager sm = newSnapshotManager(identifier);
         TagManager tm = newTagManager(identifier);
         ChangelogManager cm = newChangelogManager(identifier);
@@ -193,7 +253,6 @@ public class RESTFileSystemCatalog extends FileSystemCatalog {
             try {
                 targetSnapshot = sm.tryGetSnapshot(snapshotId);
             } catch (FileNotFoundException e) {
-                // try to find the snapshot from tags
                 targetSnapshot = findSnapshotFromTags(tm, snapshotId);
                 if (targetSnapshot == null) {
                     throw new RuntimeException(
@@ -216,13 +275,18 @@ public class RESTFileSystemCatalog extends FileSystemCatalog {
     public void createBranch(Identifier identifier, String branch, @Nullable String fromTag)
             throws TableNotExistException, BranchAlreadyExistException, TagNotExistException {
         assertTableExists(identifier);
-        FileSystemBranchManager bm = newBranchManager(identifier);
         try {
-            if (fromTag != null) {
-                bm.createBranch(branch, fromTag);
-            } else {
-                bm.createBranch(branch);
-            }
+            runWithLock(
+                    identifier,
+                    () -> {
+                        FileSystemBranchManager bm = newBranchManager(identifier);
+                        if (fromTag != null) {
+                            bm.createBranch(branch, fromTag);
+                        } else {
+                            bm.createBranch(branch);
+                        }
+                        return null;
+                    });
         } catch (IllegalArgumentException e) {
             String msg = e.getMessage();
             if (msg != null && msg.contains("already exists")) {
@@ -232,25 +296,110 @@ public class RESTFileSystemCatalog extends FileSystemCatalog {
                 throw new TagNotExistException(identifier, fromTag);
             }
             throw e;
+        } catch (TableNotExistException
+                | BranchAlreadyExistException
+                | TagNotExistException
+                | RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
         }
     }
 
     @Override
     public void dropBranch(Identifier identifier, String branch) throws BranchNotExistException {
         try {
-            newBranchManager(identifier).dropBranch(branch);
+            runWithLock(
+                    identifier,
+                    () -> {
+                        newBranchManager(identifier).dropBranch(branch);
+                        return null;
+                    });
         } catch (IllegalArgumentException e) {
             throw new BranchNotExistException(identifier, branch);
+        } catch (BranchNotExistException | RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
         }
     }
 
     @Override
     public void fastForward(Identifier identifier, String branch) throws BranchNotExistException {
         try {
-            newBranchManager(identifier).fastForward(branch);
+            runWithLock(
+                    identifier,
+                    () -> {
+                        newBranchManager(identifier).fastForward(branch);
+                        return null;
+                    });
         } catch (IllegalArgumentException e) {
             throw new BranchNotExistException(identifier, branch);
+        } catch (BranchNotExistException | RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
         }
+    }
+
+    // Merge requires manifest-level manipulation via FileStore components (manifest factories,
+    // SnapshotCommit, etc.), which is why it bypasses BranchManager and operates directly
+    // through BranchMergeOperation.
+    @Override
+    public void mergeBranch(Identifier identifier, String sourceBranch, String targetBranch)
+            throws TableNotExistException, BranchNotExistException {
+        assertTableExists(identifier);
+        assertBranchExists(identifier, sourceBranch);
+        assertBranchExists(identifier, targetBranch);
+        try {
+            BranchMergeOperation op = newBranchMergeOperation(identifier, targetBranch);
+            // Branch-level lock ensures mutual exclusion with normal commits targeting the same
+            // branch. Writes to other branches can proceed concurrently.
+            withBranchLock(
+                    identifier.getDatabaseName(),
+                    identifier.getObjectName(),
+                    targetBranch,
+                    () ->
+                            runWithLock(
+                                    identifier,
+                                    () -> {
+                                        op.merge(sourceBranch, targetBranch);
+                                        return null;
+                                    }));
+        } catch (TableNotExistException | BranchNotExistException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(
+                    String.format(
+                            "Failed to merge branch '%s' onto '%s' for table '%s'.",
+                            sourceBranch, targetBranch, identifier),
+                    e);
+        }
+    }
+
+    private void assertBranchExists(Identifier identifier, String branch)
+            throws BranchNotExistException {
+        if (!BranchManager.isMainBranch(branch)
+                && !newBranchManager(identifier).branchExists(branch)) {
+            throw new BranchNotExistException(identifier, branch);
+        }
+    }
+
+    private BranchMergeOperation newBranchMergeOperation(Identifier identifier, String targetBranch)
+            throws TableNotExistException, BranchNotExistException {
+        FileStoreTable table = (FileStoreTable) getTable(identifier);
+        FileStore<?> store = table.store();
+        return new BranchMergeOperation(
+                store.snapshotManager(),
+                store.manifestListFactory(),
+                store.manifestFileFactory(),
+                new SchemaManager(fileIO, getTableLocation(identifier), targetBranch),
+                store.options(),
+                store.partitionType(),
+                UUID.randomUUID().toString(),
+                fileIO,
+                getTableLocation(identifier),
+                newBranchManager(identifier));
     }
 
     @Override

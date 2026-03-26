@@ -257,6 +257,12 @@ public abstract class DelegateCatalog implements Catalog {
     }
 
     @Override
+    public void mergeBranch(Identifier identifier, String sourceBranch, String targetBranch)
+            throws TableNotExistException, BranchNotExistException {
+        wrapped.mergeBranch(identifier, sourceBranch, targetBranch);
+    }
+
+    @Override
     public List<String> listBranches(Identifier identifier) throws TableNotExistException {
         return wrapped.listBranches(identifier);
     }

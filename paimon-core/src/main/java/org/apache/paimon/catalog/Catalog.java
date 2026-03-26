@@ -921,6 +921,24 @@ public interface Catalog extends AutoCloseable {
     void fastForward(Identifier identifier, String branch) throws BranchNotExistException;
 
     /**
+     * Merge source branch onto target branch at metadata level. Replays source's APPEND snapshots
+     * (since common ancestor) on top of target's latest snapshot. Relies on PK table's merge engine
+     * for read-time reconciliation of overlapping keys.
+     *
+     * <p>Requires {@code sequence.snapshot-ordering = true}.
+     *
+     * @param identifier path of the table
+     * @param sourceBranch the branch whose changes will be applied
+     * @param targetBranch the branch to apply changes onto
+     * @throws TableNotExistException if the table doesn't exist
+     * @throws BranchNotExistException if source or target branch doesn't exist
+     * @throws UnsupportedOperationException if the catalog does not {@link
+     *     #supportsVersionManagement()}
+     */
+    void mergeBranch(Identifier identifier, String sourceBranch, String targetBranch)
+            throws TableNotExistException, BranchNotExistException;
+
+    /**
      * List all branches of the table.
      *
      * @param identifier path of the table, cannot be system or branch name.

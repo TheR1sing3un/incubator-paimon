@@ -85,6 +85,22 @@ public class FileSystemBranchManager implements BranchManager {
         try {
             TableSchema latestSchema = schemaManager.latest().get();
             copySchemasToBranch(branchName, latestSchema.id());
+
+            // Write FORK_INFO into the branch directory
+            String parentBranch = snapshotManager.branch();
+            Long latestId = snapshotManager.latestSnapshotId();
+            String forkUuid = ForkInfo.EMPTY_FORK_UUID;
+            long forkSnapshotId = 0;
+            if (latestId != null) {
+                forkUuid = snapshotManager.snapshot(latestId).commitUuid();
+                Preconditions.checkNotNull(
+                        forkUuid,
+                        "Snapshot #%s has no commitUuid. "
+                                + "Branch merge requires snapshots written by a recent Paimon version.",
+                        latestId);
+                forkSnapshotId = latestId;
+            }
+            writeForkInfoOrCleanup(branchName, parentBranch, forkSnapshotId, forkUuid);
         } catch (IOException e) {
             throw new RuntimeException(
                     String.format(
@@ -118,6 +134,16 @@ public class FileSystemBranchManager implements BranchManager {
                     snapshotManager.copyWithBranch(branchName).snapshotPath(snapshot.id()),
                     true);
             copySchemasToBranch(branchName, snapshot.schemaId());
+
+            // Write FORK_INFO into the branch directory
+            String parentBranch = snapshotManager.branch();
+            String forkUuid = snapshot.commitUuid();
+            Preconditions.checkNotNull(
+                    forkUuid,
+                    "Snapshot #%s has no commitUuid. "
+                            + "Branch merge requires snapshots written by a recent Paimon version.",
+                    snapshot.id());
+            writeForkInfoOrCleanup(branchName, parentBranch, snapshot.id(), forkUuid);
         } catch (IOException e) {
             throw new RuntimeException(
                     String.format(
@@ -240,5 +266,98 @@ public class FileSystemBranchManager implements BranchManager {
                         true);
             }
         }
+    }
+
+    private void writeForkInfo(
+            String branchName, String parentBranch, long forkSnapshotId, String forkUuid)
+            throws IOException {
+        ForkInfo info = new ForkInfo(parentBranch, forkSnapshotId, forkUuid);
+        Path forkInfoPath = new Path(branchPath(branchName), FORK_INFO_FILE);
+        fileIO.tryToWriteAtomic(forkInfoPath, info.toJson());
+    }
+
+    /**
+     * Write FORK_INFO for a new branch, cleaning up the branch directory on failure.
+     *
+     * @throws RuntimeException wrapping the IOException if FORK_INFO write fails
+     */
+    private void writeForkInfoOrCleanup(
+            String branchName, String parentBranch, long forkSnapshotId, String forkUuid) {
+        try {
+            writeForkInfo(branchName, parentBranch, forkSnapshotId, forkUuid);
+        } catch (IOException forkErr) {
+            LOG.error(
+                    "Failed to write FORK_INFO for branch '{}'. "
+                            + "Cleaning up partially created branch.",
+                    branchName,
+                    forkErr);
+            try {
+                fileIO.delete(branchPath(branchName), true);
+            } catch (IOException cleanupErr) {
+                LOG.error("Failed to clean up branch directory '{}'.", branchName, cleanupErr);
+            }
+            throw new RuntimeException(
+                    String.format(
+                            "Failed to create branch '%s': FORK_INFO write failed.", branchName),
+                    forkErr);
+        }
+    }
+
+    @Override
+    public ForkInfo forkInfo(String branchName) {
+        if (BranchManager.isMainBranch(branchName)) {
+            return null;
+        }
+        Path forkInfoPath = new Path(branchPath(branchName), FORK_INFO_FILE);
+        try {
+            String json = fileIO.readFileUtf8(forkInfoPath);
+            return ForkInfo.fromJson(json);
+        } catch (IOException e) {
+            throw new RuntimeException(
+                    String.format(
+                            "Failed to read FORK_INFO for branch '%s' at %s.",
+                            branchName, forkInfoPath),
+                    e);
+        }
+    }
+
+    @Override
+    public MergeLineage mergeLineage(String branchName) {
+        Path lineagePath = mergeLineagePath(branchName);
+        try {
+            if (!fileIO.exists(lineagePath)) {
+                return null;
+            }
+            return fileIO.readOverwrittenFileUtf8(lineagePath)
+                    .map(MergeLineage::fromJson)
+                    .orElse(null);
+        } catch (IOException e) {
+            throw new RuntimeException(
+                    String.format(
+                            "Failed to read MERGE_LINEAGE for branch '%s' at %s.",
+                            branchName, lineagePath),
+                    e);
+        }
+    }
+
+    @Override
+    public void writeMergeLineage(String branchName, MergeLineage lineage) {
+        Path lineagePath = mergeLineagePath(branchName);
+        try {
+            fileIO.overwriteFileUtf8(lineagePath, lineage.toJson());
+        } catch (IOException e) {
+            throw new RuntimeException(
+                    String.format(
+                            "Failed to write MERGE_LINEAGE for branch '%s' at %s.",
+                            branchName, lineagePath),
+                    e);
+        }
+    }
+
+    private Path mergeLineagePath(String branchName) {
+        if (BranchManager.isMainBranch(branchName)) {
+            return new Path(tablePath, MERGE_LINEAGE_FILE);
+        }
+        return new Path(branchPath(branchName), MERGE_LINEAGE_FILE);
     }
 }

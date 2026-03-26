@@ -552,23 +552,64 @@ class RESTCatalogServerIntegrationTest {
     }
 
     @Test
-    void testMergeBranchNotImplemented() throws Exception {
-        createTestTableWithData("merge_db", "merge_tbl");
+    void testMergeBranch() throws Exception {
+        // Set up: create PK table with sequence.snapshot-ordering
+        Catalog catalog = server.getCatalog();
+        catalog.createDatabase("merge_db", false);
+        Schema schema =
+                Schema.newBuilder()
+                        .column("pk", DataTypes.INT())
+                        .column("val", DataTypes.STRING())
+                        .primaryKey("pk")
+                        .option("bucket", "1")
+                        .option("merge-engine", "deduplicate")
+                        .option("sequence.snapshot-ordering", "true")
+                        .build();
+        Identifier id = Identifier.create("merge_db", "merge_tbl");
+        catalog.createTable(id, schema, false);
+
+        // Write initial data (snapshot 1)
+        writeRows(id, GenericRow.of(1, BinaryString.fromString("initial")));
+
         String tablePath = "/v1/test-prefix/databases/merge_db/tables/merge_tbl";
 
-        // Create a branch first
-        httpPost(tablePath + "/branches", "{\"branch\":\"dev\",\"fromTag\":null}");
+        // Create tag and branch
+        String tagBody = "{\"tagName\":\"ancestor\",\"snapshotId\":1,\"timeRetained\":null}";
+        assertThat(httpPostStatus(tablePath + "/tags", tagBody)).isEqualTo(200);
 
-        // Merge should return 501
-        String mergeBody =
-                "{\"source_branch\":\"dev\",\"message\":\"merge\",\"strategy\":null,\"squash\":false}";
-        int status = httpPostStatus(tablePath + "/branches/dev/merge", mergeBody);
-        assertThat(status).isEqualTo(501);
+        String branchBody = "{\"branch\":\"source\",\"fromTag\":\"ancestor\"}";
+        assertThat(httpPostStatus(tablePath + "/branches", branchBody)).isEqualTo(200);
+
+        // Write on source branch
+        Identifier branchId = new Identifier("merge_db", "merge_tbl", "source");
+        writeRows(branchId, GenericRow.of(2, BinaryString.fromString("from_source")));
+
+        // Merge source onto main via REST API
+        // URL: /branches/{target}/merge, body: source_branch
+        String mergeBody = "{\"source_branch\":\"source\"}";
+        int mergeStatus = httpPostStatus(tablePath + "/branches/main/merge", mergeBody);
+        assertThat(mergeStatus).isEqualTo(200);
 
         // Clean up
-        httpDelete(tablePath + "/branches/dev");
+        httpDelete(tablePath + "/branches/source");
+        httpDelete(tablePath + "/tags/ancestor");
         httpDelete(tablePath);
         httpDelete("/v1/test-prefix/databases/merge_db");
+    }
+
+    @Test
+    void testMergeBranchNotExist() throws Exception {
+        createTestTableWithData("merge_404_db", "tbl");
+        String tablePath = "/v1/test-prefix/databases/merge_404_db/tables/tbl";
+
+        // Merge nonexistent source branch should return 404
+        String mergeBody = "{\"source_branch\":\"nonexistent\"}";
+        int status = httpPostStatus(tablePath + "/branches/main/merge", mergeBody);
+        assertThat(status).isEqualTo(404);
+
+        // Clean up
+        httpDelete(tablePath);
+        httpDelete("/v1/test-prefix/databases/merge_404_db");
     }
 
     @Test
@@ -1301,6 +1342,20 @@ class RESTCatalogServerIntegrationTest {
         BatchTableCommit commit = writeBuilder.newCommit();
         write.write(GenericRow.of(1, BinaryString.fromString("Alice")));
         write.write(GenericRow.of(2, BinaryString.fromString("Bob")));
+        List<CommitMessage> messages = write.prepareCommit();
+        commit.commit(messages);
+        write.close();
+        commit.close();
+    }
+
+    private void writeRows(Identifier id, GenericRow... rows) throws Exception {
+        Table table = server.getCatalog().getTable(id);
+        BatchWriteBuilder writeBuilder = table.newBatchWriteBuilder();
+        BatchTableWrite write = writeBuilder.newWrite();
+        BatchTableCommit commit = writeBuilder.newCommit();
+        for (GenericRow row : rows) {
+            write.write(row);
+        }
         List<CommitMessage> messages = write.prepareCommit();
         commit.commit(messages);
         write.close();

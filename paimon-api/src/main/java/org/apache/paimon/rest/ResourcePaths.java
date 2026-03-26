@@ -251,6 +251,19 @@ public class ResourcePaths {
                 "forward");
     }
 
+    public String mergeBranch(String databaseName, String tableName, String branch) {
+        return SLASH.join(
+                V1,
+                prefix,
+                DATABASES,
+                encodeString(databaseName),
+                TABLES,
+                encodeString(tableName),
+                BRANCHES,
+                encodeString(branch),
+                "merge");
+    }
+
     public String tags(String databaseName, String objectName) {
         return SLASH.join(
                 V1,
