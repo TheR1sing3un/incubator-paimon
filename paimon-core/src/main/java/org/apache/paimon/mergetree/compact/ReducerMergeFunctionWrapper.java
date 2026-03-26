@@ -69,6 +69,12 @@ public class ReducerMergeFunctionWrapper implements MergeFunctionWrapper<KeyValu
     /** Get current value of the {@link MergeFunction} helper. */
     @Override
     public KeyValue getResult() {
-        return isInitialized ? mergeFunction.getResult() : initialKv;
+        if (!isInitialized) {
+            if (!mergeFunction.alwaysMerge()) {
+                return initialKv;
+            }
+            merge(initialKv);
+        }
+        return mergeFunction.getResult();
     }
 }

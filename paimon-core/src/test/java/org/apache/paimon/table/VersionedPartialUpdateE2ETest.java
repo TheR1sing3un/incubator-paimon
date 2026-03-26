@@ -145,6 +145,18 @@ public class VersionedPartialUpdateE2ETest extends TableTestBase {
 
     // ===== Row construction helpers =====
 
+    /** Build a row with a multi-entry MAP but null latest_version/latest_value. */
+    private GenericRow stringMvRowWithMapOnly(
+            int pk, String singleCol, Map<String, String> versions) {
+        Map<Object, Object> mapData = new HashMap<>();
+        for (Map.Entry<String, String> e : versions.entrySet()) {
+            mapData.put(BinaryString.fromString(e.getKey()), BinaryString.fromString(e.getValue()));
+        }
+        GenericRow mvRow = GenericRow.of(null, null, new GenericMap(mapData));
+        return GenericRow.of(
+                pk, singleCol == null ? null : BinaryString.fromString(singleCol), mvRow);
+    }
+
     private GenericRow stringMvRow(int pk, String singleCol, String version, String value) {
         GenericRow mvRow = null;
         if (version != null) {
@@ -724,5 +736,58 @@ public class VersionedPartialUpdateE2ETest extends TableTestBase {
         InternalRow mvRow = result.get(0).getRow(2, 3);
         assertThat(toStringMap(mvRow.getMap(2)))
                 .containsExactlyInAnyOrderEntriesOf(strMap("v1", "updated"));
+    }
+
+    // ===================================================================
+    // Test 17: Single write with MAP computes latest without merge
+    //  - Writes a row where MAP has multiple entries but latest_version
+    //    and latest_value are null. Without alwaysMerge(), the
+    //    ReducerMergeFunctionWrapper would short-circuit and return the
+    //    original record, leaving latest fields null.
+    // ===================================================================
+
+    @Test
+    public void testSingleWriteComputesLatestFromMap() throws Exception {
+        createStringMvTable();
+        Table upsert = withMergeMode(catalog.getTable(identifier()), "upsert");
+
+        // Write a single record: MAP has v1, v3, v2 but latest fields are null
+        write(
+                upsert,
+                ioManager,
+                stringMvRowWithMapOnly(1, "A", strMap("v1", "val1", "v3", "val3", "v2", "val2")));
+
+        // No compaction — read directly
+        List<InternalRow> result = read(upsert);
+        assertThat(result).hasSize(1);
+        InternalRow mvRow = result.get(0).getRow(2, 3);
+        // latest must be v3 (lexicographically greatest), computed from MAP
+        assertThat(mvRow.getString(0).toString()).isEqualTo("v3");
+        assertThat(mvRow.getString(1).toString()).isEqualTo("val3");
+        assertThat(toStringMap(mvRow.getMap(2)))
+                .containsExactlyInAnyOrderEntriesOf(
+                        strMap("v1", "val1", "v2", "val2", "v3", "val3"));
+    }
+
+    // ===================================================================
+    // Test 18: Single write with single pair also computes latest
+    // ===================================================================
+
+    @Test
+    public void testSingleWriteSinglePairComputesLatest() throws Exception {
+        createStringMvTable();
+        Table upsert = withMergeMode(catalog.getTable(identifier()), "upsert");
+
+        // Write a single record for a new key — single version/value pair
+        write(upsert, ioManager, stringMvRow(1, "A", "v1", "hello"));
+
+        // No compaction — read directly
+        List<InternalRow> result = read(upsert);
+        assertThat(result).hasSize(1);
+        InternalRow mvRow = result.get(0).getRow(2, 3);
+        assertThat(mvRow.getString(0).toString()).isEqualTo("v1");
+        assertThat(mvRow.getString(1).toString()).isEqualTo("hello");
+        assertThat(toStringMap(mvRow.getMap(2)))
+                .containsExactlyInAnyOrderEntriesOf(strMap("v1", "hello"));
     }
 }

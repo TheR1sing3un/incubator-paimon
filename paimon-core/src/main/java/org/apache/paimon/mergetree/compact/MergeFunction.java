@@ -50,4 +50,13 @@ public interface MergeFunction<T> {
 
     /** Require copy input kv, this may cache kv in memory. */
     boolean requireCopy();
+
+    /**
+     * Whether single records (no merge needed) must still go through {@link #add} + {@link
+     * #getResult}. Default {@code false} — the wrapper may return the original record directly as
+     * an optimization.
+     */
+    default boolean alwaysMerge() {
+        return false;
+    }
 }

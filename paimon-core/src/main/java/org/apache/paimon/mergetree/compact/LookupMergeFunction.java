@@ -127,6 +127,11 @@ public class LookupMergeFunction implements MergeFunction<KeyValue> {
         return true;
     }
 
+    @Override
+    public boolean alwaysMerge() {
+        return mergeFunction.alwaysMerge();
+    }
+
     public static MergeFunctionFactory<KeyValue> wrap(
             MergeFunctionFactory<KeyValue> wrapped,
             CoreOptions options,

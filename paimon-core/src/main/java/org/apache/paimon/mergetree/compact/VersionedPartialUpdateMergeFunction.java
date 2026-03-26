@@ -169,7 +169,14 @@ public class VersionedPartialUpdateMergeFunction implements MergeFunction<KeyVal
             currentDeleteRow = true;
             meetInsert = false;
             for (int i = 0; i < row.getFieldCount(); i++) {
-                row.setField(i, null);
+                if (primaryKeyIndices.contains(i)) {
+                    Object value = getters[i].getFieldOrNull(kv.value());
+                    if (value != null) {
+                        row.setField(i, value);
+                    }
+                } else {
+                    row.setField(i, null);
+                }
             }
             mvStates.clear();
             return;
@@ -323,6 +330,11 @@ public class VersionedPartialUpdateMergeFunction implements MergeFunction<KeyVal
     @Override
     public boolean requireCopy() {
         return false;
+    }
+
+    @Override
+    public boolean alwaysMerge() {
+        return true;
     }
 
     /** Mutable state for tracking one multi-version column during a merge pass. */

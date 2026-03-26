@@ -818,6 +818,47 @@ public class VersionedPartialUpdateMergeFunctionTest {
         assertThat(resMv2.getInt(1)).isEqualTo(42);
     }
 
+    // ===== alwaysMerge tests =====
+
+    @Test
+    void testAlwaysMergeReturnsTrue() {
+        assertThat(function.alwaysMerge()).isTrue();
+    }
+
+    @Test
+    void testSingleRecordThroughReducerWrapperComputesLatest() {
+        // When only one record exists for a key, ReducerMergeFunctionWrapper used to
+        // short-circuit and return the original record without calling getResult().
+        // With alwaysMerge()=true, the single record must still go through the merge
+        // function so that latest_value/latest_version are computed from the MAP.
+        ReducerMergeFunctionWrapper wrapper = new ReducerMergeFunctionWrapper(function);
+        wrapper.reset();
+
+        // Build a record with MAP containing multiple versions but null latest fields
+        Map<String, String> versions = new LinkedHashMap<>();
+        versions.put("v1", "val1");
+        versions.put("v3", "val3");
+        versions.put("v2", "val2");
+        wrapper.add(kvWithMap(1, "A", versions, VersionedMergeMode.UPSERT));
+
+        KeyValue result = wrapper.getResult();
+        assertThat(result.valueKind()).isEqualTo(RowKind.INSERT);
+        // latest must be v3 (lexicographically greatest), computed from MAP
+        assertMvCol(result.value(), "v3", "val3", mapOf("v1", "val1", "v2", "val2", "v3", "val3"));
+    }
+
+    @Test
+    void testSingleRecordThroughReducerWrapperComputesLatestFromSinglePair() {
+        // Single version/value pair (no MAP) — single record through wrapper
+        ReducerMergeFunctionWrapper wrapper = new ReducerMergeFunctionWrapper(function);
+        wrapper.reset();
+        wrapper.add(kv(1, "A", "v1", "hello", VersionedMergeMode.UPSERT));
+
+        KeyValue result = wrapper.getResult();
+        assertThat(result.valueKind()).isEqualTo(RowKind.INSERT);
+        assertMvCol(result.value(), "v1", "hello", mapOf("v1", "hello"));
+    }
+
     @Test
     void testValidationPassesWhenLatestValueAndMapValueHaveDifferentFieldIds() {
         // Simulate the case where LATEST_VALUE and MAP value ROW types have the same
