@@ -22,6 +22,7 @@ import org.apache.paimon.rest.RESTResponse;
 import org.apache.paimon.rest.responses.ErrorResponse;
 import org.apache.paimon.rest.server.auth.AuthChannelHandler;
 import org.apache.paimon.rest.server.auth.AuthContext;
+import org.apache.paimon.rest.server.utils.PerfUtil;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
 import org.apache.paimon.shade.netty4.io.netty.buffer.Unpooled;
@@ -103,7 +104,11 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
         handleApiRequest(ctx, request);
     }
 
+    private static final int MAX_ERROR_BODY_LENGTH = 2048;
+
     private void handleApiRequest(ChannelHandlerContext ctx, FullHttpRequest request) {
+        String path = request.uri().split("\\?")[0];
+        String body = request.content().toString(StandardCharsets.UTF_8);
         try {
             AuthContext authContext = ctx.channel().attr(AuthChannelHandler.AUTH_CONTEXT_KEY).get();
             if (authContext == null) {
@@ -112,6 +117,16 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
             RouteResult result = dispatcher.dispatch(authContext, request);
             sendResponse(ctx, result.status(), result.response());
         } catch (Exception e) {
+            try {
+                PerfUtil.perfCount(path, "", "request_error");
+            } catch (Exception perfEx) {
+                LOG.warn("PerfUtil.perfCount failed for path={}", path, perfEx);
+            }
+            String truncatedBody =
+                    body.length() > MAX_ERROR_BODY_LENGTH
+                            ? body.substring(0, MAX_ERROR_BODY_LENGTH) + "..."
+                            : body;
+            LOG.error("Request failed: path={}, body={}", path, truncatedBody, e);
             handleException(ctx, e);
         }
     }

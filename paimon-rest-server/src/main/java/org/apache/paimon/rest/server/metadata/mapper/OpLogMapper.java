@@ -18,6 +18,7 @@
 
 package org.apache.paimon.rest.server.metadata.mapper;
 
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -88,4 +89,7 @@ public interface OpLogMapper {
 
     @Select("SELECT COUNT(*) FROM paimon_catalog.paimon_op_log")
     int count();
+
+    @Delete("DELETE FROM paimon_catalog.paimon_op_log " + "WHERE created_at < #{cutoffMillis}")
+    int deleteOlderThan(@Param("cutoffMillis") long cutoffMillis);
 }

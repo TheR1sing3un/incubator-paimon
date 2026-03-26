@@ -127,6 +127,15 @@ public class RESTCatalogServerOptions {
                                     + "is forwarded to this URL for validation. "
                                     + "When not set, authentication is disabled (all requests allowed).");
 
+    public static final ConfigOption<Integer> OP_LOG_RETENTION_DAYS =
+            ConfigOptions.key("rest-server.metadata.op-log.retention-days")
+                    .intType()
+                    .defaultValue(30)
+                    .withDescription(
+                            "Number of days to retain audit log entries in paimon_op_log. "
+                                    + "Entries older than this are periodically deleted. "
+                                    + "Set to -1 to disable automatic cleanup.");
+
     public static final ConfigOption<String> HADOOP_USER_NAME =
             ConfigOptions.key("rest-server.hadoop-user-name")
                     .stringType()

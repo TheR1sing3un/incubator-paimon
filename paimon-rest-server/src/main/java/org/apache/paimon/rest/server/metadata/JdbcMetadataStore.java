@@ -34,6 +34,9 @@ import javax.annotation.Nullable;
 import javax.sql.DataSource;
 
 import java.io.IOException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /** MyBatis-based implementation of {@link MetadataStore} backed by MySQL (or H2 for testing). */
 public class JdbcMetadataStore implements MetadataStore {
@@ -42,10 +45,32 @@ public class JdbcMetadataStore implements MetadataStore {
 
     private final DataSource dataSource;
     private final SqlSessionFactory sqlSessionFactory;
+    @Nullable private final ScheduledExecutorService cleanupScheduler;
 
     public JdbcMetadataStore(DataSource dataSource) {
+        this(dataSource, -1);
+    }
+
+    /**
+     * @param retentionDays number of days to keep op-log entries. {@code <= 0} disables cleanup.
+     */
+    public JdbcMetadataStore(DataSource dataSource, int retentionDays) {
         this.dataSource = dataSource;
         this.sqlSessionFactory = buildSqlSessionFactory(dataSource);
+        if (retentionDays > 0) {
+            this.cleanupScheduler =
+                    Executors.newSingleThreadScheduledExecutor(
+                            r -> {
+                                Thread t = new Thread(r, "op-log-cleanup");
+                                t.setDaemon(true);
+                                return t;
+                            });
+            this.cleanupScheduler.scheduleAtFixedRate(
+                    () -> cleanupOldEntries(retentionDays), 1, 24, TimeUnit.HOURS);
+            LOG.info("Op-log cleanup enabled: retaining {} days", retentionDays);
+        } else {
+            this.cleanupScheduler = null;
+        }
     }
 
     private static SqlSessionFactory buildSqlSessionFactory(DataSource dataSource) {
@@ -97,6 +122,22 @@ public class JdbcMetadataStore implements MetadataStore {
         }
     }
 
+    private void cleanupOldEntries(int retentionDays) {
+        long cutoffMillis = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(retentionDays);
+        try (SqlSession session = sqlSessionFactory.openSession(true)) {
+            OpLogMapper mapper = session.getMapper(OpLogMapper.class);
+            int deleted = mapper.deleteOlderThan(cutoffMillis);
+            if (deleted > 0) {
+                LOG.info(
+                        "Op-log cleanup: deleted {} entries older than {} days",
+                        deleted,
+                        retentionDays);
+            }
+        } catch (Exception e) {
+            LOG.warn("Op-log cleanup failed", e);
+        }
+    }
+
     /** Expose the SqlSessionFactory for testing purposes. */
     public SqlSessionFactory getSqlSessionFactory() {
         return sqlSessionFactory;
@@ -104,6 +145,9 @@ public class JdbcMetadataStore implements MetadataStore {
 
     @Override
     public void close() throws IOException {
+        if (cleanupScheduler != null) {
+            cleanupScheduler.shutdownNow();
+        }
         if (dataSource instanceof HikariDataSource) {
             HikariDataSource hikari = (HikariDataSource) dataSource;
             if (!hikari.isClosed()) {

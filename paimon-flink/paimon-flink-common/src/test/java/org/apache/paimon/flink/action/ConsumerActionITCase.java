@@ -405,6 +405,11 @@ public class ConsumerActionITCase extends ActionITCaseBase {
         }
         iterator3.close();
 
+        // Wait for all Flink jobs to fully terminate after iterator close.
+        // iterator.close() triggers async job cancellation, and in-flight checkpoints
+        // may still write consumer files after clearConsumers deletes them.
+        Thread.sleep(2000);
+
         Optional<Consumer> consumer1 = consumerManager.consumer("myid1_1");
         Optional<Consumer> consumer2 = consumerManager.consumer("myid1_2");
         Optional<Consumer> consumer3 = consumerManager.consumer("myid2");
