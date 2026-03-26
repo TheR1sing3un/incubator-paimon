@@ -41,6 +41,7 @@ MODULE=${1:?"Usage: $0 <compile|core|flink-common|flink-others|spark-2.12|spark-
 REPO_LOCAL="${KCI_ENGINE_WORKSPACE:-${JOB_WS_ROOT:-/tmp}}/paimon"
 mkdir -p "${REPO_LOCAL}"
 
+export MAVEN_OPTS="${MAVEN_OPTS:-} -Xmx4096m"
 MVN_COMMON="-B -ntp -Dmaven.repo.local=${REPO_LOCAL} --fail-at-end"
 
 # Random timezone for test discovery

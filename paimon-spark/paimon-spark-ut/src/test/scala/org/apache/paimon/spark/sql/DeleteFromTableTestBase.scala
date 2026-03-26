@@ -250,7 +250,19 @@ abstract class DeleteFromTableTestBase extends PaimonSparkTestBase {
             spark.sql("CALL sys.compact(table => 'T')")
           }
 
+          // versioned-partial-update with DV + write-only requires explicit compact:
+          // 1. Before DELETE: ensure data is properly compacted for correct merge
+          // 2. After DELETE: compaction converts -D records into deletion vectors
+          if (mergeEngine == MergeEngine.VERSIONED_PARTIAL_UPDATE) {
+            spark.sql("CALL sys.compact(table => 'T')")
+          }
+
           spark.sql("DELETE FROM T WHERE id = 1")
+
+          if (mergeEngine == MergeEngine.VERSIONED_PARTIAL_UPDATE) {
+            spark.sql("CALL sys.compact(table => 'T')")
+          }
+
           assertThat(spark.sql("SELECT * FROM T").collectAsList().toString)
             .isEqualTo("[[2,b,null]]")
         }
