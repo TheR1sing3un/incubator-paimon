@@ -303,27 +303,4 @@ abstract class VersionedPartialUpdateTestBase extends PaimonSparkTestBase {
     }
   }
 
-  // ===== Validation =====
-
-  test("versioned partial update: rejects table without DV enabled") {
-    withTable("T") {
-      val e = intercept[Exception] {
-        spark.sql("""
-                    |CREATE TABLE T (
-                    |  pk INT,
-                    |  single_col STRING,
-                    |  mv_col STRUCT<latest_version: STRING, latest_value: STRING,
-                    |                all_versioned_values: MAP<STRING, STRING>>
-                    |) TBLPROPERTIES (
-                    |  'primary-key' = 'pk',
-                    |  'bucket' = '1',
-                    |  'merge-engine' = 'versioned-partial-update',
-                    |  'versioned-partial-update.multi-version-fields' = 'mv_col',
-                    |  'deletion-vectors.enabled' = 'false'
-                    |)
-                    |""".stripMargin)
-      }
-      assert(e.getMessage.contains("deletion-vectors.enabled = true"))
-    }
-  }
 }

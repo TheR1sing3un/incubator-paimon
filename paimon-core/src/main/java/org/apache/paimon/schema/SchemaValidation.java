@@ -229,9 +229,6 @@ public class SchemaValidation {
 
         if (options.mergeEngine() == MergeEngine.VERSIONED_PARTIAL_UPDATE) {
             checkArgument(
-                    options.deletionVectorsEnabled(),
-                    "Versioned partial update merge engine requires deletion-vectors.enabled = true.");
-            checkArgument(
                     options.snapshotSequenceOrdering(),
                     "Versioned partial update merge engine requires sequence.snapshot-ordering = true.");
             if (options.changelogProducer() != ChangelogProducer.LOOKUP
@@ -239,6 +236,14 @@ public class SchemaValidation {
                 throw new IllegalArgumentException(
                         "Only support 'none' and 'lookup' changelog-producer on "
                                 + "versioned-partial-update merge engine.");
+            }
+            if (options.toConfiguration()
+                    .get(CoreOptions.VERSIONED_PARTIAL_UPDATE_IGNORE_MODE_ENABLED)) {
+                checkArgument(
+                        options.needLookup(),
+                        "Versioned partial update with ignore-mode.enabled=true requires lookup. "
+                                + "Enable one of: deletion-vectors.enabled=true, "
+                                + "changelog-producer=lookup, or force-lookup=true.");
             }
         }
 

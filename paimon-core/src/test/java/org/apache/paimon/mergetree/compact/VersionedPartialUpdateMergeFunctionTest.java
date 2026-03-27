@@ -322,15 +322,14 @@ public class VersionedPartialUpdateMergeFunctionTest {
     }
 
     @Test
-    void testValidationDVRequired() {
+    void testFactoryCreationWithoutDV() {
         Options options = new Options();
         options.set(CoreOptions.VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS, "mv_col");
-        // DV NOT enabled
-        assertThatThrownBy(
-                        () ->
-                                VersionedPartialUpdateMergeFunction.factory(
-                                        options, ROW_TYPE, Arrays.asList("pk")))
-                .hasMessageContaining("deletion-vectors.enabled = true");
+        // DV NOT enabled — should still succeed (DV is no longer required)
+        MergeFunctionFactory<KeyValue> factory =
+                VersionedPartialUpdateMergeFunction.factory(options, ROW_TYPE, Arrays.asList("pk"));
+        assertThat(factory).isNotNull();
+        assertThat(factory.create()).isNotNull();
     }
 
     // ===== Sequence-number ordering and latest-tracking tests =====

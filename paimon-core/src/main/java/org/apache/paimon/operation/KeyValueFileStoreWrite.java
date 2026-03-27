@@ -64,6 +64,7 @@ import java.util.function.Supplier;
 
 import static org.apache.paimon.format.FileFormat.fileFormat;
 import static org.apache.paimon.utils.FileStorePathFactory.createFormatPathFactories;
+import static org.apache.paimon.utils.Preconditions.checkArgument;
 
 /** {@link FileStoreWrite} for {@link KeyValueFileStore}. */
 public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
@@ -200,6 +201,19 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
             String mergeModeStr =
                     options.toConfiguration().get(CoreOptions.VERSIONED_PARTIAL_UPDATE_MERGE_MODE);
             mergeMode = VersionedMergeMode.fromString(mergeModeStr);
+        }
+
+        if (mergeMode == VersionedMergeMode.IGNORE) {
+            checkArgument(
+                    options.toConfiguration()
+                            .get(CoreOptions.VERSIONED_PARTIAL_UPDATE_IGNORE_MODE_ENABLED),
+                    "Versioned partial update merge-mode 'ignore' requires "
+                            + "versioned-partial-update.ignore-mode.enabled = true.");
+            checkArgument(
+                    options.needLookup(),
+                    "Versioned partial update with merge-mode 'ignore' requires lookup capability. "
+                            + "Enable one of: deletion-vectors.enabled=true, "
+                            + "changelog-producer=lookup, or force-lookup=true.");
         }
 
         return new MergeTreeWriter(

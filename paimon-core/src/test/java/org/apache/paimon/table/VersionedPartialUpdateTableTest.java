@@ -510,7 +510,8 @@ public class VersionedPartialUpdateTableTest extends TableTestBase {
     // ===== Validation tests =====
 
     @Test
-    public void testNonDVTableRejectsVersionedPartialUpdate() throws Exception {
+    public void testIgnoreModeEnabledWithoutLookupRejectsTableCreation() throws Exception {
+        // ignore-mode.enabled=true (default) + no DV/lookup → table creation should fail
         Schema.Builder schemaBuilder = Schema.newBuilder();
         schemaBuilder.column("pk", DataTypes.INT());
         schemaBuilder.column("single_col", DataTypes.STRING());
@@ -519,15 +520,278 @@ public class VersionedPartialUpdateTableTest extends TableTestBase {
         schemaBuilder.option("bucket", "1");
         schemaBuilder.option("merge-engine", "versioned-partial-update");
         schemaBuilder.option("versioned-partial-update.multi-version-fields", "mv_col");
-        // DV NOT enabled — should fail at some point in the pipeline
-        schemaBuilder.option("deletion-vectors.enabled", "false");
-        assertThatThrownBy(
-                        () -> {
-                            catalog.createTable(identifier(), schemaBuilder.build(), true);
-                            Table table = catalog.getTable(identifier());
-                            write(table, ioManager, row(1, "A", "v1", "hello"));
-                        })
-                .hasMessageContaining("deletion-vectors.enabled = true");
+        schemaBuilder.option("sequence.snapshot-ordering", "true");
+        // no DV, no force-lookup, no lookup changelog → no lookup capability
+        assertThatThrownBy(() -> catalog.createTable(identifier(), schemaBuilder.build(), true))
+                .hasMessageContaining("ignore-mode.enabled=true requires lookup");
+    }
+
+    @Test
+    public void testMissingSnapshotOrderingRejectsTableCreation() throws Exception {
+        Schema.Builder schemaBuilder = Schema.newBuilder();
+        schemaBuilder.column("pk", DataTypes.INT());
+        schemaBuilder.column("single_col", DataTypes.STRING());
+        schemaBuilder.column("mv_col", MV_ROW_TYPE);
+        schemaBuilder.primaryKey("pk");
+        schemaBuilder.option("bucket", "1");
+        schemaBuilder.option("merge-engine", "versioned-partial-update");
+        schemaBuilder.option("versioned-partial-update.multi-version-fields", "mv_col");
+        schemaBuilder.option("deletion-vectors.enabled", "true");
+        // snapshot-ordering not set → should fail
+        assertThatThrownBy(() -> catalog.createTable(identifier(), schemaBuilder.build(), true))
+                .hasMessageContaining("sequence.snapshot-ordering = true");
+    }
+
+    // ===== Ignore-mode disabled: UPSERT-only without DV/lookup =====
+
+    /** Create a versioned-partial-update table without DV, with ignore-mode disabled. */
+    private Table createTableWithoutDV() throws Exception {
+        Schema.Builder schemaBuilder = Schema.newBuilder();
+        schemaBuilder.column("pk", DataTypes.INT());
+        schemaBuilder.column("single_col", DataTypes.STRING());
+        schemaBuilder.column("mv_col", MV_ROW_TYPE);
+        schemaBuilder.primaryKey("pk");
+        schemaBuilder.option("bucket", "1");
+        schemaBuilder.option("merge-engine", "versioned-partial-update");
+        schemaBuilder.option("versioned-partial-update.multi-version-fields", "mv_col");
+        schemaBuilder.option("sequence.snapshot-ordering", "true");
+        schemaBuilder.option("versioned-partial-update.ignore-mode.enabled", "false");
+        schemaBuilder.option("num-levels", "3");
+        catalog.createTable(identifier(), schemaBuilder.build(), true);
+        return catalog.getTable(identifier());
+    }
+
+    private Table tableWithoutDVWithMergeMode(String mergeMode) throws Exception {
+        Map<String, String> options = new HashMap<>();
+        options.put("versioned-partial-update.merge-mode", mergeMode);
+        return catalog.getTable(identifier()).copy(options);
+    }
+
+    @Test
+    public void testUpsertWithoutDVWriteAndRead() throws Exception {
+        createTableWithoutDV();
+        Table upsertTable = tableWithoutDVWithMergeMode("upsert");
+        write(upsertTable, ioManager, row(1, "A", "v1", "hello"));
+        write(upsertTable, ioManager, row(1, "B", "v2", "world"));
+        compact(upsertTable, BinaryRow.EMPTY_ROW, 0, ioManager, true);
+        List<InternalRow> result = read(upsertTable);
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getString(1).toString()).isEqualTo("B");
+        assertMvCol(result.get(0), "v2", "world", mapOf("v1", "hello", "v2", "world"));
+    }
+
+    @Test
+    public void testUpsertWithoutDVOverwritesExistingVersionKey() throws Exception {
+        createTableWithoutDV();
+        Table upsertTable = tableWithoutDVWithMergeMode("upsert");
+        write(upsertTable, ioManager, row(1, "A", "v1", "original"));
+        compact(upsertTable, BinaryRow.EMPTY_ROW, 0, ioManager, true);
+        write(upsertTable, ioManager, row(1, "B", "v1", "updated"));
+        compact(upsertTable, BinaryRow.EMPTY_ROW, 0, ioManager, true);
+        List<InternalRow> result = read(upsertTable);
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getString(1).toString()).isEqualTo("B");
+        assertMvCol(result.get(0), "v1", "updated", mapOf("v1", "updated"));
+    }
+
+    @Test
+    public void testUpsertWithoutDVMultiLevelCompaction() throws Exception {
+        createTableWithoutDV();
+        Table upsertTable = tableWithoutDVWithMergeMode("upsert");
+
+        write(upsertTable, ioManager, row(1, "A", "v1", "hello"));
+        compact(upsertTable, BinaryRow.EMPTY_ROW, 0, ioManager, true);
+
+        write(upsertTable, ioManager, row(1, "B", "v2", "world"));
+        compact(upsertTable, BinaryRow.EMPTY_ROW, 0, ioManager, true);
+
+        write(upsertTable, ioManager, row(1, "C", "v3", "foo"));
+        compact(upsertTable, BinaryRow.EMPTY_ROW, 0, ioManager, true);
+
+        List<InternalRow> result = read(upsertTable);
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getString(1).toString()).isEqualTo("C");
+        assertMvCol(result.get(0), "v3", "foo", mapOf("v1", "hello", "v2", "world", "v3", "foo"));
+    }
+
+    @Test
+    public void testUpsertWithoutDVMultiplePKs() throws Exception {
+        createTableWithoutDV();
+        Table upsertTable = tableWithoutDVWithMergeMode("upsert");
+        write(upsertTable, ioManager, row(1, "A", "v1", "hello"), row(2, "X", "v1", "world"));
+        compact(upsertTable, BinaryRow.EMPTY_ROW, 0, ioManager, true);
+
+        List<InternalRow> result = read(upsertTable);
+        assertThat(result).hasSize(2);
+        Map<Integer, InternalRow> byPk =
+                result.stream().collect(Collectors.toMap(r -> r.getInt(0), r -> r));
+        assertThat(byPk.get(1).getString(1).toString()).isEqualTo("A");
+        assertThat(byPk.get(2).getString(1).toString()).isEqualTo("X");
+    }
+
+    @Test
+    public void testUpsertWithoutDVMergeOnRead() throws Exception {
+        createTableWithoutDV();
+        Table upsertTable = tableWithoutDVWithMergeMode("upsert");
+        // Write two batches without compaction
+        write(upsertTable, ioManager, row(1, "A", "v1", "hello"));
+        write(upsertTable, ioManager, row(1, "B", "v2", "world"));
+
+        // Read without compaction — should merge on read
+        List<InternalRow> result = read(upsertTable);
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getString(1).toString()).isEqualTo("B");
+        assertMvCol(result.get(0), "v2", "world", mapOf("v1", "hello", "v2", "world"));
+    }
+
+    @Test
+    public void testUpsertWithoutDVDeleteAndReinsert() throws Exception {
+        createTableWithoutDV();
+        Table upsertTable = tableWithoutDVWithMergeMode("upsert");
+
+        write(upsertTable, ioManager, row(1, "A", "v1", "hello"));
+        compact(upsertTable, BinaryRow.EMPTY_ROW, 0, ioManager, true);
+
+        write(upsertTable, ioManager, deleteRow(1));
+        compact(upsertTable, BinaryRow.EMPTY_ROW, 0, ioManager, true);
+
+        List<InternalRow> afterDelete = read(upsertTable);
+        assertThat(afterDelete).isEmpty();
+
+        write(upsertTable, ioManager, row(1, "B", "v2", "world"));
+        compact(upsertTable, BinaryRow.EMPTY_ROW, 0, ioManager, true);
+
+        List<InternalRow> result = read(upsertTable);
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getString(1).toString()).isEqualTo("B");
+        assertMvCol(result.get(0), "v2", "world", mapOf("v2", "world"));
+    }
+
+    @Test
+    public void testUpsertWithoutDVPreservesAllVersionKeys() throws Exception {
+        createTableWithoutDV();
+        Table upsertTable = tableWithoutDVWithMergeMode("upsert");
+        for (int i = 1; i <= 5; i++) {
+            write(upsertTable, ioManager, row(1, "val" + i, "v" + i, "data" + i));
+            compact(upsertTable, BinaryRow.EMPTY_ROW, 0, ioManager, true);
+        }
+
+        List<InternalRow> result = read(upsertTable);
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getString(1).toString()).isEqualTo("val5");
+        assertMvCol(
+                result.get(0),
+                "v5",
+                "data5",
+                mapOf("v1", "data1", "v2", "data2", "v3", "data3", "v4", "data4", "v5", "data5"));
+    }
+
+    @Test
+    public void testIgnoreModeRejectedWhenIgnoreModeDisabled() throws Exception {
+        createTableWithoutDV();
+        // Try to use ignore merge mode on a table with ignore-mode.enabled=false → should fail
+        Table ignoreTable = tableWithoutDVWithMergeMode("ignore");
+        assertThatThrownBy(() -> write(ignoreTable, ioManager, row(1, "A", "v1", "hello")))
+                .hasMessageContaining("ignore-mode.enabled = true");
+    }
+
+    // ===== Force-lookup without DV: ignore mode allowed =====
+
+    /** Create a versioned-partial-update table with force-lookup (no DV). */
+    private Table createTableWithForceLookup() throws Exception {
+        Schema.Builder schemaBuilder = Schema.newBuilder();
+        schemaBuilder.column("pk", DataTypes.INT());
+        schemaBuilder.column("single_col", DataTypes.STRING());
+        schemaBuilder.column("mv_col", MV_ROW_TYPE);
+        schemaBuilder.primaryKey("pk");
+        schemaBuilder.option("bucket", "1");
+        schemaBuilder.option("merge-engine", "versioned-partial-update");
+        schemaBuilder.option("versioned-partial-update.multi-version-fields", "mv_col");
+        schemaBuilder.option("sequence.snapshot-ordering", "true");
+        schemaBuilder.option("force-lookup", "true");
+        schemaBuilder.option("num-levels", "3");
+        catalog.createTable(identifier(), schemaBuilder.build(), true);
+        return catalog.getTable(identifier());
+    }
+
+    private Table tableWithForceLookupAndMergeMode(String mergeMode) throws Exception {
+        Map<String, String> options = new HashMap<>();
+        options.put("versioned-partial-update.merge-mode", mergeMode);
+        return catalog.getTable(identifier()).copy(options);
+    }
+
+    @Test
+    public void testForceLookupUpsertWriteAndRead() throws Exception {
+        createTableWithForceLookup();
+        Table upsertTable = tableWithForceLookupAndMergeMode("upsert");
+        write(upsertTable, ioManager, row(1, "A", "v1", "hello"));
+        write(upsertTable, ioManager, row(1, "B", "v2", "world"));
+        compact(upsertTable, BinaryRow.EMPTY_ROW, 0, ioManager, true);
+        List<InternalRow> result = read(upsertTable);
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getString(1).toString()).isEqualTo("B");
+        assertMvCol(result.get(0), "v2", "world", mapOf("v1", "hello", "v2", "world"));
+    }
+
+    @Test
+    public void testForceLookupIgnoreDoesNotOverwrite() throws Exception {
+        createTableWithForceLookup();
+        Table upsertTable = tableWithForceLookupAndMergeMode("upsert");
+        write(upsertTable, ioManager, row(1, "A", "v1", "hello"));
+        compact(upsertTable, BinaryRow.EMPTY_ROW, 0, ioManager, true);
+
+        Table ignoreTable = tableWithForceLookupAndMergeMode("ignore");
+        write(ignoreTable, ioManager, row(1, "B", "v2", "world"));
+        compact(upsertTable, BinaryRow.EMPTY_ROW, 0, ioManager, true);
+
+        List<InternalRow> result = read(upsertTable);
+        assertThat(result).hasSize(1);
+        // single_col should remain "A" because ignore mode doesn't overwrite
+        assertThat(result.get(0).getString(1).toString()).isEqualTo("A");
+        assertMvCol(result.get(0), "v2", "world", mapOf("v1", "hello", "v2", "world"));
+    }
+
+    @Test
+    public void testForceLookupIgnoreFillsNullColumn() throws Exception {
+        createTableWithForceLookup();
+        Table upsertTable = tableWithForceLookupAndMergeMode("upsert");
+        write(upsertTable, ioManager, row(1, null, "v1", "hello"));
+        compact(upsertTable, BinaryRow.EMPTY_ROW, 0, ioManager, true);
+
+        Table ignoreTable = tableWithForceLookupAndMergeMode("ignore");
+        write(ignoreTable, ioManager, row(1, "filled", "v2", "world"));
+        compact(upsertTable, BinaryRow.EMPTY_ROW, 0, ioManager, true);
+
+        List<InternalRow> result = read(upsertTable);
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getString(1).toString()).isEqualTo("filled");
+    }
+
+    @Test
+    public void testForceLookupMixedModes() throws Exception {
+        createTableWithForceLookup();
+
+        // Job A: upsert
+        Table upsertTable = tableWithForceLookupAndMergeMode("upsert");
+        write(upsertTable, ioManager, row(1, "A", "v1", "a_val"));
+        compact(upsertTable, BinaryRow.EMPTY_ROW, 0, ioManager, true);
+
+        // Job B: ignore with same v1 (kept) + new v2 (added)
+        Table ignoreTable = tableWithForceLookupAndMergeMode("ignore");
+        Map<String, String> versions = new HashMap<>();
+        versions.put("v1", "ignored_val");
+        versions.put("v2", "new_val");
+        write(ignoreTable, ioManager, rowWithMultipleVersions(1, "B", "v2", "new_val", versions));
+        compact(upsertTable, BinaryRow.EMPTY_ROW, 0, ioManager, true);
+
+        // Job A: upsert overwrites v1
+        write(upsertTable, ioManager, row(1, "C", "v1", "updated_val"));
+        compact(upsertTable, BinaryRow.EMPTY_ROW, 0, ioManager, true);
+
+        List<InternalRow> result = read(upsertTable);
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getString(1).toString()).isEqualTo("C");
+        assertMvCol(result.get(0), "v2", "new_val", mapOf("v1", "updated_val", "v2", "new_val"));
     }
 
     // ===== Column projection test =====

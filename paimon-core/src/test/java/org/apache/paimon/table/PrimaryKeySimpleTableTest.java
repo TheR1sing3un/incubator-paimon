@@ -2630,6 +2630,166 @@ public class PrimaryKeySimpleTableTest extends SimpleTableTestBase {
         assertThat(results).containsExactlyInAnyOrder(expected.toArray(new String[0]));
     }
 
+    // ===== Versioned Partial Update config flexibility tests =====
+
+    @Test
+    public void testVersionedPartialUpdateUpsertWithoutDV() throws Exception {
+        // UPSERT mode without DV should work (ignore-mode disabled)
+        FileStoreTable table =
+                createFileStoreTable(
+                        options -> {
+                            options.set(MERGE_ENGINE, MergeEngine.VERSIONED_PARTIAL_UPDATE);
+                            options.set(CoreOptions.SNAPSHOT_SEQUENCE_ORDERING, true);
+                            options.set(
+                                    CoreOptions.VERSIONED_PARTIAL_UPDATE_IGNORE_MODE_ENABLED,
+                                    false);
+                        });
+        StreamTableWrite write = table.newWrite(commitUser);
+        StreamTableCommit commit = table.newCommit(commitUser);
+        write.withIOManager(IOManager.create(tempDir.toString()));
+
+        write.write(rowData(1, 10, 100L));
+        commit.commit(0, write.prepareCommit(true, 0));
+
+        write.write(rowData(1, 10, 200L));
+        commit.commit(1, write.prepareCommit(true, 1));
+
+        List<Split> splits = toSplits(table.newSnapshotReader().read().dataSplits());
+        TableRead read = table.newRead();
+        assertThat(getResult(read, splits, binaryRow(1), 0, BATCH_ROW_TO_STRING))
+                .isEqualTo(singletonList("1|10|200|binary|varbinary|mapKey:mapVal|multiset"));
+
+        write.close();
+        commit.close();
+    }
+
+    @Test
+    public void testVersionedPartialUpdateUpsertWithForceLookup() throws Exception {
+        // UPSERT mode with force-lookup, ignore-mode enabled → should work
+        FileStoreTable table =
+                createFileStoreTable(
+                        options -> {
+                            options.set(MERGE_ENGINE, MergeEngine.VERSIONED_PARTIAL_UPDATE);
+                            options.set(CoreOptions.SNAPSHOT_SEQUENCE_ORDERING, true);
+                            options.set(CoreOptions.FORCE_LOOKUP, true);
+                        });
+        StreamTableWrite write = table.newWrite(commitUser);
+        StreamTableCommit commit = table.newCommit(commitUser);
+        write.withIOManager(IOManager.create(tempDir.toString()));
+
+        write.write(rowData(1, 10, 100L));
+        commit.commit(0, write.prepareCommit(true, 0));
+
+        write.write(rowData(1, 10, 200L));
+        commit.commit(1, write.prepareCommit(true, 1));
+
+        List<Split> splits = toSplits(table.newSnapshotReader().read().dataSplits());
+        TableRead read = table.newRead();
+        assertThat(getResult(read, splits, binaryRow(1), 0, BATCH_ROW_TO_STRING))
+                .isEqualTo(singletonList("1|10|200|binary|varbinary|mapKey:mapVal|multiset"));
+
+        write.close();
+        commit.close();
+    }
+
+    @Test
+    public void testVersionedPartialUpdateTableCreationIgnoreModeWithoutLookup() {
+        // ignore-mode.enabled=true (default) without any lookup capability → table creation fails
+        assertThatThrownBy(
+                        () ->
+                                createFileStoreTable(
+                                        options -> {
+                                            options.set(
+                                                    MERGE_ENGINE,
+                                                    MergeEngine.VERSIONED_PARTIAL_UPDATE);
+                                            options.set(
+                                                    CoreOptions.SNAPSHOT_SEQUENCE_ORDERING, true);
+                                        }))
+                .hasMessageContaining("ignore-mode.enabled=true requires lookup");
+    }
+
+    @Test
+    public void testVersionedPartialUpdateIgnoreModeWriteWithDV() throws Exception {
+        // ignore-mode.enabled=true + DV → IGNORE write should succeed
+        FileStoreTable table =
+                createFileStoreTable(
+                        options -> {
+                            options.set(MERGE_ENGINE, MergeEngine.VERSIONED_PARTIAL_UPDATE);
+                            options.set(CoreOptions.SNAPSHOT_SEQUENCE_ORDERING, true);
+                            options.set(DELETION_VECTORS_ENABLED, true);
+                            options.set(
+                                    CoreOptions.VERSIONED_PARTIAL_UPDATE_MERGE_MODE.key(),
+                                    "ignore");
+                        });
+        StreamTableWrite write = table.newWrite(commitUser);
+        StreamTableCommit commit = table.newCommit(commitUser);
+        write.withIOManager(IOManager.create(tempDir.toString()));
+
+        write.write(rowData(1, 10, 100L));
+        commit.commit(0, write.prepareCommit(true, 0));
+
+        List<Split> splits = toSplits(table.newSnapshotReader().read().dataSplits());
+        TableRead read = table.newRead();
+        assertThat(getResult(read, splits, binaryRow(1), 0, BATCH_ROW_TO_STRING))
+                .isEqualTo(singletonList("1|10|100|binary|varbinary|mapKey:mapVal|multiset"));
+
+        write.close();
+        commit.close();
+    }
+
+    @Test
+    public void testVersionedPartialUpdateIgnoreModeWriteWithIgnoreDisabled() throws Exception {
+        // ignore-mode.enabled=false + merge-mode=ignore → runtime error
+        FileStoreTable table =
+                createFileStoreTable(
+                        options -> {
+                            options.set(MERGE_ENGINE, MergeEngine.VERSIONED_PARTIAL_UPDATE);
+                            options.set(CoreOptions.SNAPSHOT_SEQUENCE_ORDERING, true);
+                            options.set(
+                                    CoreOptions.VERSIONED_PARTIAL_UPDATE_IGNORE_MODE_ENABLED,
+                                    false);
+                            options.set(
+                                    CoreOptions.VERSIONED_PARTIAL_UPDATE_MERGE_MODE.key(),
+                                    "ignore");
+                        });
+        StreamTableWrite write = table.newWrite(commitUser);
+        write.withIOManager(IOManager.create(tempDir.toString()));
+
+        assertThatThrownBy(() -> write.write(rowData(1, 10, 100L)))
+                .hasMessageContaining("ignore-mode.enabled = true");
+
+        write.close();
+    }
+
+    @Test
+    public void testVersionedPartialUpdateIgnoreModeWithLookupChangelog() throws Exception {
+        // ignore-mode.enabled=true + changelog-producer=lookup (no DV) → IGNORE write succeeds
+        FileStoreTable table =
+                createFileStoreTable(
+                        options -> {
+                            options.set(MERGE_ENGINE, MergeEngine.VERSIONED_PARTIAL_UPDATE);
+                            options.set(CoreOptions.SNAPSHOT_SEQUENCE_ORDERING, true);
+                            options.set(CHANGELOG_PRODUCER, LOOKUP);
+                            options.set(
+                                    CoreOptions.VERSIONED_PARTIAL_UPDATE_MERGE_MODE.key(),
+                                    "ignore");
+                        });
+        StreamTableWrite write = table.newWrite(commitUser);
+        StreamTableCommit commit = table.newCommit(commitUser);
+        write.withIOManager(IOManager.create(tempDir.toString()));
+
+        write.write(rowData(1, 10, 100L));
+        commit.commit(0, write.prepareCommit(true, 0));
+
+        List<Split> splits = toSplits(table.newSnapshotReader().read().dataSplits());
+        TableRead read = table.newRead();
+        assertThat(getResult(read, splits, binaryRow(1), 0, BATCH_ROW_TO_STRING))
+                .isEqualTo(singletonList("1|10|100|binary|varbinary|mapKey:mapVal|multiset"));
+
+        write.close();
+        commit.close();
+    }
+
     @Override
     protected FileStoreTable createFileStoreTable(Consumer<Options> configure, RowType rowType)
             throws Exception {

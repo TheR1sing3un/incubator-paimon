@@ -73,11 +73,13 @@ import static org.apache.paimon.utils.Preconditions.checkState;
  * ({@link BinaryString#compareTo}), not numeric order. For example, {@code "v9" > "v10" > "v2"}
  * lexicographically. Use zero-padded keys (e.g., "v002", "v010") for numeric ordering.
  *
- * <h2>Prerequisite: Deletion Vectors</h2>
+ * <h2>Lookup Requirement</h2>
  *
- * <p>This merge engine <b>requires</b> {@code deletion-vectors.enabled = true}. With Deletion
- * Vectors, Paimon uses {@link LookupMergeFunction} during compaction, which guarantees that the
- * base record (ground truth from higher LSM levels) is always available via lookup.
+ * <p>When IGNORE merge mode is used ({@code versioned-partial-update.ignore-mode.enabled = true}),
+ * lookup capability is required (via deletion vectors, {@code force-lookup=true}, or {@code
+ * changelog-producer=lookup}). This ensures that the base record from higher LSM levels is always
+ * available during compaction. UPSERT mode works correctly with standard LSM compaction without
+ * lookup.
  *
  * @see CoreOptions#VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS
  * @see CoreOptions#VERSIONED_PARTIAL_UPDATE_MERGE_MODE
@@ -323,9 +325,9 @@ public class VersionedPartialUpdateMergeFunction implements MergeFunction<KeyVal
     }
 
     /**
-     * Returns {@code false} because this merge function is always wrapped by {@link
-     * LookupMergeFunction} (DV is required), which returns {@code true} from its own {@code
-     * requireCopy()} and copies KeyValue objects before calling down.
+     * Returns {@code false} because {@link #reset()} allocates a fresh {@link GenericRow} and
+     * {@link #add(KeyValue)} copies field values into it, so no references to input KeyValue
+     * objects are retained.
      */
     @Override
     public boolean requireCopy() {
@@ -381,12 +383,6 @@ public class VersionedPartialUpdateMergeFunction implements MergeFunction<KeyVal
             this.rowType = rowType;
             this.primaryKeys = primaryKeys;
             this.ignoreDelete = options.get(CoreOptions.IGNORE_DELETE);
-
-            boolean dvEnabled =
-                    options.getOptional(CoreOptions.DELETION_VECTORS_ENABLED).orElse(false);
-            checkArgument(
-                    dvEnabled,
-                    "Versioned partial update merge engine requires deletion-vectors.enabled = true.");
 
             String mvFieldsStr =
                     options.get(CoreOptions.VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS);

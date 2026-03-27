@@ -200,4 +200,84 @@ class SchemaValidationTest {
 
         assertThatNoException().isThrownBy(() -> validateTableSchema(schema));
     }
+
+    // ===== Versioned Partial Update validation tests =====
+
+    private Map<String, String> versionedPartialUpdateBaseOptions() {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.MERGE_ENGINE.key(), "versioned-partial-update");
+        options.put(CoreOptions.SNAPSHOT_SEQUENCE_ORDERING.key(), "true");
+        return options;
+    }
+
+    @Test
+    public void testVersionedPartialUpdateWithoutDVAndIgnoreModeDisabled() {
+        // No DV, no lookup, ignore-mode.enabled=false → should succeed
+        Map<String, String> options = versionedPartialUpdateBaseOptions();
+        options.put(
+                CoreOptions.VERSIONED_PARTIAL_UPDATE_IGNORE_MODE_ENABLED.key(),
+                String.valueOf(false));
+        assertThatCode(() -> validateTableSchemaExec(options)).doesNotThrowAnyException();
+    }
+
+    @Test
+    public void testVersionedPartialUpdateIgnoreModeEnabledWithoutLookup() {
+        // ignore-mode.enabled=true (default), no DV, no lookup → should fail
+        Map<String, String> options = versionedPartialUpdateBaseOptions();
+        assertThatThrownBy(() -> validateTableSchemaExec(options))
+                .hasMessageContaining("ignore-mode.enabled=true requires lookup");
+    }
+
+    @Test
+    public void testVersionedPartialUpdateIgnoreModeEnabledWithDV() {
+        // ignore-mode.enabled=true + DV → should succeed
+        Map<String, String> options = versionedPartialUpdateBaseOptions();
+        options.put(CoreOptions.DELETION_VECTORS_ENABLED.key(), "true");
+        assertThatCode(() -> validateTableSchemaExec(options)).doesNotThrowAnyException();
+    }
+
+    @Test
+    public void testVersionedPartialUpdateIgnoreModeEnabledWithForceLookup() {
+        // ignore-mode.enabled=true + force-lookup → should succeed
+        Map<String, String> options = versionedPartialUpdateBaseOptions();
+        options.put(CoreOptions.FORCE_LOOKUP.key(), "true");
+        assertThatCode(() -> validateTableSchemaExec(options)).doesNotThrowAnyException();
+    }
+
+    @Test
+    public void testVersionedPartialUpdateIgnoreModeEnabledWithLookupChangelog() {
+        // ignore-mode.enabled=true + changelog-producer=lookup → should succeed
+        Map<String, String> options = versionedPartialUpdateBaseOptions();
+        options.put(CoreOptions.CHANGELOG_PRODUCER.key(), "lookup");
+        assertThatCode(() -> validateTableSchemaExec(options)).doesNotThrowAnyException();
+    }
+
+    @Test
+    public void testVersionedPartialUpdateWithoutSnapshotOrdering() {
+        // Missing snapshot-ordering → should fail
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.MERGE_ENGINE.key(), "versioned-partial-update");
+        options.put(CoreOptions.DELETION_VECTORS_ENABLED.key(), "true");
+        assertThatThrownBy(() -> validateTableSchemaExec(options))
+                .hasMessageContaining("sequence.snapshot-ordering = true");
+    }
+
+    @Test
+    public void testVersionedPartialUpdateWithInvalidChangelogProducer() {
+        // changelog-producer=input → should fail
+        Map<String, String> options = versionedPartialUpdateBaseOptions();
+        options.put(CoreOptions.DELETION_VECTORS_ENABLED.key(), "true");
+        options.put(CoreOptions.CHANGELOG_PRODUCER.key(), "input");
+        assertThatThrownBy(() -> validateTableSchemaExec(options))
+                .hasMessageContaining(
+                        "Only support 'none' and 'lookup' changelog-producer on "
+                                + "versioned-partial-update merge engine");
+
+        // changelog-producer=full-compaction → should also fail
+        options.put(CoreOptions.CHANGELOG_PRODUCER.key(), "full-compaction");
+        assertThatThrownBy(() -> validateTableSchemaExec(options))
+                .hasMessageContaining(
+                        "Only support 'none' and 'lookup' changelog-producer on "
+                                + "versioned-partial-update merge engine");
+    }
 }

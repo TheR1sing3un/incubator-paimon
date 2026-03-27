@@ -1001,6 +1001,18 @@ public class CoreOptions implements Serializable {
                                     + "Different jobs writing to the same table can use different "
                                     + "modes by setting this option per job.");
 
+    public static final ConfigOption<Boolean> VERSIONED_PARTIAL_UPDATE_IGNORE_MODE_ENABLED =
+            key("versioned-partial-update.ignore-mode.enabled")
+                    .booleanType()
+                    .defaultValue(true)
+                    .withDescription(
+                            "Whether to allow IGNORE merge mode for versioned partial update. "
+                                    + "When enabled, the table must have lookup capability "
+                                    + "(deletion-vectors.enabled=true, force-lookup=true, "
+                                    + "or changelog-producer=lookup). "
+                                    + "When disabled, only UPSERT merge mode is allowed and "
+                                    + "no lookup capability is required.");
+
     @Immutable
     public static final ConfigOption<String> ROWKIND_FIELD =
             key("rowkind.field")
