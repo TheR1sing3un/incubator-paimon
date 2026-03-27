@@ -106,6 +106,7 @@ def write_paimon(
     ray_remote_args: Optional[Dict[str, Any]] = None,
     committer: Optional[str] = None,
     message: Optional[str] = None,
+    min_rows_per_file: Optional[int] = None,
 ) -> None:
     """Write a Ray Dataset to a Paimon table.
 
@@ -118,6 +119,9 @@ def write_paimon(
         ray_remote_args: Optional kwargs passed to ``ray.remote`` in write tasks.
         committer: Optional committer name for audit tracking.
         message: Optional commit message for audit tracking.
+        min_rows_per_file: Optional minimum number of rows per write task.
+            Ray will merge small blocks to ensure each write task receives
+            at least this many rows, which helps reduce small files.
     """
     from pypaimon.catalog.catalog_factory import CatalogFactory
     from pypaimon.write.ray_datasink import PaimonDatasink
@@ -126,7 +130,8 @@ def write_paimon(
     table = catalog.get_table(table_identifier)
 
     datasink = PaimonDatasink(table, overwrite=overwrite,
-                              committer=committer, message=message)
+                              committer=committer, message=message,
+                              min_rows_per_file=min_rows_per_file)
 
     write_kwargs = {}
     if ray_remote_args is not None:

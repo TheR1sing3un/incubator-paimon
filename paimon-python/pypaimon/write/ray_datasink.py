@@ -51,14 +51,20 @@ class PaimonDatasink(_DatasinkBase):
         overwrite: bool = False,
         committer: Optional[str] = None,
         message: Optional[str] = None,
+        min_rows_per_file: Optional[int] = None,
     ):
         self.table = table
         self.overwrite = overwrite
         self.committer = committer
         self.message = message
+        self._min_rows_per_file = min_rows_per_file
         self._table_name = table.identifier.get_full_name()
         self._writer_builder: Optional["WriteBuilder"] = None
         self._pending_commit_messages: List["CommitMessage"] = []
+
+    @property
+    def min_rows_per_write(self) -> Optional[int]:
+        return self._min_rows_per_file
 
     def __getstate__(self) -> dict:
         state = self.__dict__.copy()

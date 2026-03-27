@@ -489,6 +489,16 @@ class CoreOptions:
         .with_description("Whether to L2 normalize vectors for cosine similarity.")
     )
 
+    MAX_ROWS_PER_FILE: ConfigOption[int] = (
+        ConfigOptions.key("max-rows-per-file")
+        .int_type()
+        .no_default_value()
+        .with_description(
+            "Maximum number of rows per data file. When the pending data exceeds this limit, "
+            "the writer rolls to a new file. If not set, only target-file-size controls file rolling."
+        )
+    )
+
     READ_BATCH_SIZE: ConfigOption[int] = (
         ConfigOptions.key("read.batch-size")
         .int_type()
@@ -712,6 +722,9 @@ class CoreOptions:
 
     def vector_normalize(self, default=None):
         return self.options.get(CoreOptions.VECTOR_NORMALIZE, default)
+
+    def max_rows_per_file(self, default=None) -> Optional[int]:
+        return self.options.get(CoreOptions.MAX_ROWS_PER_FILE, default)
 
     def read_batch_size(self, default=None) -> int:
         return self.options.get(CoreOptions.READ_BATCH_SIZE, default or 1024)

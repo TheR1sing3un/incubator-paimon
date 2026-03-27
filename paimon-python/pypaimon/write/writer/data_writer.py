@@ -48,6 +48,7 @@ class DataWriter(ABC):
 
         self.options = options
         self.target_file_size = self.options.target_file_size(self.table.is_primary_key_table)
+        self.max_rows_per_file = self.options.max_rows_per_file()
         # POSTPONE_BUCKET uses AVRO format, otherwise default to PARQUET
         default_format = (
             CoreOptions.FILE_FORMAT_AVRO
@@ -146,15 +147,22 @@ class DataWriter(ABC):
             return
 
         current_size = self.pending_data.nbytes
-        if current_size > self.target_file_size:
-            split_row = self._find_optimal_split_point(self.pending_data, self.target_file_size)
-            if split_row > 0:
-                data_to_write = self.pending_data.slice(0, split_row)
-                remaining_data = self.pending_data.slice(split_row)
+        num_rows = self.pending_data.num_rows
 
-                self._write_data_to_file(data_to_write)
-                self.pending_data = remaining_data
-                self._check_and_roll_if_needed()
+        if self.max_rows_per_file and num_rows > self.max_rows_per_file:
+            split_row = self.max_rows_per_file
+        elif current_size > self.target_file_size:
+            split_row = self._find_optimal_split_point(self.pending_data, self.target_file_size)
+        else:
+            return
+
+        if split_row > 0:
+            data_to_write = self.pending_data.slice(0, split_row)
+            remaining_data = self.pending_data.slice(split_row)
+
+            self._write_data_to_file(data_to_write)
+            self.pending_data = remaining_data
+            self._check_and_roll_if_needed()
 
     def _write_data_to_file(self, data: pa.Table):
         if data.num_rows == 0:

@@ -79,6 +79,7 @@ class TableWrite:
         ray_remote_args: Optional[Dict[str, Any]] = None,
         committer: Optional[str] = None,
         message: Optional[str] = None,
+        min_rows_per_file: Optional[int] = None,
     ) -> None:
         """
         Write a Ray Dataset to Paimon table.
@@ -93,10 +94,14 @@ class TableWrite:
                 For example, ``{"num_cpus": 2, "max_retries": 3}``.
             committer: Optional committer name for audit tracking.
             message: Optional commit message for audit tracking.
+            min_rows_per_file: Optional minimum number of rows per write task.
+                Ray will merge small blocks to ensure each write task receives
+                at least this many rows, which helps reduce small files.
         """
         from pypaimon.write.ray_datasink import PaimonDatasink
         datasink = PaimonDatasink(self.table, overwrite=overwrite,
-                                  committer=committer, message=message)
+                                  committer=committer, message=message,
+                                  min_rows_per_file=min_rows_per_file)
         dataset.write_datasink(
             datasink,
             concurrency=concurrency,
