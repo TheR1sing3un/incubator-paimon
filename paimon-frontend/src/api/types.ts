@@ -54,10 +54,26 @@ export interface SchemaInfo {
   comment?: string;
 }
 
+export type DataTypeNode = string | {
+  type: string;
+  element?: DataTypeNode;
+  key?: DataTypeNode;
+  value?: DataTypeNode;
+  fields?: DataFieldNode[];
+  dimension?: number;
+};
+
+export interface DataFieldNode {
+  id: number;
+  name: string;
+  type: DataTypeNode;
+  description?: string;
+}
+
 export interface FieldInfo {
   id: number;
   name: string;
-  type: string;
+  type: DataTypeNode;
   description?: string;
 }
 

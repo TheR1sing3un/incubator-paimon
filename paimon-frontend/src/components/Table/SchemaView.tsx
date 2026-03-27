@@ -22,7 +22,8 @@ import type { FormInstance } from 'antd';
 import { PlusOutlined, MinusCircleOutlined } from '@ant-design/icons';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { alterTable } from '../../api/tables';
-import type { SchemaInfo, SchemaChange } from '../../api/types';
+import type { SchemaInfo, SchemaChange, DataTypeNode } from '../../api/types';
+import TypeDisplay from '../common/TypeDisplay';
 
 const { Text } = Typography;
 
@@ -142,7 +143,7 @@ export default function SchemaView({ database, table, schema }: Props) {
         );
       },
     },
-    { title: 'Type', dataIndex: 'type' },
+    { title: 'Type', dataIndex: 'type', render: (type: DataTypeNode) => <TypeDisplay type={type} /> },
     { title: 'Description', dataIndex: 'description', render: (v: string) => v || '-' },
   ];
 

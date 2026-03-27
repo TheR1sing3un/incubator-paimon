@@ -24,7 +24,20 @@ import { listSnapshots } from '../../api/snapshots';
 import { listSchemas } from '../../api/schemas';
 import { listTags } from '../../api/tags';
 import { formatTimestamp } from '../../utils/format';
-import type { BranchInfo, SnapshotInfo, TagInfo, FieldInfo, SchemaHistoryEntry } from '../../api/types';
+import type { BranchInfo, SnapshotInfo, TagInfo, FieldInfo, SchemaHistoryEntry, DataTypeNode } from '../../api/types';
+
+function typeToString(t: DataTypeNode): string {
+  if (typeof t === 'string') return t;
+  const keyword = t.type;
+  if (t.fields) {
+    const inner = t.fields.map(f => `${f.name} ${typeToString(f.type)}`).join(', ');
+    return `${keyword}<${inner}>`;
+  }
+  if (t.key !== undefined && t.value !== undefined) return `${keyword}<${typeToString(t.key)}, ${typeToString(t.value)}>`;
+  if (t.element !== undefined && t.dimension !== undefined) return `${keyword}<${typeToString(t.element)}, ${t.dimension}>`;
+  if (t.element !== undefined) return `${keyword}<${typeToString(t.element)}>`;
+  return keyword;
+}
 
 interface Props {
   database: string;
@@ -65,8 +78,10 @@ function diffSchema(
   const typeChanged: SchemaDiff['typeChanged'] = [];
   for (const f of next.fields) {
     const old = prevByName.get(f.name);
-    if (old && old.type !== f.type) {
-      typeChanged.push({ name: f.name, oldType: old.type, newType: f.type });
+    const oldStr = old ? typeToString(old.type) : '';
+    const newStr = typeToString(f.type);
+    if (old && oldStr !== newStr) {
+      typeChanged.push({ name: f.name, oldType: oldStr, newType: newStr });
     }
   }
   return { added, removed, typeChanged };
@@ -364,12 +379,12 @@ export default function BranchGraph({ database, table }: Props) {
                         <div style={{ marginTop: 4, borderTop: '1px solid rgba(255,255,255,0.2)', paddingTop: 4 }}>
                           {schemaDiff.added.map((f) => (
                             <div key={`+${f.name}`} style={{ color: '#52c41a' }}>
-                              + {f.name} ({f.type})
+                              + {f.name} ({typeToString(f.type)})
                             </div>
                           ))}
                           {schemaDiff.removed.map((f) => (
                             <div key={`-${f.name}`} style={{ color: '#ff4d4f' }}>
-                              - {f.name} ({f.type})
+                              - {f.name} ({typeToString(f.type)})
                             </div>
                           ))}
                           {schemaDiff.typeChanged.map((c) => (

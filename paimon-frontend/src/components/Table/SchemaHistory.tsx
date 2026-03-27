@@ -20,7 +20,8 @@ import { Table, Collapse, Tag, Spin } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { listSchemas } from '../../api/schemas';
 import { formatTimestamp } from '../../utils/format';
-import type { SchemaHistoryEntry, FieldInfo } from '../../api/types';
+import type { SchemaHistoryEntry, FieldInfo, DataTypeNode } from '../../api/types';
+import TypeDisplay from '../common/TypeDisplay';
 
 interface Props {
   database: string;
@@ -37,7 +38,7 @@ export default function SchemaHistory({ database, table, branch }: Props) {
   const fieldColumns = [
     { title: 'ID', dataIndex: 'id', width: 60 },
     { title: 'Name', dataIndex: 'name' },
-    { title: 'Type', dataIndex: 'type' },
+    { title: 'Type', dataIndex: 'type', render: (type: DataTypeNode) => <TypeDisplay type={type} /> },
   ];
 
   const items = data.map((entry: SchemaHistoryEntry) => ({
