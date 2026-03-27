@@ -293,6 +293,59 @@ class RaySinkTest(unittest.TestCase):
             datasink.on_write_complete(write_result)
         self.assertEqual(len(datasink._pending_commit_messages), 1)
 
+    def test_write_with_options(self):
+        """Test that dynamic options are passed through to the writer."""
+        datasink = PaimonDatasink(
+            self.table, overwrite=False,
+            options={'target-file-size': '64mb'}
+        )
+        self.assertEqual(datasink._options, {'target-file-size': '64mb'})
+
+        datasink.on_write_start()
+        ctx = Mock(spec=TaskContext)
+
+        # Use mock to verify with_options is called on the writer builder
+        with patch.object(self.table, 'new_batch_write_builder') as mock_builder:
+            mock_write_builder = Mock()
+            mock_write_builder.overwrite.return_value = mock_write_builder
+            mock_write_builder.with_options.return_value = mock_write_builder
+            mock_write = Mock()
+            mock_write.prepare_commit.return_value = []
+            mock_write_builder.new_write.return_value = mock_write
+            mock_builder.return_value = mock_write_builder
+
+            data_table = pa.table({
+                'id': [1],
+                'name': ['Alice'],
+                'value': [1.1]
+            })
+            datasink.write([data_table], ctx)
+            mock_write_builder.with_options.assert_called_once_with({'target-file-size': '64mb'})
+
+    def test_write_without_options(self):
+        """Test that with_options is not called when no options are provided."""
+        datasink = PaimonDatasink(self.table, overwrite=False)
+        self.assertIsNone(datasink._options)
+
+        datasink.on_write_start()
+        ctx = Mock(spec=TaskContext)
+
+        with patch.object(self.table, 'new_batch_write_builder') as mock_builder:
+            mock_write_builder = Mock()
+            mock_write_builder.overwrite.return_value = mock_write_builder
+            mock_write = Mock()
+            mock_write.prepare_commit.return_value = []
+            mock_write_builder.new_write.return_value = mock_write
+            mock_builder.return_value = mock_write_builder
+
+            data_table = pa.table({
+                'id': [1],
+                'name': ['Alice'],
+                'value': [1.1]
+            })
+            datasink.write([data_table], ctx)
+            mock_write_builder.with_options.assert_not_called()
+
     def test_on_write_failed(self):
         # Test without pending messages (on_write_complete() never called)
         datasink = PaimonDatasink(self.table, overwrite=False)

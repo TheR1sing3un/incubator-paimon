@@ -656,6 +656,93 @@ class RayDataTest(unittest.TestCase):
         )
         self.assertEqual(list(df_sorted['value']), [150, 250, 300, 400], "Value column should reflect updates")
 
+    def test_ray_data_write_with_options(self):
+        """Test Ray Data write with dynamic options (e.g. target-file-size).
+
+        Uses a small target-file-size to force file rolling. Generates enough data
+        so that PyArrow nbytes exceeds the target threshold and split is possible.
+        """
+        pa_schema = pa.schema([
+            ('id', pa.int32()),
+            ('name', pa.string()),
+            ('value', pa.int64()),
+        ])
+
+        schema = Schema.from_pyarrow_schema(pa_schema)
+        self.catalog.create_table('default.test_ray_write_options', schema, False)
+        table = self.catalog.get_table('default.test_ray_write_options')
+
+        num_rows = 5000
+        # Use long strings to inflate per-row size so rolling actually triggers
+        test_data = pa.Table.from_pydict({
+            'id': list(range(num_rows)),
+            'name': [f'name_with_some_padding_{i:06d}' for i in range(num_rows)],
+            'value': list(range(num_rows)),
+        }, schema=pa_schema)
+
+        from ray.data.read_api import from_arrow
+        ds = from_arrow(test_data)
+
+        # Use a small target-file-size (10KB) to force file rolling
+        write_builder = table.new_batch_write_builder()
+        writer = write_builder.new_write()
+        writer.write_ray(ds, concurrency=1, options={'target-file-size': '10kb'})
+
+        # Verify data is correctly written and readable
+        read_builder = table.new_read_builder()
+        table_read = read_builder.new_read()
+        table_scan = read_builder.new_scan()
+        splits = table_scan.plan().splits()
+        arrow_result = table_read.to_arrow(splits)
+
+        self.assertEqual(arrow_result.num_rows, num_rows, f"Should have {num_rows} rows")
+        df = arrow_result.to_pandas()
+        df_sorted = df.sort_values(by='id').reset_index(drop=True)
+        self.assertEqual(list(df_sorted['id']), list(range(num_rows)), "ID column should match")
+
+        # With target-file-size=10kb, there should be multiple files
+        total_files = sum(len(split.files) for split in splits)
+        self.assertGreater(total_files, 1,
+                           "With target-file-size=10kb, should produce multiple files")
+
+    def test_ray_data_write_paimon_api_with_options(self):
+        """Test write_paimon top-level API with options parameter."""
+        from pypaimon.ray import write_paimon, read_paimon
+
+        pa_schema = pa.schema([
+            ('id', pa.int32()),
+            ('name', pa.string()),
+            ('value', pa.int64()),
+        ])
+
+        schema = Schema.from_pyarrow_schema(pa_schema)
+        self.catalog.create_table('default.test_write_paimon_options', schema, False)
+
+        test_data = pa.Table.from_pydict({
+            'id': list(range(50)),
+            'name': [f'name_{i}' for i in range(50)],
+            'value': list(range(50)),
+        }, schema=pa_schema)
+
+        from ray.data.read_api import from_arrow
+        ds = from_arrow(test_data)
+
+        catalog_options = {'warehouse': self.warehouse}
+        write_paimon(
+            ds, 'default.test_write_paimon_options', catalog_options,
+            concurrency=1,
+            options={'target-file-size': '1b'}
+        )
+
+        # Read back and verify
+        result_ds = read_paimon(
+            'default.test_write_paimon_options', catalog_options
+        )
+        df = result_ds.to_pandas()
+        self.assertEqual(len(df), 50, "Should have 50 rows")
+        df_sorted = df.sort_values(by='id').reset_index(drop=True)
+        self.assertEqual(list(df_sorted['id']), list(range(50)), "ID column should match")
+
     def test_ray_data_invalid_parallelism(self):
         pa_schema = pa.schema([
             ('id', pa.int32()),

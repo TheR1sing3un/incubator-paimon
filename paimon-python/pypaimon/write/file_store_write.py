@@ -16,7 +16,7 @@
 # limitations under the License.
 ################################################################################
 import random
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pyarrow as pa
 
@@ -32,7 +32,7 @@ from pypaimon.table.bucket_mode import BucketMode
 class FileStoreWrite:
     """Base class for file store write operations."""
 
-    def __init__(self, table, commit_user):
+    def __init__(self, table, commit_user, dynamic_options: Optional[Dict[str, str]] = None):
         from pypaimon.table.file_store_table import FileStoreTable
 
         self.table: FileStoreTable = table
@@ -41,6 +41,9 @@ class FileStoreWrite:
         self.write_cols = None
         self.commit_identifier = 0
         self.options = CoreOptions.copy(table.options)
+        if dynamic_options:
+            for key, value in dynamic_options.items():
+                self.options.options.data[key] = value
         if self.table.bucket_mode() == BucketMode.POSTPONE_MODE:
             self.options.set(CoreOptions.DATA_FILE_PREFIX,
                              (f"{self.options.data_file_prefix()}-u-{commit_user}"

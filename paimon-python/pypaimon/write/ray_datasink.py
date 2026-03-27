@@ -20,7 +20,7 @@ Module to write a Paimon table from a Ray Dataset, by using the Ray Datasink API
 """
 
 import logging
-from typing import TYPE_CHECKING, Any, Iterable, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional
 
 from ray.data.datasource.datasink import Datasink
 
@@ -52,12 +52,14 @@ class PaimonDatasink(_DatasinkBase):
         committer: Optional[str] = None,
         message: Optional[str] = None,
         min_rows_per_file: Optional[int] = None,
+        options: Optional[Dict[str, str]] = None,
     ):
         self.table = table
         self.overwrite = overwrite
         self.committer = committer
         self.message = message
         self._min_rows_per_file = min_rows_per_file
+        self._options = options
         self._table_name = table.identifier.get_full_name()
         self._writer_builder: Optional["WriteBuilder"] = None
         self._pending_commit_messages: List["CommitMessage"] = []
@@ -97,7 +99,9 @@ class PaimonDatasink(_DatasinkBase):
             writer_builder = self.table.new_batch_write_builder()
             if self.overwrite:
                 writer_builder = writer_builder.overwrite()
-            
+            if self._options:
+                writer_builder = writer_builder.with_options(self._options)
+
             table_write = writer_builder.new_write()
 
             for block in blocks:

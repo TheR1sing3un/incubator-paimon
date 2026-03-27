@@ -18,7 +18,7 @@
 
 import uuid
 from abc import ABC
-from typing import Optional
+from typing import Dict, Optional
 
 from pypaimon.write.table_commit import (BatchTableCommit, StreamTableCommit,
                                          TableCommit)
@@ -34,6 +34,11 @@ class WriteBuilder(ABC):
         self.table: FileStoreTable = table
         self.commit_user = self._create_commit_user()
         self.static_partition = None
+        self.dynamic_options = None
+
+    def with_options(self, options: Optional[Dict[str, str]] = None):
+        self.dynamic_options = options
+        return self
 
     def overwrite(self, static_partition: Optional[dict] = None):
         self.static_partition = static_partition if static_partition is not None else {}
@@ -59,7 +64,7 @@ class WriteBuilder(ABC):
 class BatchWriteBuilder(WriteBuilder):
 
     def new_write(self) -> BatchTableWrite:
-        return BatchTableWrite(self.table, self.commit_user)
+        return BatchTableWrite(self.table, self.commit_user, self.dynamic_options)
 
     def new_update(self) -> TableUpdate:
         return TableUpdate(self.table, self.commit_user)
@@ -72,7 +77,7 @@ class BatchWriteBuilder(WriteBuilder):
 class StreamWriteBuilder(WriteBuilder):
 
     def new_write(self) -> StreamTableWrite:
-        return StreamTableWrite(self.table, self.commit_user)
+        return StreamTableWrite(self.table, self.commit_user, self.dynamic_options)
 
     def new_update(self) -> TableUpdate:
         raise ValueError("StreamWriteBuilder.new_update() not supported.")

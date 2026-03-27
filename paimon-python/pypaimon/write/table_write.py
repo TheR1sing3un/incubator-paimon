@@ -30,12 +30,12 @@ if TYPE_CHECKING:
 
 
 class TableWrite:
-    def __init__(self, table, commit_user):
+    def __init__(self, table, commit_user, dynamic_options=None):
         from pypaimon.table.file_store_table import FileStoreTable
 
         self.table: FileStoreTable = table
         self.table_pyarrow_schema = PyarrowFieldParser.from_paimon_schema(self.table.table_schema.fields)
-        self.file_store_write = FileStoreWrite(self.table, commit_user)
+        self.file_store_write = FileStoreWrite(self.table, commit_user, dynamic_options)
         self.row_key_extractor = self.table.create_row_key_extractor()
         self.commit_user = commit_user
 
@@ -80,6 +80,7 @@ class TableWrite:
         committer: Optional[str] = None,
         message: Optional[str] = None,
         min_rows_per_file: Optional[int] = None,
+        options: Optional[Dict[str, str]] = None,
     ) -> None:
         """
         Write a Ray Dataset to Paimon table.
@@ -97,11 +98,14 @@ class TableWrite:
             min_rows_per_file: Optional minimum number of rows per write task.
                 Ray will merge small blocks to ensure each write task receives
                 at least this many rows, which helps reduce small files.
+            options: Optional dynamic table options to override defaults at write time,
+                e.g. ``{"target-file-size": "256mb"}``.
         """
         from pypaimon.write.ray_datasink import PaimonDatasink
         datasink = PaimonDatasink(self.table, overwrite=overwrite,
                                   committer=committer, message=message,
-                                  min_rows_per_file=min_rows_per_file)
+                                  min_rows_per_file=min_rows_per_file,
+                                  options=options)
         dataset.write_datasink(
             datasink,
             concurrency=concurrency,
@@ -120,8 +124,8 @@ class TableWrite:
 
 
 class BatchTableWrite(TableWrite):
-    def __init__(self, table, commit_user):
-        super().__init__(table, commit_user)
+    def __init__(self, table, commit_user, dynamic_options=None):
+        super().__init__(table, commit_user, dynamic_options)
         self.batch_committed = False
 
     def prepare_commit(self) -> List[CommitMessage]:
@@ -132,6 +136,8 @@ class BatchTableWrite(TableWrite):
 
 
 class StreamTableWrite(TableWrite):
+    def __init__(self, table, commit_user, dynamic_options=None):
+        super().__init__(table, commit_user, dynamic_options)
 
     def prepare_commit(self, commit_identifier) -> List[CommitMessage]:
         return self.file_store_write.prepare_commit(commit_identifier)
