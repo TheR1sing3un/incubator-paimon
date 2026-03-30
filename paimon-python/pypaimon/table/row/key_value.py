@@ -23,6 +23,8 @@ from pypaimon.table.row.row_kind import RowKind
 class KeyValue:
     """A key value, including user key, sequence number, value kind and value."""
 
+    UNKNOWN_SNAPSHOT_ID = -1
+
     def __init__(self, key_arity: int, value_arity: int):
         self.key_arity = key_arity
         self.value_arity = value_arity
@@ -30,6 +32,8 @@ class KeyValue:
         self._row_tuple = None
         self._reused_key = OffsetRow(None, 0, key_arity)
         self._reused_value = OffsetRow(None, key_arity + 2, value_arity)
+        self._merge_mode = 0
+        self._commit_snapshot_id = KeyValue.UNKNOWN_SNAPSHOT_ID
 
     def replace(self, row_tuple: tuple):
         self._row_tuple = row_tuple
@@ -55,3 +59,19 @@ class KeyValue:
     @property
     def value_row_kind_byte(self) -> int:
         return self._row_tuple[self.key_arity + 1]
+
+    @property
+    def merge_mode(self) -> int:
+        return self._merge_mode
+
+    def set_merge_mode(self, merge_mode):
+        self._merge_mode = merge_mode
+        return self
+
+    @property
+    def commit_snapshot_id(self) -> int:
+        return self._commit_snapshot_id
+
+    def set_commit_snapshot_id(self, snapshot_id):
+        self._commit_snapshot_id = snapshot_id
+        return self

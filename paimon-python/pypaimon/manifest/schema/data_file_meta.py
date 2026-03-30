@@ -51,6 +51,8 @@ class DataFileMeta:
     external_path: Optional[str] = None
     first_row_id: Optional[int] = None
     write_cols: Optional[List[str]] = None
+    commit_snapshot_id: Optional[int] = None
+    merge_mode: Optional[int] = None
 
     # not a schema field, just for internal usage
     file_path: str = None
@@ -101,6 +103,8 @@ class DataFileMeta:
         external_path: Optional[str] = None,
         first_row_id: Optional[int] = None,
         write_cols: Optional[List[str]] = None,
+        commit_snapshot_id: Optional[int] = None,
+        merge_mode: Optional[int] = None,
         file_path: Optional[str] = None,
     ) -> 'DataFileMeta':
         if creation_time is None:
@@ -127,6 +131,8 @@ class DataFileMeta:
             external_path=external_path,
             first_row_id=first_row_id,
             write_cols=write_cols,
+            commit_snapshot_id=commit_snapshot_id,
+            merge_mode=merge_mode,
             file_path=file_path,
         )
 
@@ -161,6 +167,8 @@ class DataFileMeta:
             external_path=self.external_path,
             first_row_id=self.first_row_id,
             write_cols=self.write_cols,
+            commit_snapshot_id=self.commit_snapshot_id,
+            merge_mode=self.merge_mode,
             file_path=self.file_path
         )
 
@@ -191,6 +199,8 @@ class DataFileMeta:
             external_path=self.external_path,
             first_row_id=first_row_id,
             write_cols=self.write_cols,
+            commit_snapshot_id=self.commit_snapshot_id,
+            merge_mode=self.merge_mode,
             file_path=self.file_path
         )
 
@@ -217,6 +227,8 @@ class DataFileMeta:
             external_path=self.external_path,
             first_row_id=self.first_row_id,
             write_cols=self.write_cols,
+            commit_snapshot_id=self.commit_snapshot_id,
+            merge_mode=self.merge_mode,
             file_path=self.file_path
         )
 
@@ -253,5 +265,7 @@ DATA_FILE_META_SCHEMA = {
         {"name": "_WRITE_COLS",
          "type": ["null", {"type": "array", "items": "string"}],
          "default": None},
+        {"name": "_COMMIT_SNAPSHOT_ID", "type": ["null", "long"], "default": None},
+        {"name": "_MERGE_MODE", "type": ["null", "int"], "default": None},
     ]
 }

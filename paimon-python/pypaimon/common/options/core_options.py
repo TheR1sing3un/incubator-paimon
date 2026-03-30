@@ -54,6 +54,7 @@ class MergeEngine(str, Enum):
     PARTIAL_UPDATE = "partial-update"
     AGGREGATE = "aggregation"
     FIRST_ROW = "first-row"
+    VERSIONED_PARTIAL_UPDATE = "versioned-partial-update"
 
 
 class CoreOptions:
@@ -303,7 +304,42 @@ class CoreOptions:
         .enum_type(MergeEngine)
         .default_value(MergeEngine.DEDUPLICATE)
         .with_description("Specify the merge engine for table with primary key. "
-                          "Options: deduplicate, partial-update, aggregation, first-row.")
+                          "Options: deduplicate, partial-update, aggregation, first-row, "
+                          "versioned-partial-update.")
+    )
+
+    IGNORE_DELETE: ConfigOption[bool] = (
+        ConfigOptions.key("ignore-delete")
+        .boolean_type()
+        .default_value(False)
+        .with_description("Whether to ignore delete records.")
+    )
+
+    VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS: ConfigOption[str] = (
+        ConfigOptions.key("versioned-partial-update.multi-version-fields")
+        .string_type()
+        .no_default_value()
+        .with_description(
+            "Comma-separated list of multi-version column names for "
+            "versioned-partial-update merge engine.")
+    )
+
+    VERSIONED_PARTIAL_UPDATE_MERGE_MODE: ConfigOption[str] = (
+        ConfigOptions.key("versioned-partial-update.merge-mode")
+        .string_type()
+        .default_value("upsert")
+        .with_description(
+            "Per-job merge mode for versioned-partial-update merge engine. "
+            "Options: upsert, ignore.")
+    )
+
+    VERSIONED_PARTIAL_UPDATE_IGNORE_MODE_ENABLED: ConfigOption[bool] = (
+        ConfigOptions.key("versioned-partial-update.ignore-mode.enabled")
+        .boolean_type()
+        .default_value(True)
+        .with_description(
+            "Whether to enable ignore mode for versioned-partial-update. "
+            "When enabled, the table must have lookup capability.")
     )
     # Commit options
     COMMIT_USER_PREFIX: ConfigOption[str] = (
@@ -654,6 +690,18 @@ class CoreOptions:
 
     def merge_engine(self, default=None):
         return self.options.get(CoreOptions.MERGE_ENGINE, default)
+
+    def ignore_delete(self, default=None):
+        return self.options.get(CoreOptions.IGNORE_DELETE, default)
+
+    def versioned_partial_update_multi_version_fields(self, default=None):
+        return self.options.get(CoreOptions.VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS, default)
+
+    def versioned_partial_update_merge_mode(self, default=None):
+        return self.options.get(CoreOptions.VERSIONED_PARTIAL_UPDATE_MERGE_MODE, default)
+
+    def versioned_partial_update_ignore_mode_enabled(self, default=None):
+        return self.options.get(CoreOptions.VERSIONED_PARTIAL_UPDATE_IGNORE_MODE_ENABLED, default)
 
     def data_file_external_paths(self, default=None):
         external_paths_str = self.options.get(CoreOptions.DATA_FILE_EXTERNAL_PATHS, default)

@@ -144,6 +144,8 @@ class ManifestFileManager:
                 external_path=file_dict.get('_EXTERNAL_PATH'),
                 first_row_id=file_dict['_FIRST_ROW_ID'] if '_FIRST_ROW_ID' in file_dict else None,
                 write_cols=file_dict['_WRITE_COLS'] if '_WRITE_COLS' in file_dict else None,
+                commit_snapshot_id=file_dict.get('_COMMIT_SNAPSHOT_ID'),
+                merge_mode=file_dict.get('_MERGE_MODE'),
             )
             entry = ManifestEntry(
                 kind=record['_KIND'],
@@ -213,6 +215,8 @@ class ManifestFileManager:
                     "_EXTERNAL_PATH": entry.file.external_path,
                     "_FIRST_ROW_ID": entry.file.first_row_id,
                     "_WRITE_COLS": entry.file.write_cols,
+                    "_COMMIT_SNAPSHOT_ID": entry.file.commit_snapshot_id,
+                    "_MERGE_MODE": entry.file.merge_mode,
                 }
             }
             avro_records.append(avro_record)
