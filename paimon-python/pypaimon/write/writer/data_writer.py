@@ -35,7 +35,7 @@ class DataWriter(ABC):
     """Base class for data writers that handle PyArrow tables directly."""
 
     def __init__(self, table, partition: Tuple, bucket: int, max_seq_number: int, options: CoreOptions = None,
-                 write_cols: Optional[List[str]] = None):
+                 write_cols: Optional[List[str]] = None, merge_mode: Optional[int] = None):
         from pypaimon.table.file_store_table import FileStoreTable
 
         self.table: FileStoreTable = table
@@ -64,6 +64,8 @@ class DataWriter(ABC):
         self.committed_files: List[DataFileMeta] = []
         self.write_cols = write_cols
         self.blob_as_descriptor = self.options.blob_as_descriptor()
+
+        self.merge_mode = merge_mode
 
         self.path_factory = self.table.path_factory()
         self.external_path_provider: Optional[ExternalPathProvider] = self.path_factory.create_external_path_provider(
@@ -242,6 +244,7 @@ class DataWriter(ABC):
             first_row_id=None,
             write_cols=self.write_cols,
             # None means all columns in the table have been written
+            merge_mode=self.merge_mode,
             file_path=file_path,
         ))
 

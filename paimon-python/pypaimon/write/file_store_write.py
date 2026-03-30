@@ -20,7 +20,8 @@ from typing import Dict, List, Optional, Tuple
 
 import pyarrow as pa
 
-from pypaimon.common.options.core_options import CoreOptions
+from pypaimon.common.options.core_options import CoreOptions, MergeEngine
+from pypaimon.common.versioned_merge_mode import VersionedMergeMode
 from pypaimon.write.commit_message import CommitMessage
 from pypaimon.write.writer.append_only_data_writer import AppendOnlyDataWriter
 from pypaimon.write.writer.data_blob_writer import DataBlobWriter
@@ -70,12 +71,21 @@ class FileStoreWrite:
                 options=options
             )
         elif self.table.is_primary_key_table:
+            # Resolve merge mode for versioned-partial-update
+            merge_mode = None
+            if options.merge_engine() == MergeEngine.VERSIONED_PARTIAL_UPDATE:
+                mode_str = options.versioned_partial_update_merge_mode()
+                vm = VersionedMergeMode.from_string(mode_str)
+                # Align with Java: UPSERT -> None (serialized as null), IGNORE -> 1
+                if vm == VersionedMergeMode.IGNORE:
+                    merge_mode = vm.to_byte_value()
             return KeyValueDataWriter(
                 table=self.table,
                 partition=partition,
                 bucket=bucket,
                 max_seq_number=max_seq_number(),
-                options=options)
+                options=options,
+                merge_mode=merge_mode)
         else:
             seq_number = 0 if self.table.bucket_mode() == BucketMode.BUCKET_UNAWARE else max_seq_number()
             return AppendOnlyDataWriter(
