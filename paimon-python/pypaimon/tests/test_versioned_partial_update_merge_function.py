@@ -130,7 +130,9 @@ def assert_mv_col(result, expected_latest_version, expected_latest_value, expect
     assert mv is not None, "mv_col should not be None"
     assert mv[MV_LATEST_VERSION] == expected_latest_version
     assert mv[MV_LATEST_VALUE] == expected_latest_value
-    assert mv[MV_ALL_VERSIONED_VALUES] == expected_versions
+    # ALL_VERSIONED_VALUES is a list of (key, value) tuples
+    actual_versions = dict(mv[MV_ALL_VERSIONED_VALUES])
+    assert actual_versions == expected_versions
 
 
 class TestVersionedPartialUpdateMergeFunction:

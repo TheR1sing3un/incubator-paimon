@@ -179,9 +179,25 @@ class VersionedPartialUpdateMergeFunction(MergeFunction):
 
         # value is a dict with keys: LATEST_VERSION, LATEST_VALUE, ALL_VERSIONED_VALUES
         all_versioned = value.get(MV_ALL_VERSIONED_VALUES)
-        if all_versioned is not None:
+        if all_versioned is not None and len(all_versioned) > 0:
             # MAP path: iterate all version->value entries
-            for version_key, val in all_versioned.items():
+            # Handle multiple formats:
+            # - dict: from unit tests or direct construction
+            # - list of (key, value) tuples: from PyArrow to_pylist()
+            # - list of {'key': k, 'value': v} dicts: from Polars iter_rows()
+            if isinstance(all_versioned, dict):
+                entries = all_versioned.items()
+            elif isinstance(all_versioned, list):
+                first = all_versioned[0]
+                if isinstance(first, dict) and 'key' in first and 'value' in first:
+                    # Polars format: [{'key': k, 'value': v}, ...]
+                    entries = [(e['key'], e['value']) for e in all_versioned]
+                else:
+                    # PyArrow format: [(key, value), ...]
+                    entries = all_versioned
+            else:
+                entries = all_versioned
+            for version_key, val in entries:
                 self._merge_version_entry(state, str(version_key), val, is_ignore)
         else:
             # Single pair path
@@ -216,10 +232,12 @@ class VersionedPartialUpdateMergeFunction(MergeFunction):
                         if latest_version is None or key > latest_version:
                             latest_version = key
                             latest_value = val
+                    # Build MAP as list of (key, value) tuples for PyArrow compatibility
+                    all_entries = list(state.all_versioned_values.items())
                     mv_dict = {
                         MV_LATEST_VERSION: latest_version,
                         MV_LATEST_VALUE: latest_value,
-                        MV_ALL_VERSIONED_VALUES: dict(state.all_versioned_values),
+                        MV_ALL_VERSIONED_VALUES: all_entries,
                     }
                     self.row[idx] = mv_dict
 
