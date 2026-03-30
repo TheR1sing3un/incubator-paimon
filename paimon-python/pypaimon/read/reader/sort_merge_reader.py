@@ -21,6 +21,7 @@ from typing import Any, Callable, List, Optional
 
 from pypaimon.read.reader.iface.record_iterator import RecordIterator
 from pypaimon.read.reader.iface.record_reader import RecordReader
+from pypaimon.read.reader.merge_function import MergeFunction
 from pypaimon.schema.data_types import DataField, Keyword
 from pypaimon.schema.table_schema import TableSchema
 from pypaimon.table.row.internal_row import InternalRow
@@ -30,9 +31,10 @@ from pypaimon.table.row.key_value import KeyValue
 class SortMergeReaderWithMinHeap(RecordReader):
     """SortMergeReader implemented with min-heap."""
 
-    def __init__(self, readers: List[RecordReader[KeyValue]], schema: TableSchema):
+    def __init__(self, readers: List[RecordReader[KeyValue]], schema: TableSchema,
+                 merge_function=None):
         self.next_batch_readers = list(readers)
-        self.merge_function = DeduplicateMergeFunction()
+        self.merge_function = merge_function if merge_function is not None else DeduplicateMergeFunction()
 
         if schema.partition_keys:
             trimmed_primary_keys = [pk for pk in schema.primary_keys if pk not in schema.partition_keys]
@@ -124,7 +126,7 @@ class SortMergeIterator(RecordIterator):
         return True
 
 
-class DeduplicateMergeFunction:
+class DeduplicateMergeFunction(MergeFunction):
     """A MergeFunction where key is primary key (unique) and value is the full record, only keep the latest one."""
 
     def __init__(self):

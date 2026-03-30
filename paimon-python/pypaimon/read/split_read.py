@@ -52,6 +52,7 @@ from pypaimon.read.reader.key_value_unwrap_reader import \
     KeyValueUnwrapRecordReader
 from pypaimon.read.reader.key_value_wrap_reader import KeyValueWrapReader
 from pypaimon.read.reader.shard_batch_reader import ShardBatchReader
+from pypaimon.read.reader.merge_function_factory import create_merge_function
 from pypaimon.read.reader.sort_merge_reader import SortMergeReaderWithMinHeap
 from pypaimon.read.push_down_utils import _get_all_fields
 from pypaimon.read.split import Split
@@ -417,13 +418,17 @@ class RawFileSplitRead(SplitRead):
 class MergeFileSplitRead(SplitRead):
     def kv_reader_supplier(self, file: DataFileMeta, dv_factory: Optional[Callable] = None) -> RecordReader:
         file_batch_reader = self.file_reader_supplier(file, True, self._get_final_read_data_fields(), False)
+        merge_mode = file.merge_mode if file.merge_mode is not None else 0
+        commit_snapshot_id = file.commit_snapshot_id if file.commit_snapshot_id is not None else -1
         dv = dv_factory() if dv_factory else None
         if dv:
             return ApplyDeletionVectorReader(
                 KeyValueWrapReader(RowPositionReader(file_batch_reader),
-                                   len(self.trimmed_primary_key), self.value_arity), dv)
+                                   len(self.trimmed_primary_key), self.value_arity,
+                                   merge_mode=merge_mode, commit_snapshot_id=commit_snapshot_id), dv)
         else:
-            return KeyValueWrapReader(file_batch_reader, len(self.trimmed_primary_key), self.value_arity)
+            return KeyValueWrapReader(file_batch_reader, len(self.trimmed_primary_key), self.value_arity,
+                                      merge_mode=merge_mode, commit_snapshot_id=commit_snapshot_id)
 
     def section_reader_supplier(self, section: List[SortedRun]) -> RecordReader:
         readers = []
@@ -433,7 +438,10 @@ class MergeFileSplitRead(SplitRead):
                 supplier = partial(self.kv_reader_supplier, file, self.deletion_file_readers.get(file.file_name, None))
                 data_readers.append(supplier)
             readers.append(ConcatRecordReader(data_readers))
-        return SortMergeReaderWithMinHeap(readers, self.table.table_schema)
+        merge_function = create_merge_function(
+            self.table.table_schema, self.table.options,
+            len(self.trimmed_primary_key))
+        return SortMergeReaderWithMinHeap(readers, self.table.table_schema, merge_function)
 
     def create_reader(self) -> RecordReader:
         # Create a dict mapping data file name to deletion file reader method
