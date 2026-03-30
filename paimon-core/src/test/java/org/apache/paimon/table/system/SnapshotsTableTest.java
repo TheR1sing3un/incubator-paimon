@@ -118,7 +118,8 @@ public class SnapshotsTableTest extends TableTestBase {
                             snapshot.deltaRecordCount(),
                             snapshot.changelogRecordCount(),
                             snapshot.watermark(),
-                            snapshot.nextRowId()));
+                            snapshot.nextRowId(),
+                            BinaryString.fromString(snapshot.commitUuid())));
         }
 
         return expectedRow;

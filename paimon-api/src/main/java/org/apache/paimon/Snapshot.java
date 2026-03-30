@@ -69,6 +69,7 @@ public class Snapshot implements Serializable {
     protected static final String FIELD_STATISTICS = "statistics";
     protected static final String FIELD_PROPERTIES = "properties";
     protected static final String FIELD_NEXT_ROW_ID = "nextRowId";
+    protected static final String FIELD_COMMIT_UUID = "commitUuid";
 
     // version of snapshot
     @JsonProperty(FIELD_VERSION)
@@ -181,6 +182,11 @@ public class Snapshot implements Serializable {
     @Nullable
     protected final Long nextRowId;
 
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonProperty(FIELD_COMMIT_UUID)
+    @Nullable
+    protected final String commitUuid;
+
     public Snapshot(
             long id,
             long schemaId,
@@ -201,7 +207,8 @@ public class Snapshot implements Serializable {
             @Nullable Long watermark,
             @Nullable String statistics,
             @Nullable Map<String, String> properties,
-            @Nullable Long nextRowId) {
+            @Nullable Long nextRowId,
+            @Nullable String commitUuid) {
         this(
                 CURRENT_VERSION,
                 id,
@@ -223,7 +230,8 @@ public class Snapshot implements Serializable {
                 watermark,
                 statistics,
                 properties,
-                nextRowId);
+                nextRowId,
+                commitUuid);
     }
 
     @JsonCreator
@@ -249,7 +257,8 @@ public class Snapshot implements Serializable {
             @JsonProperty(FIELD_WATERMARK) @Nullable Long watermark,
             @JsonProperty(FIELD_STATISTICS) @Nullable String statistics,
             @JsonProperty(FIELD_PROPERTIES) @Nullable Map<String, String> properties,
-            @JsonProperty(FIELD_NEXT_ROW_ID) @Nullable Long nextRowId) {
+            @JsonProperty(FIELD_NEXT_ROW_ID) @Nullable Long nextRowId,
+            @JsonProperty(FIELD_COMMIT_UUID) @Nullable String commitUuid) {
         this.version = version;
         this.id = id;
         this.schemaId = schemaId;
@@ -271,6 +280,7 @@ public class Snapshot implements Serializable {
         this.statistics = statistics;
         this.properties = properties;
         this.nextRowId = nextRowId;
+        this.commitUuid = commitUuid;
     }
 
     @JsonGetter(FIELD_VERSION)
@@ -388,6 +398,12 @@ public class Snapshot implements Serializable {
         return nextRowId;
     }
 
+    @JsonGetter(FIELD_COMMIT_UUID)
+    @Nullable
+    public String commitUuid() {
+        return commitUuid;
+    }
+
     public String toJson() {
         return JsonSerdeUtil.toJson(this);
     }
@@ -415,7 +431,8 @@ public class Snapshot implements Serializable {
                 watermark,
                 statistics,
                 properties,
-                nextRowId);
+                nextRowId,
+                commitUuid);
     }
 
     @Override
@@ -447,7 +464,8 @@ public class Snapshot implements Serializable {
                 && Objects.equals(watermark, that.watermark)
                 && Objects.equals(statistics, that.statistics)
                 && Objects.equals(properties, that.properties)
-                && Objects.equals(nextRowId, that.nextRowId);
+                && Objects.equals(nextRowId, that.nextRowId)
+                && Objects.equals(commitUuid, that.commitUuid);
     }
 
     /** Type of changes in this snapshot. */

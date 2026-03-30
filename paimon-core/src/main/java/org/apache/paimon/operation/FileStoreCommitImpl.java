@@ -90,6 +90,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -1006,7 +1007,8 @@ public class FileStoreCommitImpl implements FileStoreCommit {
                             statsFileName,
                             // if empty properties, just set to null
                             properties.isEmpty() ? null : properties,
-                            nextRowIdStart);
+                            nextRowIdStart,
+                            UUID.randomUUID().toString());
         } catch (Throwable e) {
             // fails when preparing for commit, we should clean up
             commitCleaner.cleanUpReuseTmpManifests(
@@ -1097,7 +1099,8 @@ public class FileStoreCommitImpl implements FileStoreCommit {
                         latest.statistics(),
                         // if empty properties, just set to null
                         latest.properties(),
-                        latest.nextRowId());
+                        latest.nextRowId(),
+                        UUID.randomUUID().toString());
 
         return commitSnapshotImpl(newSnapshot, emptyList());
     }
@@ -1176,7 +1179,8 @@ public class FileStoreCommitImpl implements FileStoreCommit {
                         latestSnapshot.watermark(),
                         latestSnapshot.statistics(),
                         latestSnapshot.properties(),
-                        latestSnapshot.nextRowId());
+                        latestSnapshot.nextRowId(),
+                        UUID.randomUUID().toString());
 
         return commitSnapshotImpl(newSnapshot, emptyList());
     }

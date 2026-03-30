@@ -40,5 +40,6 @@ class Tag(Snapshot):
             changelog_record_count=self.changelog_record_count,
             watermark=self.watermark,
             statistics=self.statistics,
-            next_row_id=self.next_row_id
+            next_row_id=self.next_row_id,
+            commit_uuid=self.commit_uuid
         )

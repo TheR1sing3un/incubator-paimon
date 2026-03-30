@@ -60,6 +60,7 @@ class CommitInfoTest {
                         null,
                         null,
                         properties,
+                        null,
                         null);
 
         CommitInfo info = CommitInfo.fromSnapshot(snapshot);
@@ -100,6 +101,7 @@ class CommitInfoTest {
                         null,
                         null,
                         properties,
+                        null,
                         null);
 
         CommitInfo info = CommitInfo.fromSnapshot(snapshot);
@@ -127,6 +129,7 @@ class CommitInfoTest {
                         System.currentTimeMillis(),
                         0L,
                         0L,
+                        null,
                         null,
                         null,
                         null,

@@ -392,6 +392,7 @@ class FileStoreCommit:
                 time_millis=int(time.time() * 1000),
                 next_row_id=next_row_id,
                 properties=properties or None,
+                commit_uuid=str(uuid.uuid4()),
             )
             # Generate partition statistics for the commit
             statistics = self._generate_partition_statistics(commit_entries)

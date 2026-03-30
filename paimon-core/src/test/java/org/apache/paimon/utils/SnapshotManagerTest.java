@@ -276,6 +276,7 @@ public class SnapshotManagerTest {
                 null,
                 null,
                 null,
+                null,
                 null);
     }
 
@@ -300,6 +301,7 @@ public class SnapshotManagerTest {
                 watermark,
                 null,
                 null,
+                null,
                 null);
     }
 
@@ -321,6 +323,7 @@ public class SnapshotManagerTest {
                         millis,
                         0L,
                         0L,
+                        null,
                         null,
                         null,
                         null,
@@ -352,6 +355,7 @@ public class SnapshotManagerTest {
                             i * 1000,
                             0L,
                             0L,
+                            null,
                             null,
                             null,
                             null,
@@ -405,6 +409,7 @@ public class SnapshotManagerTest {
                             i * 1000,
                             0L,
                             0L,
+                            null,
                             null,
                             null,
                             null,

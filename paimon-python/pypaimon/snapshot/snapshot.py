@@ -46,3 +46,4 @@ class Snapshot:
     statistics: Optional[str] = optional_json_field("statistics", "non_null")
     next_row_id: Optional[int] = optional_json_field("nextRowId", "non_null")
     properties: Optional[Dict[str, str]] = optional_json_field("properties", "non_null")
+    commit_uuid: Optional[str] = optional_json_field("commitUuid", "non_null")

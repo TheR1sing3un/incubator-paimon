@@ -189,7 +189,8 @@ public class SnapshotHandler implements RouteRegistrar {
                 snapshot.watermark(),
                 snapshot.statistics(),
                 properties,
-                snapshot.nextRowId());
+                snapshot.nextRowId(),
+                snapshot.commitUuid());
     }
 
     public void rollbackTable(Identifier identifier, String body) throws Exception {
