@@ -83,7 +83,7 @@ class PaimonAnalysis(session: SparkSession) extends Rule[LogicalPlan] {
       case (inAttr, outAttr) =>
         val inType = CharVarcharUtils.getRawType(inAttr.metadata).getOrElse(inAttr.dataType)
         val outType = CharVarcharUtils.getRawType(outAttr.metadata).getOrElse(outAttr.dataType)
-        inAttr.name == outAttr.name && schemaCompatible(inType, outType)
+        conf.resolver(inAttr.name, outAttr.name) && schemaCompatible(inType, outType)
     }
   }
 
@@ -225,7 +225,7 @@ class PaimonAnalysis(session: SparkSession) extends Rule[LogicalPlan] {
       target: StructType): NamedExpression = {
     val fields = target.map {
       case targetField @ StructField(name, nested: StructType, _, _) =>
-        val sourceIndex = source.fieldIndex(name)
+        val sourceIndex = findSourceFieldIndex(source, name)
         val sourceField = source(sourceIndex)
         sourceField.dataType match {
           case s: StructType =>
@@ -235,11 +235,20 @@ class PaimonAnalysis(session: SparkSession) extends Rule[LogicalPlan] {
             throw new RuntimeException(s"Can not support to cast $o to StructType.")
         }
       case targetField =>
-        val sourceIndex = source.fieldIndex(targetField.name)
+        val sourceIndex = findSourceFieldIndex(source, targetField.name)
         val sourceField = source(sourceIndex)
         castStructField(parent, sourceIndex, sourceField.name, targetField)
     }
     structAlias(fields, parent)
+  }
+
+  private def findSourceFieldIndex(source: StructType, name: String): Int = {
+    val index = source.fields.indexWhere(f => conf.resolver(f.name, name))
+    if (index < 0) {
+      throw new RuntimeException(
+        s"""Field "$name" does not exist in source struct type: ${source.simpleString}.""")
+    }
+    index
   }
 
   private def addCastToStructByPosition(

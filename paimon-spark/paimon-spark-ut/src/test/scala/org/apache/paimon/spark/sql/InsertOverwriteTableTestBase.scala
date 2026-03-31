@@ -126,6 +126,40 @@ abstract class InsertOverwriteTableTestBase extends PaimonSparkTestBase {
       }
   }
 
+  test("Paimon: insert by name with case-insensitive column matching") {
+    assume(gteqSpark3_5)
+    withTable("t1", "t2") {
+      spark.sql("""CREATE TABLE t1 (col1 STRING NOT NULL, col2 INT, col3 DOUBLE)
+                  |TBLPROPERTIES ('write-only' = 'true')""".stripMargin)
+      spark.sql("""CREATE TABLE t2 (COL2 INT, COL3 DOUBLE, COL1 STRING NOT NULL)
+                  |TBLPROPERTIES ('write-only' = 'true')""".stripMargin)
+
+      sql("INSERT INTO t1 VALUES ('Hello', 1, 1.1), ('World', 2, 2.2)")
+
+      sql("INSERT INTO t2 BY NAME SELECT * FROM t1")
+      checkAnswer(
+        sql("SELECT * FROM t2 ORDER BY COL2"),
+        Row(1, 1.1d, "Hello") :: Row(2, 2.2d, "World") :: Nil)
+    }
+  }
+
+  test("Paimon: insert by name with case-insensitive nested struct column matching") {
+    assume(gteqSpark3_5)
+    withTable("t1", "t2") {
+      spark.sql("""CREATE TABLE t1 (id INT NOT NULL, info STRUCT<Name: STRING, Age: INT>)
+                  |TBLPROPERTIES ('write-only' = 'true')""".stripMargin)
+      spark.sql("""CREATE TABLE t2 (id INT NOT NULL, info STRUCT<name: STRING, age: INT>)
+                  |TBLPROPERTIES ('write-only' = 'true')""".stripMargin)
+
+      sql("INSERT INTO t1 VALUES (1, struct('Alice', 30)), (2, struct('Bob', 25))")
+
+      sql("INSERT INTO t2 BY NAME SELECT * FROM t1")
+      checkAnswer(
+        sql("SELECT * FROM t2 ORDER BY id"),
+        Row(1, Row("Alice", 30)) :: Row(2, Row("Bob", 25)) :: Nil)
+    }
+  }
+
   withPk.foreach {
     hasPk =>
       bucketModes.foreach {
