@@ -45,6 +45,7 @@ class TableWrite:
             self.write_arrow_batch(batch)
 
     def write_arrow_batch(self, data: pa.RecordBatch):
+        data = self._align_schema(data)
         self._validate_pyarrow_schema(data.schema)
         partitions, buckets = self.row_key_extractor.extract_partition_bucket_batch(data)
 
@@ -115,12 +116,53 @@ class TableWrite:
     def close(self):
         self.file_store_write.close()
 
+    def _align_schema(self, data: pa.RecordBatch) -> pa.RecordBatch:
+        """Align input data to table schema.
+
+        For primary key tables: pad missing non-key columns with null.
+        For all tables: fix nullability to match table schema.
+        """
+        table_schema = self.table_pyarrow_schema
+
+        if data.schema.equals(table_schema):
+            return data
+
+        input_names = set(data.schema.names)
+        num_rows = data.num_rows
+
+        if self.table.is_primary_key_table:
+            for pk in self.table.table_schema.primary_keys:
+                if pk not in input_names:
+                    raise ValueError(
+                        f"Primary key column '{pk}' must be included in input data.")
+            for pk in self.table.partition_keys:
+                if pk not in input_names:
+                    raise ValueError(
+                        f"Partition key column '{pk}' must be included in input data.")
+
+        arrays = []
+        for field in table_schema:
+            if field.name in input_names:
+                col = data.column(field.name)
+                src_field = data.schema.field(field.name)
+                if src_field.type != field.type:
+                    col = col.cast(field.type)
+                arrays.append(col)
+            elif self.table.is_primary_key_table \
+                    or self.file_store_write.write_cols is not None:
+                arrays.append(pa.nulls(num_rows, type=field.type))
+            else:
+                raise ValueError(
+                    f"Column '{field.name}' is missing from input data.")
+
+        return pa.RecordBatch.from_arrays(arrays, schema=table_schema)
+
     def _validate_pyarrow_schema(self, data_schema: pa.Schema):
-        if data_schema != self.table_pyarrow_schema and data_schema.names != self.file_store_write.write_cols:
-            raise ValueError(f"Input schema isn't consistent with table schema and write cols. "
+        if not data_schema.equals(self.table_pyarrow_schema) \
+                and data_schema.names != self.file_store_write.write_cols:
+            raise ValueError(f"Input schema isn't consistent with table schema. "
                              f"Input schema is: {data_schema} "
-                             f"Table schema is: {self.table_pyarrow_schema} "
-                             f"Write cols is: {self.file_store_write.write_cols}")
+                             f"Table schema is: {self.table_pyarrow_schema}")
 
 
 class BatchTableWrite(TableWrite):

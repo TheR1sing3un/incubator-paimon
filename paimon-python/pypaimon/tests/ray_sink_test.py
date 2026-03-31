@@ -17,6 +17,7 @@
 ################################################################################
 
 import os
+import shutil
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -389,6 +390,80 @@ class RaySinkTest(unittest.TestCase):
         mock_commit.abort.assert_called_once()
         mock_commit.close.assert_called_once()
         self.assertEqual(datasink._pending_commit_messages, [])
+
+
+class RaySinkSchemaAlignTest(unittest.TestCase):
+    """Tests for auto schema alignment through the Ray datasink path."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.warehouse_path = os.path.join(self.temp_dir, "warehouse")
+        os.makedirs(self.warehouse_path, exist_ok=True)
+
+        self.catalog = CatalogFactory.create({"warehouse": self.warehouse_path})
+        self.catalog.create_database("test_db", ignore_if_exists=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _create_pk_table(self, table_name, pa_schema, primary_keys):
+        schema = Schema.from_pyarrow_schema(
+            pa_schema,
+            primary_keys=primary_keys,
+            options={
+                'merge-engine': 'versioned-partial-update',
+                'bucket': '1',
+            },
+        )
+        self.catalog.create_table(table_name, schema, ignore_if_exists=False)
+        return self.catalog.get_table(table_name)
+
+    def test_ray_nullability_auto_align(self):
+        """Ray write with default nullable=True schema succeeds on PK table."""
+        pa_schema = pa.schema([
+            ('id', pa.int64()),
+            ('name', pa.string()),
+            ('value', pa.float64()),
+        ])
+        table = self._create_pk_table("test_db.ray_nullable", pa_schema, ['id'])
+
+        datasink = PaimonDatasink(table, overwrite=False)
+        datasink.on_write_start()
+        ctx = Mock(spec=TaskContext)
+
+        # Data with default nullable=True (no explicit nullable=False for PK)
+        block = pa.table({
+            'id': [1, 2, 3],
+            'name': ['Alice', 'Bob', 'Charlie'],
+            'value': [1.1, 2.2, 3.3],
+        })
+        result = datasink.write([block], ctx)
+        self.assertIsInstance(result, list)
+        if result:
+            self.assertTrue(all(isinstance(msg, CommitMessage) for msg in result))
+
+    def test_ray_partial_column_auto_pad(self):
+        """Ray write with partial columns on PK table auto-pads missing cols with null."""
+        pa_schema = pa.schema([
+            ('id', pa.int64()),
+            ('name', pa.string()),
+            ('value', pa.float64()),
+        ])
+        table = self._create_pk_table("test_db.ray_partial", pa_schema, ['id'])
+
+        datasink = PaimonDatasink(table, overwrite=False)
+        datasink.on_write_start()
+        ctx = Mock(spec=TaskContext)
+
+        # Only pass pk + one value column, missing 'value'
+        block = pa.table({
+            'id': [1, 2],
+            'name': ['Alice', 'Bob'],
+        })
+        result = datasink.write([block], ctx)
+        self.assertIsInstance(result, list)
+        if result:
+            self.assertTrue(all(isinstance(msg, CommitMessage) for msg in result))
 
 
 if __name__ == '__main__':
