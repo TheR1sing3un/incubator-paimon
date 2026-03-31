@@ -37,6 +37,12 @@ import org.apache.paimon.schema.Schema;
 import org.apache.paimon.schema.SchemaChange;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Table;
+import org.apache.paimon.types.ArrayType;
+import org.apache.paimon.types.DataField;
+import org.apache.paimon.types.DataType;
+import org.apache.paimon.types.MapType;
+import org.apache.paimon.types.MultisetType;
+import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.databind.JsonNode;
@@ -262,6 +268,7 @@ public class TableHandler implements RouteRegistrar {
         }
         LOG.info("Creating table: {}.{}", databaseName, identifier.getTableName());
         validateDatabaseMatch(databaseName, identifier);
+        validateColumnNames(request.getSchema());
         catalog.createTable(identifier, request.getSchema(), false);
     }
 
@@ -288,6 +295,7 @@ public class TableHandler implements RouteRegistrar {
         LOG.info("Altering table: {}.{}", identifier.getDatabaseName(), identifier.getTableName());
         AlterTableRequest request = JsonSerdeUtil.fromJson(body, AlterTableRequest.class);
         List<SchemaChange> changes = request.getChanges();
+        validateColumnNamesInChanges(changes);
         catalog.alterTable(identifier, changes, false);
     }
 
@@ -411,5 +419,49 @@ public class TableHandler implements RouteRegistrar {
             node.set(fieldName, filtered);
         }
         return removed;
+    }
+
+    static void validateColumnNames(Schema schema) {
+        for (DataField field : schema.fields()) {
+            validateFieldNamesInDataType(field.type());
+        }
+    }
+
+    static void validateColumnNamesInChanges(List<SchemaChange> changes) {
+        for (SchemaChange change : changes) {
+            if (change instanceof SchemaChange.AddColumn) {
+                validateFieldNamesInDataType(((SchemaChange.AddColumn) change).dataType());
+            } else if (change instanceof SchemaChange.UpdateColumnType) {
+                validateFieldNamesInDataType(
+                        ((SchemaChange.UpdateColumnType) change).newDataType());
+            }
+        }
+    }
+
+    private static void validateFieldNamesInDataType(DataType dataType) {
+        if (dataType instanceof RowType) {
+            for (DataField field : ((RowType) dataType).getFields()) {
+                validateFieldNameNotEndsWithColon(field.name());
+                validateFieldNamesInDataType(field.type());
+            }
+        } else if (dataType instanceof ArrayType) {
+            validateFieldNamesInDataType(((ArrayType) dataType).getElementType());
+        } else if (dataType instanceof MapType) {
+            validateFieldNamesInDataType(((MapType) dataType).getKeyType());
+            validateFieldNamesInDataType(((MapType) dataType).getValueType());
+        } else if (dataType instanceof MultisetType) {
+            validateFieldNamesInDataType(((MultisetType) dataType).getElementType());
+        }
+    }
+
+    private static void validateFieldNameNotEndsWithColon(String fieldName) {
+        if (fieldName != null && fieldName.endsWith(":")) {
+            throw new IllegalArgumentException(
+                    "Field name '"
+                            + fieldName
+                            + "' must not end with ':'. "
+                            + "If you intended to use 'ROW<col: type>' syntax, "
+                            + "please use 'ROW<col type>' instead (space-separated, no colon).");
+        }
     }
 }

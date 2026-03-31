@@ -46,4 +46,69 @@ class TableHandlerValidationTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("does not match");
     }
+
+    @Test
+    void testCreateTableRejectsNestedRowFieldNameEndingWithColon() {
+        String body =
+                "{\"identifier\":{\"database\":\"db\",\"object\":\"t\"},"
+                        + "\"schema\":{\"fields\":["
+                        + "{\"id\":0,\"name\":\"info\",\"type\":"
+                        + "{\"type\":\"ROW\",\"fields\":["
+                        + "{\"id\":1,\"name\":\"nested:\",\"type\":\"STRING\"}"
+                        + "]}}"
+                        + "],\"partitionKeys\":[],\"primaryKeys\":[],\"options\":{}}}";
+        assertThatThrownBy(() -> handler.createTable("db", body))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must not end with ':'");
+    }
+
+    @Test
+    void testCreateTableRejectsFieldInArrayElementRow() {
+        String body =
+                "{\"identifier\":{\"database\":\"db\",\"object\":\"t\"},"
+                        + "\"schema\":{\"fields\":["
+                        + "{\"id\":0,\"name\":\"arr\",\"type\":"
+                        + "{\"type\":\"ARRAY\",\"element\":"
+                        + "{\"type\":\"ROW\",\"fields\":["
+                        + "{\"id\":1,\"name\":\"bad:\",\"type\":\"INT\"}"
+                        + "]}}}"
+                        + "],\"partitionKeys\":[],\"primaryKeys\":[],\"options\":{}}}";
+        assertThatThrownBy(() -> handler.createTable("db", body))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must not end with ':'");
+    }
+
+    @Test
+    void testCreateTableRejectsFieldInMapValueRow() {
+        String body =
+                "{\"identifier\":{\"database\":\"db\",\"object\":\"t\"},"
+                        + "\"schema\":{\"fields\":["
+                        + "{\"id\":0,\"name\":\"m\",\"type\":"
+                        + "{\"type\":\"MAP\",\"key\":\"STRING\",\"value\":"
+                        + "{\"type\":\"ROW\",\"fields\":["
+                        + "{\"id\":1,\"name\":\"val:\",\"type\":\"INT\"}"
+                        + "]}}}"
+                        + "],\"partitionKeys\":[],\"primaryKeys\":[],\"options\":{}}}";
+        assertThatThrownBy(() -> handler.createTable("db", body))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must not end with ':'");
+    }
+
+    @Test
+    void testAlterTableAddColumnRejectsNestedRowFieldEndingWithColon() {
+        String body =
+                "{\"changes\":["
+                        + "{\"action\":\"addColumn\","
+                        + "\"fieldNames\":[\"info\"],"
+                        + "\"dataType\":{\"type\":\"ROW\",\"fields\":["
+                        + "{\"id\":0,\"name\":\"inner:\",\"type\":\"STRING\"}"
+                        + "]}}"
+                        + "]}";
+        assertThatThrownBy(
+                        () ->
+                                handler.alterTable(
+                                        new org.apache.paimon.catalog.Identifier("db", "t"), body))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must not end with ':'");
+    }
 }
