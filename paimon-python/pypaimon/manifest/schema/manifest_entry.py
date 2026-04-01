@@ -52,6 +52,16 @@ class ManifestEntry(FileEntry):
             file=self.file.assign_first_row_id(first_row_id)
         )
 
+    def assign_commit_snapshot_id(self, commit_snapshot_id: int) -> 'ManifestEntry':
+        """Create a new ManifestEntry with the assigned commit_snapshot_id."""
+        return ManifestEntry(
+            kind=self.kind,
+            partition=self.partition,
+            bucket=self.bucket,
+            total_buckets=self.total_buckets,
+            file=self.file.assign_commit_snapshot_id(commit_snapshot_id)
+        )
+
     def assign_sequence_number(self, min_sequence_number: int, max_sequence_number: int) -> 'ManifestEntry':
         """Create a new ManifestEntry with the assigned sequence numbers."""
         return ManifestEntry(

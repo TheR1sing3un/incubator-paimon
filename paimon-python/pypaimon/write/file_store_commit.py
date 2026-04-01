@@ -341,6 +341,10 @@ class FileStoreCommit:
             # Assign row IDs to new files and get the next row ID for the snapshot
             commit_entries, next_row_id = self._assign_row_tracking_meta(first_row_id_start, commit_entries)
 
+        # Assign commit_snapshot_id if snapshot sequence ordering is enabled
+        if self.table.options.snapshot_sequence_ordering():
+            commit_entries = self._assign_commit_snapshot_id(new_snapshot_id, commit_entries)
+
         # Conflict detection: read base entries from latest snapshot, then check conflicts
         if detect_conflicts and latest_snapshot is not None:
             base_entries = self.commit_scanner.read_all_entries_from_changed_partitions(
@@ -687,6 +691,21 @@ class FileStoreCommit:
     def _assign_snapshot_id(self, snapshot_id: int, commit_entries: List[ManifestEntry]) -> List[ManifestEntry]:
         """Assign snapshot ID to all commit entries."""
         return [entry.assign_sequence_number(snapshot_id, snapshot_id) for entry in commit_entries]
+
+    def _assign_commit_snapshot_id(self, snapshot_id: int,
+                                   commit_entries: List[ManifestEntry]) -> List[ManifestEntry]:
+        """Assign commitSnapshotId to ADD entries that don't already have one.
+        Files pre-stamped by compaction rewriters are left untouched."""
+        _LONG_MAX_VALUE = (2 ** 63) - 1
+        result = []
+        for entry in commit_entries:
+            if (entry.kind == 0
+                    and (entry.file.commit_snapshot_id is None
+                         or entry.file.commit_snapshot_id == _LONG_MAX_VALUE)):
+                result.append(entry.assign_commit_snapshot_id(snapshot_id))
+            else:
+                result.append(entry)
+        return result
 
     def _get_next_row_id_start(self, latest_snapshot) -> int:
         """Get the next row ID start from the latest snapshot."""

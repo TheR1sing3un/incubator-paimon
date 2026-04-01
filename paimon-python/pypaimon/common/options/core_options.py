@@ -392,6 +392,16 @@ class CoreOptions:
         .with_description("Whether to enable row tracking.")
     )
 
+    SNAPSHOT_SEQUENCE_ORDERING: ConfigOption[bool] = (
+        ConfigOptions.key("sequence.snapshot-ordering")
+        .boolean_type()
+        .default_value(False)
+        .with_description(
+            "When enabled, merge uses snapshot commit order to determine "
+            "record ordering instead of sequence numbers."
+        )
+    )
+
     DATA_EVOLUTION_ENABLED: ConfigOption[bool] = (
         ConfigOptions.key("data-evolution.enabled")
         .boolean_type()
@@ -669,6 +679,9 @@ class CoreOptions:
 
     def row_tracking_enabled(self, default=None):
         return self.options.get(CoreOptions.ROW_TRACKING_ENABLED, default)
+
+    def snapshot_sequence_ordering(self, default=None):
+        return self.options.get(CoreOptions.SNAPSHOT_SEQUENCE_ORDERING, default)
 
     def data_evolution_enabled(self, default=None):
         return self.options.get(CoreOptions.DATA_EVOLUTION_ENABLED, default)
