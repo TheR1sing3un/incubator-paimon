@@ -30,8 +30,12 @@ MV_ALL_VERSIONED_VALUES = 'ALL_VERSIONED_VALUES'
 class MultiVersionColumnMeta:
     """Metadata for a multi-version column, created once per column."""
 
-    def __init__(self, column_index):
+    def __init__(self, column_index, version_key=MV_LATEST_VERSION,
+                 value_key=MV_LATEST_VALUE, map_key=MV_ALL_VERSIONED_VALUES):
         self.column_index = column_index
+        self.version_key = version_key
+        self.value_key = value_key
+        self.map_key = map_key
 
 
 class MultiVersionState:
@@ -176,9 +180,10 @@ class VersionedPartialUpdateMergeFunction(MergeFunction):
         if idx not in self.mv_states:
             self.mv_states[idx] = MultiVersionState()
         state = self.mv_states[idx]
+        meta = self.mv_metas[idx]
 
-        # value is a dict with keys: LATEST_VERSION, LATEST_VALUE, ALL_VERSIONED_VALUES
-        all_versioned = value.get(MV_ALL_VERSIONED_VALUES)
+        # value is a dict with keys matching the actual schema field names
+        all_versioned = value.get(meta.map_key)
         if all_versioned is not None and len(all_versioned) > 0:
             # MAP path: iterate all version->value entries
             # Handle multiple formats:
@@ -201,9 +206,9 @@ class VersionedPartialUpdateMergeFunction(MergeFunction):
                 self._merge_version_entry(state, str(version_key), val, is_ignore)
         else:
             # Single pair path
-            latest_version = value.get(MV_LATEST_VERSION)
+            latest_version = value.get(meta.version_key)
             if latest_version is not None:
-                latest_val = value.get(MV_LATEST_VALUE)
+                latest_val = value.get(meta.value_key)
                 self._merge_version_entry(state, str(latest_version), latest_val, is_ignore)
 
     def _merge_version_entry(self, state, version_key, val, is_ignore):
@@ -226,6 +231,7 @@ class VersionedPartialUpdateMergeFunction(MergeFunction):
             # Build multi-version column results
             for idx, state in self.mv_states.items():
                 if state.all_versioned_values:
+                    meta = self.mv_metas[idx]
                     latest_version = None
                     latest_value = None
                     for key, val in state.all_versioned_values.items():
@@ -235,9 +241,9 @@ class VersionedPartialUpdateMergeFunction(MergeFunction):
                     # Build MAP as list of (key, value) tuples for PyArrow compatibility
                     all_entries = list(state.all_versioned_values.items())
                     mv_dict = {
-                        MV_LATEST_VERSION: latest_version,
-                        MV_LATEST_VALUE: latest_value,
-                        MV_ALL_VERSIONED_VALUES: all_entries,
+                        meta.version_key: latest_version,
+                        meta.value_key: latest_value,
+                        meta.map_key: all_entries,
                     }
                     self.row[idx] = mv_dict
 

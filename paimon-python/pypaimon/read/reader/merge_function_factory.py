@@ -68,11 +68,18 @@ def _create_versioned_partial_update(schema, options, key_arity):
         elif _is_multi_version_field(field):
             mv_field_names.add(field.name)
 
-    # Build multi-version column metadata
+    # Build multi-version column metadata with actual sub-field names from schema
     mv_metas = {}
     for mv_name in mv_field_names:
         idx = field_name_to_idx[mv_name]
-        mv_metas[idx] = MultiVersionColumnMeta(idx)
+        field = value_fields[idx]
+        sub_fields = field.type.fields
+        mv_metas[idx] = MultiVersionColumnMeta(
+            idx,
+            version_key=sub_fields[0].name,
+            value_key=sub_fields[1].name,
+            map_key=sub_fields[2].name,
+        )
 
     # Build nullables
     nullables = []

@@ -53,6 +53,9 @@ class RecordBatchReader(RecordReader):
         return polars.from_arrow(arrow_batch)
 
     def tuple_iterator(self) -> Optional[Iterator[tuple]]:
+        # TODO: polars.from_arrow() converts null MAP/LIST values to empty lists [],
+        #  losing null semantics. Consider using PyArrow's to_pydict() + zip instead
+        #  to preserve nulls: columns = batch.to_pydict(); zip(*(columns[n] for n in names))
         df = self.read_next_df()
         if df is None:
             return None
