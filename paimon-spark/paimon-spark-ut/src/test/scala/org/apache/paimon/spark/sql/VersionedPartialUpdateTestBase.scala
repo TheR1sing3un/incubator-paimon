@@ -36,7 +36,6 @@ abstract class VersionedPartialUpdateTestBase extends PaimonSparkTestBase {
                 |  'primary-key' = 'pk',
                 |  'bucket' = '1',
                 |  'merge-engine' = 'versioned-partial-update',
-                |  'versioned-partial-update.multi-version-fields' = 'mv_col',
                 |  'deletion-vectors.enabled' = 'true',
                 |  'sequence.snapshot-ordering' = 'true'
                 |)

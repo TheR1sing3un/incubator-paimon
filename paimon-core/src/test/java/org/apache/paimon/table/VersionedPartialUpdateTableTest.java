@@ -65,7 +65,6 @@ public class VersionedPartialUpdateTableTest extends TableTestBase {
         schemaBuilder.primaryKey("pk");
         schemaBuilder.option("bucket", "1");
         schemaBuilder.option("merge-engine", "versioned-partial-update");
-        schemaBuilder.option("versioned-partial-update.multi-version-fields", "mv_col");
         schemaBuilder.option("deletion-vectors.enabled", "true");
         schemaBuilder.option("sequence.snapshot-ordering", "true");
         schemaBuilder.option("num-levels", "3");
@@ -519,7 +518,6 @@ public class VersionedPartialUpdateTableTest extends TableTestBase {
         schemaBuilder.primaryKey("pk");
         schemaBuilder.option("bucket", "1");
         schemaBuilder.option("merge-engine", "versioned-partial-update");
-        schemaBuilder.option("versioned-partial-update.multi-version-fields", "mv_col");
         schemaBuilder.option("sequence.snapshot-ordering", "true");
         // no DV, no force-lookup, no lookup changelog → no lookup capability
         assertThatThrownBy(() -> catalog.createTable(identifier(), schemaBuilder.build(), true))
@@ -535,7 +533,6 @@ public class VersionedPartialUpdateTableTest extends TableTestBase {
         schemaBuilder.primaryKey("pk");
         schemaBuilder.option("bucket", "1");
         schemaBuilder.option("merge-engine", "versioned-partial-update");
-        schemaBuilder.option("versioned-partial-update.multi-version-fields", "mv_col");
         schemaBuilder.option("deletion-vectors.enabled", "true");
         // snapshot-ordering not set → should fail
         assertThatThrownBy(() -> catalog.createTable(identifier(), schemaBuilder.build(), true))
@@ -553,7 +550,6 @@ public class VersionedPartialUpdateTableTest extends TableTestBase {
         schemaBuilder.primaryKey("pk");
         schemaBuilder.option("bucket", "1");
         schemaBuilder.option("merge-engine", "versioned-partial-update");
-        schemaBuilder.option("versioned-partial-update.multi-version-fields", "mv_col");
         schemaBuilder.option("sequence.snapshot-ordering", "true");
         schemaBuilder.option("versioned-partial-update.ignore-mode.enabled", "false");
         schemaBuilder.option("num-levels", "3");
@@ -706,7 +702,6 @@ public class VersionedPartialUpdateTableTest extends TableTestBase {
         schemaBuilder.primaryKey("pk");
         schemaBuilder.option("bucket", "1");
         schemaBuilder.option("merge-engine", "versioned-partial-update");
-        schemaBuilder.option("versioned-partial-update.multi-version-fields", "mv_col");
         schemaBuilder.option("sequence.snapshot-ordering", "true");
         schemaBuilder.option("force-lookup", "true");
         schemaBuilder.option("num-levels", "3");

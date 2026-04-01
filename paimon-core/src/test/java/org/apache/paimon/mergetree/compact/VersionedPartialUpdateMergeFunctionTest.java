@@ -43,7 +43,6 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link VersionedPartialUpdateMergeFunction}. */
 public class VersionedPartialUpdateMergeFunctionTest {
@@ -105,7 +104,6 @@ public class VersionedPartialUpdateMergeFunctionTest {
     @BeforeEach
     void setUp() {
         Options options = new Options();
-        options.set(CoreOptions.VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS, "mv_col");
         options.set(CoreOptions.DELETION_VECTORS_ENABLED, true);
         function =
                 VersionedPartialUpdateMergeFunction.factory(
@@ -260,7 +258,6 @@ public class VersionedPartialUpdateMergeFunctionTest {
     @Test
     void testRetractIgnoredWhenConfigured() {
         Options options = new Options();
-        options.set(CoreOptions.VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS, "mv_col");
         options.set(CoreOptions.DELETION_VECTORS_ENABLED, true);
         options.set(CoreOptions.IGNORE_DELETE, true);
         MergeFunction<KeyValue> ignoreDeleteFunction =
@@ -298,33 +295,8 @@ public class VersionedPartialUpdateMergeFunctionTest {
     }
 
     @Test
-    void testValidationWrongType() {
-        Options options = new Options();
-        options.set(CoreOptions.VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS, "single_col");
-        options.set(CoreOptions.DELETION_VECTORS_ENABLED, true);
-        assertThatThrownBy(
-                        () ->
-                                VersionedPartialUpdateMergeFunction.factory(
-                                        options, ROW_TYPE, Arrays.asList("pk")))
-                .hasMessageContaining("must be ROW type");
-    }
-
-    @Test
-    void testValidationFieldNotFound() {
-        Options options = new Options();
-        options.set(CoreOptions.VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS, "nonexistent");
-        options.set(CoreOptions.DELETION_VECTORS_ENABLED, true);
-        assertThatThrownBy(
-                        () ->
-                                VersionedPartialUpdateMergeFunction.factory(
-                                        options, ROW_TYPE, Arrays.asList("pk")))
-                .hasMessageContaining("not found in schema");
-    }
-
-    @Test
     void testFactoryCreationWithoutDV() {
         Options options = new Options();
-        options.set(CoreOptions.VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS, "mv_col");
         // DV NOT enabled — should still succeed (DV is no longer required)
         MergeFunctionFactory<KeyValue> factory =
                 VersionedPartialUpdateMergeFunction.factory(options, ROW_TYPE, Arrays.asList("pk"));
@@ -539,30 +511,6 @@ public class VersionedPartialUpdateMergeFunctionTest {
                 mapOf("aaa", "val_a", "mmm", "val_m", "zzz", "val_z"));
     }
 
-    @Test
-    void testValidationLatestValueTypeMismatch() {
-        // latest_value is INT but MAP value is STRING — should fail validation
-        RowType badMvType =
-                RowType.builder()
-                        .field("latest_version", DataTypes.STRING())
-                        .field("latest_value", DataTypes.INT())
-                        .field(
-                                "all_versioned_values",
-                                DataTypes.MAP(DataTypes.STRING(), DataTypes.STRING()))
-                        .build();
-        RowType badRowType =
-                RowType.builder().field("pk", DataTypes.INT()).field("mv_col", badMvType).build();
-        Options options = new Options();
-        options.set(CoreOptions.VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS, "mv_col");
-        options.set(CoreOptions.DELETION_VECTORS_ENABLED, true);
-        assertThatThrownBy(
-                        () ->
-                                VersionedPartialUpdateMergeFunction.factory(
-                                        options, badRowType, Collections.singletonList("pk")))
-                .hasMessageContaining("latest_value type")
-                .hasMessageContaining("must match MAP value type");
-    }
-
     // ===== Single-version column tests with ascending sequence order =====
 
     @Test
@@ -702,7 +650,6 @@ public class VersionedPartialUpdateMergeFunctionTest {
     @Test
     void testAdjustReadTypeAddsMissingMvField() {
         Options options = new Options();
-        options.set(CoreOptions.VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS, "mv_col");
         options.set(CoreOptions.DELETION_VECTORS_ENABLED, true);
         MergeFunctionFactory<KeyValue> factory =
                 VersionedPartialUpdateMergeFunction.factory(
@@ -725,7 +672,6 @@ public class VersionedPartialUpdateMergeFunctionTest {
     @Test
     void testAdjustReadTypeNoChangeWhenAllFieldsPresent() {
         Options options = new Options();
-        options.set(CoreOptions.VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS, "mv_col");
         options.set(CoreOptions.DELETION_VECTORS_ENABLED, true);
         MergeFunctionFactory<KeyValue> factory =
                 VersionedPartialUpdateMergeFunction.factory(
@@ -755,7 +701,6 @@ public class VersionedPartialUpdateMergeFunctionTest {
                         .build();
 
         Options options = new Options();
-        options.set(CoreOptions.VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS, "mv_col_1,mv_col_2");
         options.set(CoreOptions.DELETION_VECTORS_ENABLED, true);
         MergeFunction<KeyValue> multiMvFunction =
                 VersionedPartialUpdateMergeFunction.factory(
@@ -892,12 +837,10 @@ public class VersionedPartialUpdateMergeFunctionTest {
                                 new DataField(8, "audio_classification", mvRowType)));
 
         Options options = new Options();
-        options.set(
-                CoreOptions.VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS, "audio_classification");
         options.set(CoreOptions.DELETION_VECTORS_ENABLED, true);
 
         // Before the fix, this would throw because equals() compared field IDs.
-        // After the fix (equalsIgnoreFieldId), this should pass validation.
+        // After the fix (equalsIgnoreFieldId), this should pass auto-detection.
         VersionedPartialUpdateMergeFunction.factory(
                 options, rowType, Collections.singletonList("pk"));
     }

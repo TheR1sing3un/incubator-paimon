@@ -150,7 +150,7 @@ class VersionedPartialUpdateE2ETest(unittest.TestCase):
         table_name = self._unique_table_name()
         table = self._create_table(
             table_name, pa_schema, ['pk'],
-            options={'versioned-partial-update.multi-version-fields': 'mv_col'})
+            options={})
 
         # Commit 1: pk=1, single_col="A"
         self._write(table, {
@@ -187,7 +187,7 @@ class VersionedPartialUpdateE2ETest(unittest.TestCase):
         table_name = self._unique_table_name()
         table = self._create_table(
             table_name, pa_schema, ['pk'],
-            options={'versioned-partial-update.multi-version-fields': 'mv_col'})
+            options={})
 
         self._write(table, {
             'pk': [1, 2, 3],
@@ -214,7 +214,7 @@ class VersionedPartialUpdateE2ETest(unittest.TestCase):
         table_name = self._unique_table_name()
         table = self._create_table(
             table_name, pa_schema, ['pk'],
-            options={'versioned-partial-update.multi-version-fields': 'mv_col'})
+            options={})
 
         self._write(table, {
             'pk': [1],
@@ -246,7 +246,6 @@ class VersionedPartialUpdateE2ETest(unittest.TestCase):
         table = self._create_table(
             table_name, pa_schema, ['pk'],
             options={
-                'versioned-partial-update.multi-version-fields': 'mv_col',
                 'versioned-partial-update.merge-mode': 'upsert',
             })
 
@@ -284,9 +283,7 @@ class VersionedPartialUpdateE2ETest(unittest.TestCase):
         table_name = self._unique_table_name()
         table = self._create_table(
             table_name, pa_schema, ['pk'],
-            options={
-                'versioned-partial-update.multi-version-fields': 'mv_col',
-            })
+            options={})
 
         # Commit 1: UPSERT with null single_col
         self._write(table, {
@@ -319,9 +316,7 @@ class VersionedPartialUpdateE2ETest(unittest.TestCase):
         table_name = self._unique_table_name()
         table = self._create_table(
             table_name, pa_schema, ['pk'],
-            options={
-                'versioned-partial-update.multi-version-fields': 'mv_col',
-            })
+            options={})
 
         self._write(table, {
             'pk': [1],
@@ -355,9 +350,7 @@ class VersionedPartialUpdateE2ETest(unittest.TestCase):
         table_name = self._unique_table_name()
         table = self._create_table(
             table_name, pa_schema, ['pk'],
-            options={
-                'versioned-partial-update.multi-version-fields': 'mv_col',
-            })
+            options={})
 
         # Commit 1: UPSERT
         self._write(table, {
@@ -399,9 +392,7 @@ class VersionedPartialUpdateE2ETest(unittest.TestCase):
         table_name = self._unique_table_name()
         table = self._create_table(
             table_name, pa_schema, ['pk'],
-            options={
-                'versioned-partial-update.multi-version-fields': 'mv_col',
-            })
+            options={})
 
         for i in range(5):
             self._write(table, {
@@ -429,9 +420,7 @@ class VersionedPartialUpdateE2ETest(unittest.TestCase):
         table_name = self._unique_table_name()
         table = self._create_table(
             table_name, pa_schema, ['pk'],
-            options={
-                'versioned-partial-update.multi-version-fields': 'mv_col',
-            })
+            options={})
 
         # v9 > v10 lexicographically (string comparison)
         self._write(table, {
@@ -459,9 +448,7 @@ class VersionedPartialUpdateE2ETest(unittest.TestCase):
         table_name = self._unique_table_name()
         table = self._create_table(
             table_name, pa_schema, ['pk'],
-            options={
-                'versioned-partial-update.multi-version-fields': 'mv_col',
-            })
+            options={})
 
         self._write(table, {
             'pk': [1], 'single_col': ['A'],
@@ -490,9 +477,7 @@ class VersionedPartialUpdateE2ETest(unittest.TestCase):
         table_name = self._unique_table_name()
         table = self._create_table(
             table_name, pa_schema, ['pk'],
-            options={
-                'versioned-partial-update.multi-version-fields': 'mv_col',
-            })
+            options={})
 
         # Commit 1: MAP path with 3 versions
         self._write(table, {
@@ -526,9 +511,7 @@ class VersionedPartialUpdateE2ETest(unittest.TestCase):
         table_name = self._unique_table_name()
         table = self._create_table(
             table_name, pa_schema, ['pk'],
-            options={
-                'versioned-partial-update.multi-version-fields': 'mv_col',
-            })
+            options={})
 
         self._write(table, {
             'pk': [1, 2],
@@ -563,9 +546,7 @@ class VersionedPartialUpdateE2ETest(unittest.TestCase):
         table = self._create_table(
             table_name, pa_schema, ['pk', 'dt'],
             partition_keys=['dt'],
-            options={
-                'versioned-partial-update.multi-version-fields': 'mv_col',
-            })
+            options={})
 
         self._write(table, {
             'pk': [1, 1],
@@ -605,9 +586,7 @@ class VersionedPartialUpdateE2ETest(unittest.TestCase):
         table_name = self._unique_table_name()
         table = self._create_table(
             table_name, pa_schema, ['pk'],
-            options={
-                'versioned-partial-update.multi-version-fields': 'scores',
-            })
+            options={})
 
         self._write(table, {
             'pk': [1],
@@ -649,9 +628,7 @@ class VersionedPartialUpdateE2ETest(unittest.TestCase):
         table_name = self._unique_table_name()
         table = self._create_table(
             table_name, pa_schema, ['pk'],
-            options={
-                'versioned-partial-update.multi-version-fields': 'mv_col',
-            })
+            options={})
 
         self._write(table, {
             'pk': [1],
@@ -674,9 +651,7 @@ class VersionedPartialUpdateE2ETest(unittest.TestCase):
         table_name = self._unique_table_name()
         table = self._create_table(
             table_name, pa_schema, ['pk'],
-            options={
-                'versioned-partial-update.multi-version-fields': 'mv_col',
-            })
+            options={})
 
         self._write(table, {
             'pk': [1],
@@ -702,9 +677,7 @@ class VersionedPartialUpdateE2ETest(unittest.TestCase):
         table_name = self._unique_table_name()
         table = self._create_table(
             table_name, pa_schema, ['pk'],
-            options={
-                'versioned-partial-update.multi-version-fields': 'mv_col',
-            })
+            options={})
 
         num_versions = 20
         for i in range(num_versions):
@@ -733,9 +706,7 @@ class VersionedPartialUpdateE2ETest(unittest.TestCase):
         table_name = self._unique_table_name()
         table = self._create_table(
             table_name, pa_schema, ['pk'],
-            options={
-                'versioned-partial-update.multi-version-fields': 'mv_col',
-            })
+            options={})
 
         num_pks = 10
         num_versions = 5
@@ -809,9 +780,7 @@ class VersionedPartialUpdateE2ETest(unittest.TestCase):
         # Create table with UPSERT mode (default)
         table = self._create_table(
             table_name, pa_schema, ['pk'],
-            options={
-                'versioned-partial-update.multi-version-fields': 'mv_col',
-            })
+            options={})
 
         self._write(table, {
             'pk': [1], 'single_col': ['A'],

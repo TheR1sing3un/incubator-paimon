@@ -969,24 +969,6 @@ public class CoreOptions implements Serializable {
                     .withDescription(
                             "When -D records of the given sequence groups are received, remove the whole row.");
 
-    @Immutable
-    public static final ConfigOption<String> VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS =
-            key("versioned-partial-update.multi-version-fields")
-                    .stringType()
-                    .noDefaultValue()
-                    .withDescription(
-                            "Comma-separated list of multi-version column names for the "
-                                    + "'versioned-partial-update' merge engine. Each column must be "
-                                    + "ROW<latest_version STRING, latest_value T, "
-                                    + "all_versioned_values MAP<STRING, T>>. "
-                                    + "These columns accumulate version entries from multiple "
-                                    + "writing jobs, with each entry identified by a version key. "
-                                    + "Note: the 'latest' version is determined by lexicographic "
-                                    + "order (String comparison), not numeric order. For example, "
-                                    + "'v9' > 'v10' > 'v2' lexicographically. Use zero-padded "
-                                    + "version keys (e.g., 'v002', 'v009', 'v010') if numeric "
-                                    + "ordering is desired.");
-
     public static final ConfigOption<String> VERSIONED_PARTIAL_UPDATE_MERGE_MODE =
             key("versioned-partial-update.merge-mode")
                     .stringType()

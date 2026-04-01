@@ -315,15 +315,6 @@ class CoreOptions:
         .with_description("Whether to ignore delete records.")
     )
 
-    VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS: ConfigOption[str] = (
-        ConfigOptions.key("versioned-partial-update.multi-version-fields")
-        .string_type()
-        .no_default_value()
-        .with_description(
-            "Comma-separated list of multi-version column names for "
-            "versioned-partial-update merge engine.")
-    )
-
     VERSIONED_PARTIAL_UPDATE_MERGE_MODE: ConfigOption[str] = (
         ConfigOptions.key("versioned-partial-update.merge-mode")
         .string_type()
@@ -693,9 +684,6 @@ class CoreOptions:
 
     def ignore_delete(self, default=None):
         return self.options.get(CoreOptions.IGNORE_DELETE, default)
-
-    def versioned_partial_update_multi_version_fields(self, default=None):
-        return self.options.get(CoreOptions.VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS, default)
 
     def versioned_partial_update_merge_mode(self, default=None):
         return self.options.get(CoreOptions.VERSIONED_PARTIAL_UPDATE_MERGE_MODE, default)

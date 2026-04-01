@@ -79,7 +79,6 @@ public class VersionedPartialUpdateE2ETest extends TableTestBase {
         b.primaryKey("pk");
         b.option("bucket", "1");
         b.option("merge-engine", "versioned-partial-update");
-        b.option("versioned-partial-update.multi-version-fields", "mv_col");
         b.option("deletion-vectors.enabled", "true");
         b.option("sequence.snapshot-ordering", "true");
         b.option("num-levels", "3");
@@ -95,7 +94,6 @@ public class VersionedPartialUpdateE2ETest extends TableTestBase {
         b.primaryKey("pk");
         b.option("bucket", "1");
         b.option("merge-engine", "versioned-partial-update");
-        b.option("versioned-partial-update.multi-version-fields", "scores");
         b.option("deletion-vectors.enabled", "true");
         b.option("sequence.snapshot-ordering", "true");
         b.option("num-levels", "3");
@@ -111,7 +109,6 @@ public class VersionedPartialUpdateE2ETest extends TableTestBase {
         b.primaryKey("pk");
         b.option("bucket", "1");
         b.option("merge-engine", "versioned-partial-update");
-        b.option("versioned-partial-update.multi-version-fields", "mv_col");
         b.option("deletion-vectors.enabled", "true");
         b.option("sequence.snapshot-ordering", "true");
         b.option("num-levels", "3");
@@ -129,7 +126,6 @@ public class VersionedPartialUpdateE2ETest extends TableTestBase {
         b.primaryKey("pk");
         b.option("bucket", "1");
         b.option("merge-engine", "versioned-partial-update");
-        b.option("versioned-partial-update.multi-version-fields", "mv_a,mv_b");
         b.option("deletion-vectors.enabled", "true");
         b.option("sequence.snapshot-ordering", "true");
         b.option("num-levels", "3");
@@ -629,7 +625,7 @@ public class VersionedPartialUpdateE2ETest extends TableTestBase {
     }
 
     // ===================================================================
-    // Test 13: Validation — missing multi-version-fields option
+    // Test 13: Validation — missing snapshot-ordering option
     // ===================================================================
 
     @Test
@@ -641,7 +637,6 @@ public class VersionedPartialUpdateE2ETest extends TableTestBase {
         b.primaryKey("pk");
         b.option("bucket", "1");
         b.option("merge-engine", "versioned-partial-update");
-        b.option("versioned-partial-update.multi-version-fields", "mv_col");
         b.option("deletion-vectors.enabled", "true");
         // deliberately NOT setting sequence.snapshot-ordering
         assertThatThrownBy(

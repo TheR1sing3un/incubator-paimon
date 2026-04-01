@@ -45,7 +45,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import static org.apache.paimon.utils.Preconditions.checkArgument;
 import static org.apache.paimon.utils.Preconditions.checkState;
 
 /**
@@ -81,7 +80,6 @@ import static org.apache.paimon.utils.Preconditions.checkState;
  * available during compaction. UPSERT mode works correctly with standard LSM compaction without
  * lookup.
  *
- * @see CoreOptions#VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS
  * @see CoreOptions#VERSIONED_PARTIAL_UPDATE_MERGE_MODE
  */
 public class VersionedPartialUpdateMergeFunction implements MergeFunction<KeyValue> {
@@ -384,52 +382,34 @@ public class VersionedPartialUpdateMergeFunction implements MergeFunction<KeyVal
             this.primaryKeys = primaryKeys;
             this.ignoreDelete = options.get(CoreOptions.IGNORE_DELETE);
 
-            String mvFieldsStr =
-                    options.get(CoreOptions.VERSIONED_PARTIAL_UPDATE_MULTI_VERSION_FIELDS);
             this.mvFieldNames = new HashSet<>();
-            if (mvFieldsStr != null && !mvFieldsStr.isEmpty()) {
-                for (String name : mvFieldsStr.split(",")) {
-                    mvFieldNames.add(name.trim());
+            for (int i = 0; i < rowType.getFieldCount(); i++) {
+                String fieldName = rowType.getFields().get(i).name();
+                if (!primaryKeys.contains(fieldName) && isMultiVersionType(rowType.getTypeAt(i))) {
+                    mvFieldNames.add(fieldName);
                 }
             }
+        }
 
-            for (String mvName : mvFieldNames) {
-                int fieldIndex = rowType.getFieldIndex(mvName);
-                checkArgument(
-                        fieldIndex >= 0, "Multi-version field '%s' not found in schema.", mvName);
-                DataType fieldType = rowType.getTypeAt(fieldIndex);
-                checkArgument(
-                        fieldType instanceof RowType,
-                        "Multi-version field '%s' must be ROW type, but got %s.",
-                        mvName,
-                        fieldType);
-                RowType mvRowType = (RowType) fieldType;
-                checkArgument(
-                        mvRowType.getFieldCount() == 3,
-                        "Multi-version field '%s' must have exactly 3 sub-fields "
-                                + "(latest_version, latest_value, all_versioned_values), but got %d.",
-                        mvName,
-                        mvRowType.getFieldCount());
-                checkArgument(
-                        mvRowType.getTypeAt(0) instanceof VarCharType,
-                        "Multi-version field '%s' first sub-field must be STRING type.",
-                        mvName);
-                checkArgument(
-                        mvRowType.getTypeAt(2) instanceof MapType,
-                        "Multi-version field '%s' third sub-field must be MAP type.",
-                        mvName);
-                MapType mapType = (MapType) mvRowType.getTypeAt(2);
-                checkArgument(
-                        mapType.getKeyType() instanceof VarCharType,
-                        "Multi-version field '%s' MAP key must be STRING type.",
-                        mvName);
-                checkArgument(
-                        mvRowType.getTypeAt(1).equalsIgnoreFieldId(mapType.getValueType()),
-                        "Multi-version field '%s' latest_value type (%s) must match MAP value type (%s).",
-                        mvName,
-                        mvRowType.getTypeAt(1),
-                        mapType.getValueType());
+        private static boolean isMultiVersionType(DataType type) {
+            if (!(type instanceof RowType)) {
+                return false;
             }
+            RowType rowType = (RowType) type;
+            if (rowType.getFieldCount() != 3) {
+                return false;
+            }
+            if (!(rowType.getTypeAt(0) instanceof VarCharType)) {
+                return false;
+            }
+            if (!(rowType.getTypeAt(2) instanceof MapType)) {
+                return false;
+            }
+            MapType mapType = (MapType) rowType.getTypeAt(2);
+            if (!(mapType.getKeyType() instanceof VarCharType)) {
+                return false;
+            }
+            return rowType.getTypeAt(1).equalsIgnoreFieldId(mapType.getValueType());
         }
 
         @Override
