@@ -22,6 +22,7 @@ export interface CatalogConfig {
   name: string;
   baseUrl: string; // e.g. "https://example.com" or "" for local
   prefix: string;  // e.g. "paimon"
+  queryServiceCatalogUrl?: string; // URL that query service uses to access this catalog
 }
 
 const CATALOGS_KEY = 'paimon-catalogs';

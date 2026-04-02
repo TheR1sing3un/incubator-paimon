@@ -52,6 +52,9 @@ export default function CatalogManager({ open, onClose }: Props) {
     try {
       const values = await form.validateFields();
       values.baseUrl = values.baseUrl.replace(/\/+$/, '');
+      if (values.queryServiceCatalogUrl) {
+        values.queryServiceCatalogUrl = values.queryServiceCatalogUrl.replace(/\/+$/, '');
+      }
       if (editing) {
         updateCatalog(editing, values);
       } else {
@@ -211,6 +214,13 @@ export default function CatalogManager({ open, onClose }: Props) {
             tooltip="The REST catalog prefix. Click 'Test Connection' to auto-detect."
           >
             <Input placeholder="e.g. paimon (auto-detected on test)" />
+          </Form.Item>
+          <Form.Item
+            name="queryServiceCatalogUrl"
+            label="Query Service Catalog URL"
+            tooltip="Optional. The URL that the query service uses to access this catalog. If empty, the Server URL above is used."
+          >
+            <Input placeholder="e.g. http://internal-catalog:8090 (optional)" />
           </Form.Item>
         </Form>
       </Modal>

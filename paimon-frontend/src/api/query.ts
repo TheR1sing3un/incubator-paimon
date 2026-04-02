@@ -56,10 +56,11 @@ export interface QueryError {
 }
 
 export function buildCatalogOptions(catalog: CatalogConfig | null): Record<string, string> {
+  const queryUrl = catalog?.queryServiceCatalogUrl?.replace(/\/+$/, '') || '';
   const baseUrl = catalog?.baseUrl?.replace(/\/+$/, '') || '';
   return {
     metastore: 'rest',
-    uri: baseUrl || 'http://127.0.0.1:8090',
+    uri: queryUrl || baseUrl || 'http://127.0.0.1:8090',
     'token.provider': 'noop',
     warehouse: catalog?.prefix || 'paimon',
   };
