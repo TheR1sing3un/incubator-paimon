@@ -78,9 +78,9 @@ export default defineConfig({
         secure: false,
         changeOrigin: true,
       },
-      // Python query service proxy
+      // Python query service proxy (local)
       '/query': {
-        target: 'http://127.0.0.1:8000',
+        target: 'http://127.0.0.1:8187',
         secure: false,
         changeOrigin: true,
       },

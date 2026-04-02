@@ -65,14 +65,35 @@ export function buildCatalogOptions(catalog: CatalogConfig | null): Record<strin
   };
 }
 
+function buildQueryUrl(queryServiceUrl: string): string {
+  const base = queryServiceUrl.replace(/\/+$/, '');
+  const targetUrl = `${base}/query/execute`;
+  try {
+    const parsed = new URL(targetUrl);
+    const isLocal =
+      parsed.hostname === 'localhost' ||
+      parsed.hostname === '127.0.0.1' ||
+      parsed.hostname === '0.0.0.0';
+    if (isLocal) {
+      // Local query service: use the URL directly.
+      return targetUrl;
+    }
+  } catch {
+    // Relative path — use as-is.
+    return targetUrl;
+  }
+  // Remote query service: route through the dev-server proxy to avoid CORS.
+  return `/proxy?target=${encodeURIComponent(targetUrl)}`;
+}
+
 export async function executeQuery(
   queryServiceUrl: string,
   req: QueryRequest,
   signal?: AbortSignal,
 ): Promise<QueryResult> {
-  const base = queryServiceUrl.replace(/\/+$/, '');
+  const url = buildQueryUrl(queryServiceUrl);
   const resp = await axios.post<QueryResult>(
-    `${base}/query/execute`,
+    url,
     req,
     { timeout: 120000, signal, headers: { 'Content-Type': 'application/json' } },
   );
