@@ -23,6 +23,7 @@ import signal
 import sys
 
 _PID_FILE = os.path.expanduser("~/.paimon/query-server.pid")
+_LOG_FILE = os.path.expanduser("~/.paimon/query-server.log")
 
 
 def _ensure_pid_dir():
@@ -74,8 +75,10 @@ def cmd_start(args):
             time.sleep(0.5)
             if _read_pid() is not None:
                 print(f"Query server started on {host}:{port} (PID {pid}).")
+                print(f"Log file: {_LOG_FILE}")
             else:
                 print(f"Query server started (PID {pid}).")
+                print(f"Log file: {_LOG_FILE}")
             sys.exit(0)
 
         # Child – detach from terminal.
@@ -89,11 +92,15 @@ def cmd_start(args):
 
     # Configure logging for pypaimon modules.
     level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(
+    log_config = dict(
         level=level,
         format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    if args.daemon:
+        _ensure_pid_dir()
+        log_config["filename"] = _LOG_FILE
+    logging.basicConfig(**log_config)
     # Suppress noisy third-party loggers at DEBUG level.
     if level == logging.DEBUG:
         logging.getLogger("urllib3").setLevel(logging.INFO)
