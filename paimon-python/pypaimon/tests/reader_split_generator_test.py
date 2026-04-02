@@ -330,5 +330,40 @@ class SplitGeneratorTest(unittest.TestCase):
         # This test ensures that if SlicedSplit is created, merged_row_count() works correctly
 
 
+    def test_limit_with_non_raw_convertible_splits(self):
+        """Test that limit does not discard non-raw_convertible splits.
+
+        After multiple upserts on a PK table, splits may have raw_convertible=False
+        (requiring merge-read). The limit push-down should still return these splits
+        instead of silently dropping them.
+        """
+        table = self._create_table('test_limit_non_raw')
+
+        # Write the same keys twice to create multiple files in one bucket,
+        # making the split non-raw_convertible.
+        data = self._create_test_data([(0, 5), (0, 5)])
+        self._write_data(table, data)
+
+        # Verify at least one split is non-raw_convertible
+        all_splits = table.new_read_builder().new_scan().plan().splits()
+        self.assertGreater(len(all_splits), 0)
+        has_non_raw = any(not s.raw_convertible for s in all_splits)
+        self.assertTrue(has_non_raw,
+                        "Expected at least one non-raw_convertible split after upserts")
+
+        # Now read with limit — should still return splits (not empty)
+        read_builder = table.new_read_builder().with_limit(1)
+        scan = read_builder.new_scan()
+        limited_splits = scan.plan().splits()
+        self.assertGreater(len(limited_splits), 0,
+                           "Limit should not discard non-raw_convertible splits")
+
+        # Verify we can actually read data from the limited splits
+        reader = read_builder.new_read()
+        result = reader.to_arrow(limited_splits)
+        self.assertGreater(result.num_rows, 0,
+                           "Should be able to read rows from limited splits")
+
+
 if __name__ == '__main__':
     unittest.main()

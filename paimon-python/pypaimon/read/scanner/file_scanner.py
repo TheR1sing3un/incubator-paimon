@@ -394,8 +394,8 @@ class FileScanner:
         limited_splits = []
 
         for split in splits:
+            limited_splits.append(split)
             if split.raw_convertible:
-                limited_splits.append(split)
                 scanned_row_count += split.row_count
                 if scanned_row_count >= self.limit:
                     return limited_splits
