@@ -17,6 +17,7 @@
 
 """CLI subcommands for managing the Paimon query server."""
 
+import logging
 import os
 import signal
 import sys
@@ -86,6 +87,18 @@ def cmd_start(args):
         os.dup2(devnull, 2)
         os.close(devnull)
 
+    # Configure logging for pypaimon modules.
+    level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    # Suppress noisy third-party loggers at DEBUG level.
+    if level == logging.DEBUG:
+        logging.getLogger("urllib3").setLevel(logging.INFO)
+        logging.getLogger("httpcore").setLevel(logging.INFO)
+
     _ensure_pid_dir()
     with open(_PID_FILE, "w") as f:
         f.write(str(os.getpid()))
@@ -96,7 +109,7 @@ def cmd_start(args):
             "pypaimon.query_server.app:app",
             host=host,
             port=port,
-            log_level="info",
+            log_level="debug" if args.verbose else "info",
         )
     finally:
         try:
@@ -146,6 +159,7 @@ def add_query_server_subcommands(parser):
     start_p.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
     start_p.add_argument("--port", "-p", type=int, default=8187, help="Bind port (default: 8187)")
     start_p.add_argument("--daemon", "-d", action="store_true", help="Run in the background")
+    start_p.add_argument("--verbose", "-v", action="store_true", help="Enable DEBUG logging")
     start_p.set_defaults(func=cmd_start)
 
     # stop

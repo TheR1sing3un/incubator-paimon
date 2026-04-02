@@ -16,6 +16,7 @@
 # limitations under the License.
 ################################################################################
 
+import logging
 import re
 import time
 import threading
@@ -23,6 +24,8 @@ from typing import Dict, List, Tuple, Any
 
 from pypaimon.query_server.models import QueryColumn, QueryResult
 from pypaimon.query_server.pool import get_pool
+
+logger = logging.getLogger(__name__)
 
 _BLOCKED_KEYWORDS = re.compile(
     r"\b(CREATE|DROP|ALTER|INSERT|UPDATE|DELETE|COPY|ATTACH|INSTALL|LOAD|EXPORT)\b",
@@ -50,6 +53,10 @@ def _validate_sql(sql: str) -> None:
     stripped = re.sub(r"/\*.*?\*/", "", stripped, flags=re.DOTALL)
     match = _BLOCKED_KEYWORDS.search(stripped)
     if match:
+        logger.warning(
+            "Blocked dangerous SQL keyword '%s' in query: %s",
+            match.group(1).upper(), sql[:200],
+        )
         raise QuerySecurityError(
             f"Statement type '{match.group(1).upper()}' is not allowed. "
             f"Only SELECT queries are permitted."
@@ -61,7 +68,9 @@ def _extract_limit(sql: str) -> int | None:
     stripped = sql.strip().rstrip(";").strip()
     m = _LIMIT_PATTERN.search(stripped)
     if m:
-        return int(m.group(1))
+        limit = int(m.group(1))
+        logger.debug("Extracted LIMIT %d from SQL", limit)
+        return limit
     return None
 
 
@@ -77,6 +86,7 @@ def execute_query(
 
     def _run(db):
         start = time.monotonic()
+        logger.debug("Executing query: limit_hint=%s, sql=%s", limit_hint, sql[:200])
 
         timer = threading.Timer(timeout_seconds, db.con.interrupt)
         timer.start()
@@ -86,6 +96,9 @@ def execute_query(
             rows, truncated = _fetch_rows(cursor, max_rows)
         except Exception as e:
             if not timer.is_alive():
+                logger.warning(
+                    "Query timed out after %ds: %s", timeout_seconds, sql[:200],
+                )
                 raise QueryTimeoutError(
                     f"Query timed out after {timeout_seconds} seconds"
                 ) from e
@@ -94,6 +107,10 @@ def execute_query(
             timer.cancel()
 
         elapsed_ms = int((time.monotonic() - start) * 1000)
+        logger.info(
+            "Query executed: rows=%d, truncated=%s, elapsed=%dms",
+            len(rows), truncated, elapsed_ms,
+        )
 
         return QueryResult(
             columns=columns,

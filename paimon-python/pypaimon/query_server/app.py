@@ -16,6 +16,7 @@
 # limitations under the License.
 ################################################################################
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -30,10 +31,14 @@ from pypaimon.query_server.executor import (
 )
 from pypaimon.query_server.pool import get_pool
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
+    logger.info("Query server starting up")
     yield
+    logger.info("Query server shutting down, closing connection pool")
     get_pool().close_all()
 
 
@@ -54,6 +59,11 @@ def health():
 
 @app.post("/query/execute", response_model=QueryResult)
 def execute(req: QueryRequest):
+    sql_preview = req.sql[:200] + ("..." if len(req.sql) > 200 else "")
+    logger.info(
+        "Query received: database=%s, max_rows=%d, timeout=%ds, sql=%s",
+        req.database, req.max_rows, req.timeout_seconds, sql_preview,
+    )
     try:
         result = execute_query(
             sql=req.sql,
@@ -62,18 +72,25 @@ def execute(req: QueryRequest):
             max_rows=req.max_rows,
             timeout_seconds=req.timeout_seconds,
         )
+        logger.info(
+            "Query completed: rows=%d, truncated=%s, elapsed=%dms",
+            result.row_count, result.truncated, result.elapsed_ms,
+        )
         return result
     except QuerySecurityError as e:
+        logger.warning("Query blocked by security check: %s, sql=%s", e, sql_preview)
         return JSONResponse(
             status_code=400,
             content=QueryError(error=str(e), error_type="SecurityError").model_dump(),
         )
     except QueryTimeoutError as e:
+        logger.warning("Query timed out: %s, sql=%s", e, sql_preview)
         return JSONResponse(
             status_code=408,
             content=QueryError(error=str(e), error_type="TimeoutError").model_dump(),
         )
     except Exception as e:
+        logger.error("Query failed: %s (%s), sql=%s", e, type(e).__name__, sql_preview)
         return JSONResponse(
             status_code=400,
             content=QueryError(

@@ -31,10 +31,14 @@ Usage::
     df = db.sql("SELECT * FROM table").fetchdf()
 """
 
+import logging
 import re
+import time
 from typing import Dict, List, Optional, Tuple
 
 import pyarrow
+
+logger = logging.getLogger(__name__)
 
 from pypaimon.common.predicate import Predicate
 
@@ -267,10 +271,18 @@ class PaimonDuckDB:
             from pypaimon.catalog.catalog_factory import CatalogFactory
 
             self._catalog = CatalogFactory.create(self.catalog_options)
+            logger.info(
+                "Created catalog for database=%s, metastore=%s",
+                self.database, self.catalog_options.get("metastore", "filesystem"),
+            )
         return self._catalog
 
     def close(self):
         """Close the DuckDB connection and release resources."""
+        logger.info(
+            "Closing PaimonDuckDB: database=%s, registered_tables=%d",
+            self.database, len(self._registered),
+        )
         self._registered.clear()
         self._catalog = None
         self.con.close()
@@ -308,6 +320,7 @@ class PaimonDuckDB:
             table_identifier = f"{self.database}.{table_identifier}"
 
         duckdb_name = table_name or table_identifier.split(".")[-1]
+        reg_start = time.monotonic()
         reader = _build_reader(
             table_identifier, self.catalog_options,
             filter=filter, projection=projection, limit=limit,
@@ -331,6 +344,11 @@ class PaimonDuckDB:
         else:
             self.con.register(duckdb_name, reader)
 
+        reg_ms = int((time.monotonic() - reg_start) * 1000)
+        logger.info(
+            "Registered table: %s as '%s', materialize=%s, limit=%s, elapsed=%dms",
+            table_identifier, duckdb_name, materialize, limit, reg_ms,
+        )
         self._registered[duckdb_name] = table_identifier
         return self
 
@@ -376,6 +394,9 @@ class PaimonDuckDB:
             )
 
         referenced = self.con.get_table_names(cleaned_query)
+        auto_registered = [n for n in referenced if n not in self._registered]
+        if auto_registered:
+            logger.debug("Auto-registering tables: %s", auto_registered)
         for name in referenced:
             if name not in self._registered:
                 identifier = f"{self.database}.{name}"
@@ -384,4 +405,5 @@ class PaimonDuckDB:
                     limit=limit_hint, materialize=True,
                 )
 
+        logger.debug("Executing SQL on DuckDB: %s", cleaned_query[:200])
         return self.con.execute(cleaned_query)

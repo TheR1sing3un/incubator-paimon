@@ -57,6 +57,10 @@ class ConnectionPool:
         self._table_ttl = table_ttl_seconds
         self._pool: Dict[Tuple, _PoolEntry] = {}
         self._global_lock = threading.Lock()
+        logger.info(
+            "Connection pool initialized: max_size=%d, idle_ttl=%ds, table_ttl=%ds",
+            max_size, idle_ttl_seconds, table_ttl_seconds,
+        )
 
     @staticmethod
     def _make_key(
@@ -114,7 +118,7 @@ class ConnectionPool:
             entry.db._registered.pop(name, None)
             entry.table_loaded_at.pop(name, None)
         if stale:
-            logger.info("Refreshed %d stale tables", len(stale))
+            logger.info("Refreshed %d stale tables: %s", len(stale), stale)
 
     def _track_tables(self, entry: _PoolEntry, before: set) -> None:
         """Record load timestamps for newly registered tables."""
@@ -148,9 +152,26 @@ class ConnectionPool:
                 db = PaimonDuckDB(catalog_options, database=database)
                 entry = _PoolEntry(db)
                 self._pool[key] = entry
-                logger.info("Created new pooled connection: %s", key)
+                logger.info("Pool miss — created new connection: database=%s", database)
+            else:
+                logger.debug("Pool hit — reusing connection: database=%s", database)
 
+            logger.debug("Pool size: %d / %d", len(self._pool), self._max_size)
+
+        lock_start = time.monotonic()
         with entry.lock:
+            lock_wait_ms = (time.monotonic() - lock_start) * 1000
+            if lock_wait_ms > 100:
+                logger.warning(
+                    "Lock contention: waited %.0fms for connection database=%s",
+                    lock_wait_ms, database,
+                )
+            elif lock_wait_ms > 1:
+                logger.debug(
+                    "Lock acquired in %.0fms for database=%s",
+                    lock_wait_ms, database,
+                )
+
             entry.last_used = time.monotonic()
             self._refresh_stale_tables(entry)
             tables_before = set(entry.db._registered)
@@ -166,8 +187,9 @@ class ConnectionPool:
                     entry.db.close()
                 except Exception:
                     logger.debug("Error closing connection %s", key, exc_info=True)
+            count = len(self._pool)
             self._pool.clear()
-            logger.info("All pooled connections closed")
+            logger.info("All pooled connections closed (count=%d)", count)
 
 
 _pool = ConnectionPool()
