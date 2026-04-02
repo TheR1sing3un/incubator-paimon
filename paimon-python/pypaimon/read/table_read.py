@@ -241,7 +241,7 @@ class TableRead:
         import duckdb
 
         con = connection or duckdb.connect(database=":memory:")
-        con.register(table_name, self.to_arrow(splits))
+        con.register(table_name, self.to_arrow_batch_reader(splits))
         return con
 
     def to_ray(

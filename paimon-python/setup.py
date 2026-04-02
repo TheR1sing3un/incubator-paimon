@@ -18,7 +18,7 @@
 import os
 from setuptools import find_packages, setup
 
-VERSION = "1.4.5"
+VERSION = "1.4.5.1"
 
 PACKAGES = find_packages(include=["pypaimon*"])
 
@@ -58,6 +58,9 @@ setup(
     extras_require={
         'ray': [
             'ray>=2.10,<3; python_version>="3.7"',
+        ],
+        'duckdb': [
+            'duckdb>=0.8.0; python_version>="3.7"',
         ],
         'torch': [
             'torch',
