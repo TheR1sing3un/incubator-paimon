@@ -20,6 +20,7 @@ import { useState } from 'react';
 import { Modal, Form, Input, Button, Table, Space, Popconfirm, message, Tag } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { useCatalog, type CatalogConfig } from '../store/catalogStore';
+import { loadQueryServiceUrl, saveQueryServiceUrl } from '../api/query';
 import axios from 'axios';
 
 interface Props {
@@ -33,6 +34,7 @@ export default function CatalogManager({ open, onClose }: Props) {
   const [editing, setEditing] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [form] = Form.useForm<CatalogConfig>();
+  const [queryUrl, setQueryUrl] = useState(loadQueryServiceUrl);
 
   const handleAdd = () => {
     setEditing(null);
@@ -151,6 +153,20 @@ export default function CatalogManager({ open, onClose }: Props) {
           pagination={false}
           size="small"
         />
+        <div style={{ marginTop: 20, borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
+          <Form layout="inline">
+            <Form.Item label="Query Service URL" style={{ flex: 1 }}>
+              <Input
+                placeholder="e.g. http://127.0.0.1:8000"
+                value={queryUrl}
+                onChange={(e) => {
+                  setQueryUrl(e.target.value);
+                  saveQueryServiceUrl(e.target.value);
+                }}
+              />
+            </Form.Item>
+          </Form>
+        </div>
       </Modal>
 
       <Modal

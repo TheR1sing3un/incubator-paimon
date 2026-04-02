@@ -74,7 +74,13 @@ export default defineConfig({
     proxy: {
       // Local catalog proxy (when baseUrl is empty)
       '/v1': {
-        target: 'http://127.0.0.1:8080',
+        target: 'http://127.0.0.1:8090',
+        secure: false,
+        changeOrigin: true,
+      },
+      // Python query service proxy
+      '/query': {
+        target: 'http://127.0.0.1:8000',
         secure: false,
         changeOrigin: true,
       },

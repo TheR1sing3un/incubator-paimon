@@ -32,6 +32,7 @@ import TagList from './TagList';
 import PartitionList from './PartitionList';
 import SchemaHistory from './SchemaHistory';
 import ConsumerList from './ConsumerList';
+import SqlPlayground from '../Playground/SqlPlayground';
 
 const { Title } = Typography;
 
@@ -90,7 +91,14 @@ export default function TableDetail() {
     {
       key: 'schema',
       label: 'Schema',
-      children: <SchemaView database={db!} table={table!} schema={tableInfo.schema} />,
+      children: (
+        <>
+          <SchemaView database={db!} table={table!} schema={tableInfo.schema} />
+          <div style={{ marginTop: 24 }}>
+            <SqlPlayground database={db!} table={table!} />
+          </div>
+        </>
+      ),
     },
     {
       key: 'options',

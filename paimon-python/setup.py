@@ -62,6 +62,11 @@ setup(
         'duckdb': [
             'duckdb>=0.8.0; python_version>="3.7"',
         ],
+        'query-server': [
+            'fastapi>=0.100,<1; python_version>="3.8"',
+            'uvicorn[standard]>=0.20,<1; python_version>="3.8"',
+            'duckdb>=0.8.0; python_version>="3.7"',
+        ],
         'torch': [
             'torch',
         ],

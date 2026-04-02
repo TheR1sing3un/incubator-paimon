@@ -19,6 +19,7 @@ from typing import Optional
 
 from pypaimon.api.auth.base import AuthProvider
 from pypaimon.api.auth.bearer import BearTokenAuthProvider
+from pypaimon.api.auth.noop import NoopAuthProvider
 from pypaimon.api.auth.dlf_provider import DLFAuthProvider
 from pypaimon.api.token_loader import DLFToken, DLFTokenLoaderFactory
 from pypaimon.common.options import Options
@@ -73,6 +74,8 @@ class AuthProviderFactory:
     @staticmethod
     def create_auth_provider(options: Options) -> AuthProvider:
         provider = options.get(CatalogOptions.TOKEN_PROVIDER)
+        if provider == 'noop' or not provider:
+            return NoopAuthProvider()
         if provider == 'bear':
             token = options.get(CatalogOptions.TOKEN)
             return BearTokenAuthProvider(token)
