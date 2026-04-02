@@ -121,6 +121,11 @@ def main():
     from pypaimon.cli.cli_catalog import add_catalog_subcommands
     add_catalog_subcommands(catalog_parser)
 
+    # SQL commands
+    sql_parser = subparsers.add_parser('sql', help='Interactive SQL shell (DuckDB)')
+    from pypaimon.cli.cli_sql import add_sql_subcommand
+    add_sql_subcommand(sql_parser)
+
     args = parser.parse_args()
     
     if args.command is None:
