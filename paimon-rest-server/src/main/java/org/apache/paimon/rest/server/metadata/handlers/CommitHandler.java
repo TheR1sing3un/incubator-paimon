@@ -27,6 +27,7 @@ import org.apache.paimon.rest.server.RouteRegistrar;
 import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
 import org.apache.paimon.rest.server.metadata.model.CommitInfo;
+import org.apache.paimon.rest.server.utils.MetricsHelper;
 import org.apache.paimon.table.Instant;
 
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonCreator;
@@ -78,21 +79,27 @@ public class CommitHandler implements RouteRegistrar {
                 commitByIdResetPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    CommitInfo result = resetCommit(id, vars.get("commitId"));
+                    CommitInfo result =
+                            MetricsHelper.wrapCatalogOp(
+                                    "reset_commit", () -> resetCommit(id, vars.get("commitId")));
                     return new RouteResult(200, result);
                 });
         router.get(
                 commitByIdPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    CommitInfo result = getCommit(id, vars.get("commitId"));
+                    CommitInfo result =
+                            MetricsHelper.wrapCatalogOp(
+                                    "get_commit", () -> getCommit(id, vars.get("commitId")));
                     return new RouteResult(200, result);
                 });
         router.get(
                 commitsPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    RESTResponse response = listCommits(id, params);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "list_commits", () -> listCommits(id, params));
                     return new RouteResult(200, response);
                 });
     }

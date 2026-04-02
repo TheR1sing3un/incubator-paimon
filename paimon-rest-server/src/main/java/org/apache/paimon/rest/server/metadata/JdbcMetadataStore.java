@@ -19,6 +19,7 @@
 package org.apache.paimon.rest.server.metadata;
 
 import org.apache.paimon.rest.server.metadata.mapper.OpLogMapper;
+import org.apache.paimon.rest.server.utils.PerfUtil;
 
 import com.zaxxer.hikari.HikariDataSource;
 import org.apache.ibatis.mapping.Environment;
@@ -37,6 +38,8 @@ import java.io.IOException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+
+import static org.apache.paimon.rest.server.utils.MetricsHelper.safePerf;
 
 /** MyBatis-based implementation of {@link MetadataStore} backed by MySQL (or H2 for testing). */
 public class JdbcMetadataStore implements MetadataStore {
@@ -94,6 +97,7 @@ public class JdbcMetadataStore implements MetadataStore {
             @Nullable String resultJson,
             String status,
             @Nullable String errorMessage) {
+        long start = System.currentTimeMillis();
         try (SqlSession session = sqlSessionFactory.openSession(true)) {
             OpLogMapper mapper = session.getMapper(OpLogMapper.class);
             mapper.insert(
@@ -109,7 +113,14 @@ public class JdbcMetadataStore implements MetadataStore {
                     status,
                     errorMessage,
                     System.currentTimeMillis());
+            long duration = System.currentTimeMillis() - start;
+            safePerf(() -> PerfUtil.perfCount("metadata_log", "", "metadata_op_total"));
+            safePerf(() -> PerfUtil.perfValue("metadata_log", "metadata_op_latency", duration));
         } catch (Exception e) {
+            long duration = System.currentTimeMillis() - start;
+            safePerf(() -> PerfUtil.perfCount("metadata_log", "", "metadata_op_total"));
+            safePerf(() -> PerfUtil.perfCount("metadata_log", "", "metadata_op_error"));
+            safePerf(() -> PerfUtil.perfValue("metadata_log", "metadata_op_latency", duration));
             LOG.warn(
                     "Failed to log operation (fail-open, audit log may be incomplete): "
                             + "type={}, database={}, table={}, targetType={}, targetId={}",
@@ -124,9 +135,13 @@ public class JdbcMetadataStore implements MetadataStore {
 
     private void cleanupOldEntries(int retentionDays) {
         long cutoffMillis = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(retentionDays);
+        long start = System.currentTimeMillis();
         try (SqlSession session = sqlSessionFactory.openSession(true)) {
             OpLogMapper mapper = session.getMapper(OpLogMapper.class);
             int deleted = mapper.deleteOlderThan(cutoffMillis);
+            long duration = System.currentTimeMillis() - start;
+            safePerf(() -> PerfUtil.perfCount("metadata_cleanup", "", "metadata_op_total"));
+            safePerf(() -> PerfUtil.perfValue("metadata_cleanup", "metadata_op_latency", duration));
             if (deleted > 0) {
                 LOG.info(
                         "Op-log cleanup: deleted {} entries older than {} days",
@@ -134,6 +149,10 @@ public class JdbcMetadataStore implements MetadataStore {
                         retentionDays);
             }
         } catch (Exception e) {
+            long duration = System.currentTimeMillis() - start;
+            safePerf(() -> PerfUtil.perfCount("metadata_cleanup", "", "metadata_op_total"));
+            safePerf(() -> PerfUtil.perfCount("metadata_cleanup", "", "metadata_op_error"));
+            safePerf(() -> PerfUtil.perfValue("metadata_cleanup", "metadata_op_latency", duration));
             LOG.warn("Op-log cleanup failed", e);
         }
     }

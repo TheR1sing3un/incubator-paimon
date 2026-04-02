@@ -32,6 +32,7 @@ import org.apache.paimon.rest.responses.ListViewsResponse;
 import org.apache.paimon.rest.server.RouteRegistrar;
 import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
+import org.apache.paimon.rest.server.utils.MetricsHelper;
 import org.apache.paimon.utils.JsonSerdeUtil;
 import org.apache.paimon.view.View;
 import org.apache.paimon.view.ViewImpl;
@@ -74,52 +75,62 @@ public class ViewHandler implements RouteRegistrar {
         router.post(
                 viewsRenamePath,
                 (auth, vars, params, body) -> {
-                    RESTResponse response = renameView(body);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp("rename_view", () -> renameView(body));
                     return new RouteResult(200, response);
                 });
         router.get(
                 viewsGlobalPath,
                 (auth, vars, params, body) -> {
-                    RESTResponse response = listViewsGlobally(params);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "list_views_globally", () -> listViewsGlobally(params));
                     return new RouteResult(200, response);
                 });
         router.get(
                 viewsPath,
                 (auth, vars, params, body) -> {
-                    RESTResponse response = listViews(vars.get("database"), params);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "list_views", () -> listViews(vars.get("database"), params));
                     return new RouteResult(200, response);
                 });
         router.post(
                 viewsPath,
                 (auth, vars, params, body) -> {
-                    createView(vars.get("database"), body);
+                    MetricsHelper.wrapCatalogOpVoid(
+                            "create_view", () -> createView(vars.get("database"), body));
                     return new RouteResult(200, null);
                 });
         router.get(
                 viewDetailsPath,
                 (auth, vars, params, body) -> {
-                    RESTResponse response = listViewDetails(vars.get("database"), params);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "list_view_details",
+                                    () -> listViewDetails(vars.get("database"), params));
                     return new RouteResult(200, response);
                 });
         router.get(
                 viewPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("view"));
-                    RESTResponse response = getView(id);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp("get_view", () -> getView(id));
                     return new RouteResult(200, response);
                 });
         router.post(
                 viewPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("view"));
-                    alterView(id, body);
+                    MetricsHelper.wrapCatalogOpVoid("alter_view", () -> alterView(id, body));
                     return new RouteResult(200, null);
                 });
         router.delete(
                 viewPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("view"));
-                    dropView(id);
+                    MetricsHelper.wrapCatalogOpVoid("drop_view", () -> dropView(id));
                     return new RouteResult(200, null);
                 });
     }

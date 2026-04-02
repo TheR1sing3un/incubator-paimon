@@ -46,6 +46,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 
+import static org.apache.paimon.rest.server.utils.MetricsHelper.safePerf;
+
 /** Netty handler that processes HTTP requests and routes them to the appropriate handler. */
 @ChannelHandler.Sharable
 public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
@@ -109,6 +111,7 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
     private void handleApiRequest(ChannelHandlerContext ctx, FullHttpRequest request) {
         String path = request.uri().split("\\?")[0];
         String body = request.content().toString(StandardCharsets.UTF_8);
+        safePerf(() -> PerfUtil.perfValue("request_body_size", body.length()));
         try {
             AuthContext authContext = ctx.channel().attr(AuthChannelHandler.AUTH_CONTEXT_KEY).get();
             if (authContext == null) {
@@ -117,11 +120,7 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
             RouteResult result = dispatcher.dispatch(authContext, request);
             sendResponse(ctx, result.status(), result.response());
         } catch (Exception e) {
-            try {
-                PerfUtil.perfCount(path, "", "request_error");
-            } catch (Exception perfEx) {
-                LOG.warn("PerfUtil.perfCount failed for path={}", path, perfEx);
-            }
+            safePerf(() -> PerfUtil.perfCount(path, "", "request_error_detail"));
             String truncatedBody =
                     body.length() > MAX_ERROR_BODY_LENGTH
                             ? body.substring(0, MAX_ERROR_BODY_LENGTH) + "..."

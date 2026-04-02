@@ -26,6 +26,7 @@ import org.apache.paimon.rest.RESTResponse;
 import org.apache.paimon.rest.server.RouteRegistrar;
 import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
+import org.apache.paimon.rest.server.utils.MetricsHelper;
 import org.apache.paimon.schema.SchemaManager;
 import org.apache.paimon.schema.TableSchema;
 
@@ -72,14 +73,17 @@ public class SchemaHandler implements RouteRegistrar {
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     long schemaId = Long.parseLong(vars.get("schemaId"));
-                    RESTResponse response = getSchema(id, schemaId);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "get_schema", () -> getSchema(id, schemaId));
                     return new RouteResult(200, response);
                 });
         router.get(
                 schemasPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    RESTResponse response = listSchemas(id);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp("list_schemas", () -> listSchemas(id));
                     return new RouteResult(200, response);
                 });
     }

@@ -33,6 +33,7 @@ import org.apache.paimon.rest.responses.ListTablesResponse;
 import org.apache.paimon.rest.server.RouteRegistrar;
 import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
+import org.apache.paimon.rest.server.utils.MetricsHelper;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.schema.SchemaChange;
 import org.apache.paimon.table.FileStoreTable;
@@ -90,64 +91,77 @@ public class TableHandler implements RouteRegistrar {
         router.post(
                 tablesRenamePath,
                 (auth, vars, params, body) -> {
-                    RESTResponse response = renameTable(body);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp("rename_table", () -> renameTable(body));
                     return new RouteResult(200, response);
                 });
         router.get(
                 tableByIdPath,
                 (auth, vars, params, body) -> {
-                    RESTResponse response = getTableById(vars.get("tableId"));
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "get_table_by_id", () -> getTableById(vars.get("tableId")));
                     return new RouteResult(200, response);
                 });
         router.get(
                 tablesGlobalPath,
                 (auth, vars, params, body) -> {
-                    RESTResponse response = listTablesGlobally(params);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "list_tables_globally", () -> listTablesGlobally(params));
                     return new RouteResult(200, response);
                 });
         router.post(
                 registerPath,
                 (auth, vars, params, body) -> {
-                    registerTable(vars.get("database"), body);
+                    MetricsHelper.wrapCatalogOpVoid(
+                            "register_table", () -> registerTable(vars.get("database"), body));
                     return new RouteResult(200, null);
                 });
         router.get(
                 tablesPath,
                 (auth, vars, params, body) -> {
-                    RESTResponse response = listTables(vars.get("database"), params);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "list_tables", () -> listTables(vars.get("database"), params));
                     return new RouteResult(200, response);
                 });
         router.post(
                 tablesPath,
                 (auth, vars, params, body) -> {
-                    createTable(vars.get("database"), body);
+                    MetricsHelper.wrapCatalogOpVoid(
+                            "create_table", () -> createTable(vars.get("database"), body));
                     return new RouteResult(200, null);
                 });
         router.get(
                 tableDetailsPath,
                 (auth, vars, params, body) -> {
-                    RESTResponse response = listTableDetails(vars.get("database"), params);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "list_table_details",
+                                    () -> listTableDetails(vars.get("database"), params));
                     return new RouteResult(200, response);
                 });
         router.get(
                 tablePath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    RESTResponse response = getTable(id);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp("get_table", () -> getTable(id));
                     return new RouteResult(200, response);
                 });
         router.post(
                 tablePath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    alterTable(id, body);
+                    MetricsHelper.wrapCatalogOpVoid("alter_table", () -> alterTable(id, body));
                     return new RouteResult(200, null);
                 });
         router.delete(
                 tablePath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    dropTable(id);
+                    MetricsHelper.wrapCatalogOpVoid("drop_table", () -> dropTable(id));
                     return new RouteResult(200, null);
                 });
     }

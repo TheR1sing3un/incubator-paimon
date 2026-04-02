@@ -54,6 +54,7 @@ public class HttpServer {
     private final int maxContentLength;
     private final ChannelHandler authHandler;
     private final HttpRequestHandler requestHandler;
+    private final ConnectionMetricsHandler connectionMetricsHandler;
 
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
@@ -75,6 +76,7 @@ public class HttpServer {
         this.maxContentLength = maxContentLength;
         this.authHandler = Preconditions.checkNotNull(authHandler);
         this.requestHandler = Preconditions.checkNotNull(requestHandler);
+        this.connectionMetricsHandler = new ConnectionMetricsHandler();
     }
 
     public void start() throws InterruptedException {
@@ -104,6 +106,7 @@ public class HttpServer {
                         .channel(NioServerSocketChannel.class)
                         .childHandler(
                                 new HttpServerInitializer(
+                                        connectionMetricsHandler,
                                         authHandler,
                                         requestHandler,
                                         maxContentLength,
@@ -143,16 +146,19 @@ public class HttpServer {
 
     private static class HttpServerInitializer extends ChannelInitializer<SocketChannel> {
 
+        private final ConnectionMetricsHandler connectionMetricsHandler;
         private final ChannelHandler authHandler;
         private final HttpRequestHandler requestHandler;
         private final int maxContentLength;
         private final EventExecutorGroup businessGroup;
 
         HttpServerInitializer(
+                ConnectionMetricsHandler connectionMetricsHandler,
                 ChannelHandler authHandler,
                 HttpRequestHandler requestHandler,
                 int maxContentLength,
                 EventExecutorGroup businessGroup) {
+            this.connectionMetricsHandler = connectionMetricsHandler;
             this.authHandler = authHandler;
             this.requestHandler = requestHandler;
             this.maxContentLength = maxContentLength;
@@ -162,6 +168,7 @@ public class HttpServer {
         @Override
         protected void initChannel(SocketChannel ch) {
             ch.pipeline()
+                    .addLast("connectionMetrics", connectionMetricsHandler)
                     .addLast("codec", new HttpServerCodec())
                     .addLast("aggregator", new HttpObjectAggregator(maxContentLength))
                     .addLast(businessGroup, "auth", authHandler)

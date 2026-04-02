@@ -1,0 +1,55 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.paimon.rest.server;
+
+import org.apache.paimon.rest.server.utils.PerfUtil;
+
+import org.apache.paimon.shade.netty4.io.netty.channel.ChannelHandler;
+import org.apache.paimon.shade.netty4.io.netty.channel.ChannelHandlerContext;
+import org.apache.paimon.shade.netty4.io.netty.channel.ChannelInboundHandlerAdapter;
+
+import java.util.concurrent.atomic.AtomicLong;
+
+import static org.apache.paimon.rest.server.utils.MetricsHelper.safePerf;
+
+/** Tracks active Netty connections and reports metrics via PerfUtil. */
+@ChannelHandler.Sharable
+public class ConnectionMetricsHandler extends ChannelInboundHandlerAdapter {
+
+    private final AtomicLong activeConnections = new AtomicLong(0);
+
+    @Override
+    public void channelActive(ChannelHandlerContext ctx) throws Exception {
+        long current = activeConnections.incrementAndGet();
+        safePerf(() -> PerfUtil.perfCount("netty_connection_total"));
+        safePerf(() -> PerfUtil.perfValue("netty_connection_active", current));
+        super.channelActive(ctx);
+    }
+
+    @Override
+    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+        long current = activeConnections.decrementAndGet();
+        safePerf(() -> PerfUtil.perfValue("netty_connection_active", current));
+        super.channelInactive(ctx);
+    }
+
+    public long getActiveConnections() {
+        return activeConnections.get();
+    }
+}

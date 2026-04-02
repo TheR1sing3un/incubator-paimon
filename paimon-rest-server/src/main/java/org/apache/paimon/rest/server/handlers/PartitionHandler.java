@@ -29,6 +29,7 @@ import org.apache.paimon.rest.responses.ListPartitionsResponse;
 import org.apache.paimon.rest.server.RouteRegistrar;
 import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
+import org.apache.paimon.rest.server.utils.MetricsHelper;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
 import org.slf4j.Logger;
@@ -66,21 +67,27 @@ public class PartitionHandler implements RouteRegistrar {
                 markPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    markDonePartitions(id, body);
+                    MetricsHelper.wrapCatalogOpVoid(
+                            "mark_done_partitions", () -> markDonePartitions(id, body));
                     return new RouteResult(200, null);
                 });
         router.post(
                 listByNamesPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    RESTResponse response = listPartitionsByNames(id, body, params);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "list_partitions_by_names",
+                                    () -> listPartitionsByNames(id, body, params));
                     return new RouteResult(200, response);
                 });
         router.get(
                 partitionsPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    RESTResponse response = listPartitions(id, params);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "list_partitions", () -> listPartitions(id, params));
                     return new RouteResult(200, response);
                 });
     }

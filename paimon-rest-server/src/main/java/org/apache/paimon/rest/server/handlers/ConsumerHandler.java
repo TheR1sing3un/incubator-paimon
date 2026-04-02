@@ -28,6 +28,7 @@ import org.apache.paimon.rest.responses.ListConsumersResponse;
 import org.apache.paimon.rest.server.RouteRegistrar;
 import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
+import org.apache.paimon.rest.server.utils.MetricsHelper;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
 import org.slf4j.Logger;
@@ -62,14 +63,17 @@ public class ConsumerHandler implements RouteRegistrar {
                 resetPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    resetConsumer(id, body);
+                    MetricsHelper.wrapCatalogOpVoid(
+                            "reset_consumer", () -> resetConsumer(id, body));
                     return new RouteResult(200, null);
                 });
         router.get(
                 consumersPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    RESTResponse response = listConsumers(id, params);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "list_consumers", () -> listConsumers(id, params));
                     return new RouteResult(200, response);
                 });
     }

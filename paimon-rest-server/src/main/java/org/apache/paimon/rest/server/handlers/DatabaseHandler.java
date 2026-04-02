@@ -31,6 +31,7 @@ import org.apache.paimon.rest.responses.ListDatabasesResponse;
 import org.apache.paimon.rest.server.RouteRegistrar;
 import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
+import org.apache.paimon.rest.server.utils.MetricsHelper;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
 import org.slf4j.Logger;
@@ -66,31 +67,40 @@ public class DatabaseHandler implements RouteRegistrar {
         router.get(
                 dbsPath,
                 (auth, vars, params, body) -> {
-                    RESTResponse response = listDatabases(params);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "list_databases", () -> listDatabases(params));
                     return new RouteResult(200, response);
                 });
         router.post(
                 dbsPath,
                 (auth, vars, params, body) -> {
-                    createDatabase(body, auth.userId());
+                    MetricsHelper.wrapCatalogOpVoid(
+                            "create_database", () -> createDatabase(body, auth.userId()));
                     return new RouteResult(200, null);
                 });
         router.get(
                 dbPath,
                 (auth, vars, params, body) -> {
-                    RESTResponse response = getDatabase(vars.get("database"));
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "get_database", () -> getDatabase(vars.get("database")));
                     return new RouteResult(200, response);
                 });
         router.delete(
                 dbPath,
                 (auth, vars, params, body) -> {
-                    dropDatabase(vars.get("database"));
+                    MetricsHelper.wrapCatalogOpVoid(
+                            "drop_database", () -> dropDatabase(vars.get("database")));
                     return new RouteResult(200, null);
                 });
         router.post(
                 dbPath,
                 (auth, vars, params, body) -> {
-                    RESTResponse response = alterDatabase(vars.get("database"), body);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "alter_database",
+                                    () -> alterDatabase(vars.get("database"), body));
                     return new RouteResult(200, response);
                 });
     }

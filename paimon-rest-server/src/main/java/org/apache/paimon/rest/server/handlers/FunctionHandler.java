@@ -33,6 +33,7 @@ import org.apache.paimon.rest.responses.ListFunctionsResponse;
 import org.apache.paimon.rest.server.RouteRegistrar;
 import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
+import org.apache.paimon.rest.server.utils.MetricsHelper;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
 import org.slf4j.Logger;
@@ -71,46 +72,57 @@ public class FunctionHandler implements RouteRegistrar {
         router.get(
                 functionsGlobalPath,
                 (auth, vars, params, body) -> {
-                    RESTResponse response = listFunctionsGlobally(params);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "list_functions_globally", () -> listFunctionsGlobally(params));
                     return new RouteResult(200, response);
                 });
         router.get(
                 functionsPath,
                 (auth, vars, params, body) -> {
-                    RESTResponse response = listFunctions(vars.get("database"), params);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "list_functions",
+                                    () -> listFunctions(vars.get("database"), params));
                     return new RouteResult(200, response);
                 });
         router.post(
                 functionsPath,
                 (auth, vars, params, body) -> {
-                    createFunction(vars.get("database"), body);
+                    MetricsHelper.wrapCatalogOpVoid(
+                            "create_function", () -> createFunction(vars.get("database"), body));
                     return new RouteResult(200, null);
                 });
         router.get(
                 functionDetailsPath,
                 (auth, vars, params, body) -> {
-                    RESTResponse response = listFunctionDetails(vars.get("database"), params);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "list_function_details",
+                                    () -> listFunctionDetails(vars.get("database"), params));
                     return new RouteResult(200, response);
                 });
         router.get(
                 functionPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("function"));
-                    RESTResponse response = getFunction(id);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp("get_function", () -> getFunction(id));
                     return new RouteResult(200, response);
                 });
         router.post(
                 functionPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("function"));
-                    alterFunction(id, body);
+                    MetricsHelper.wrapCatalogOpVoid(
+                            "alter_function", () -> alterFunction(id, body));
                     return new RouteResult(200, null);
                 });
         router.delete(
                 functionPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("function"));
-                    dropFunction(id);
+                    MetricsHelper.wrapCatalogOpVoid("drop_function", () -> dropFunction(id));
                     return new RouteResult(200, null);
                 });
     }

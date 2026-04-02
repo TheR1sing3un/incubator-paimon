@@ -29,6 +29,7 @@ import org.apache.paimon.rest.responses.ListBranchesResponse;
 import org.apache.paimon.rest.server.RouteRegistrar;
 import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
+import org.apache.paimon.rest.server.utils.MetricsHelper;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Table;
 import org.apache.paimon.utils.JsonSerdeUtil;
@@ -68,47 +69,53 @@ public class BranchHandler implements RouteRegistrar {
                 diffPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    return diffRefs(id, params);
+                    return MetricsHelper.wrapCatalogOp("diff_refs", () -> diffRefs(id, params));
                 });
         router.post(
                 branchMergePath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    return mergeBranch(id, vars.get("branch"), body);
+                    return MetricsHelper.wrapCatalogOp(
+                            "merge_branch", () -> mergeBranch(id, vars.get("branch"), body));
                 });
         router.post(
                 branchForwardPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    fastForward(id, vars.get("branch"));
+                    MetricsHelper.wrapCatalogOpVoid(
+                            "fast_forward_branch", () -> fastForward(id, vars.get("branch")));
                     return new RouteResult(200, null);
                 });
         router.delete(
                 branchPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    dropBranch(id, vars.get("branch"));
+                    MetricsHelper.wrapCatalogOpVoid(
+                            "drop_branch", () -> dropBranch(id, vars.get("branch")));
                     return new RouteResult(200, null);
                 });
         router.get(
                 branchPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    RESTResponse response = getBranch(id, vars.get("branch"));
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "get_branch", () -> getBranch(id, vars.get("branch")));
                     return new RouteResult(200, response);
                 });
         router.get(
                 branchesPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    RESTResponse response = listBranches(id);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp("list_branches", () -> listBranches(id));
                     return new RouteResult(200, response);
                 });
         router.post(
                 branchesPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    createBranch(id, body);
+                    MetricsHelper.wrapCatalogOpVoid("create_branch", () -> createBranch(id, body));
                     return new RouteResult(200, null);
                 });
     }

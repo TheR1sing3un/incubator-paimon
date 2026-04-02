@@ -30,6 +30,7 @@ import org.apache.paimon.rest.server.auth.AuthContext;
 import org.apache.paimon.rest.server.auth.TokenAuthenticator;
 import org.apache.paimon.rest.server.metadata.JdbcMetadataStore;
 import org.apache.paimon.rest.server.metadata.MetadataStore;
+import org.apache.paimon.rest.server.utils.MetricsFileIO;
 
 import com.kuaishou.infra.framework.datasource.KsDataSourceFactory;
 import com.zaxxer.hikari.HikariConfig;
@@ -84,7 +85,7 @@ public class RESTCatalogServer {
 
         if (this.catalog == null) {
             CatalogContext catalogContext = CatalogContext.create(options);
-            FileIO fileIO = FileIO.get(new Path(warehouse), catalogContext);
+            FileIO fileIO = new MetricsFileIO(FileIO.get(new Path(warehouse), catalogContext));
             this.catalog = new RESTFileSystemCatalog(fileIO, new Path(warehouse), catalogContext);
         }
 

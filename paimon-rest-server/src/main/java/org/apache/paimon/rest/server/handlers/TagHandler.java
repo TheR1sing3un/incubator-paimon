@@ -28,6 +28,7 @@ import org.apache.paimon.rest.responses.ListTagsResponse;
 import org.apache.paimon.rest.server.RouteRegistrar;
 import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
+import org.apache.paimon.rest.server.utils.MetricsHelper;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
 import org.slf4j.Logger;
@@ -63,28 +64,32 @@ public class TagHandler implements RouteRegistrar {
                 tagPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    RESTResponse response = getTag(id, vars.get("tag"));
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "get_tag", () -> getTag(id, vars.get("tag")));
                     return new RouteResult(200, response);
                 });
         router.delete(
                 tagPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    deleteTag(id, vars.get("tag"));
+                    MetricsHelper.wrapCatalogOpVoid(
+                            "delete_tag", () -> deleteTag(id, vars.get("tag")));
                     return new RouteResult(200, null);
                 });
         router.get(
                 tagsPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    RESTResponse response = listTags(id, params);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp("list_tags", () -> listTags(id, params));
                     return new RouteResult(200, response);
                 });
         router.post(
                 tagsPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    createTag(id, body);
+                    MetricsHelper.wrapCatalogOpVoid("create_tag", () -> createTag(id, body));
                     return new RouteResult(200, null);
                 });
     }

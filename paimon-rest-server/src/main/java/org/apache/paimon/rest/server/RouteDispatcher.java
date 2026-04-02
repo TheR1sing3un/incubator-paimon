@@ -36,6 +36,7 @@ import org.apache.paimon.rest.server.handlers.ViewHandler;
 import org.apache.paimon.rest.server.metadata.MetadataStore;
 import org.apache.paimon.rest.server.metadata.handlers.CommitHandler;
 import org.apache.paimon.rest.server.metadata.handlers.SchemaHandler;
+import org.apache.paimon.rest.server.utils.PerfUtil;
 
 import org.apache.paimon.shade.netty4.io.netty.handler.codec.http.FullHttpRequest;
 import org.apache.paimon.shade.netty4.io.netty.handler.codec.http.QueryStringDecoder;
@@ -51,6 +52,8 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+import static org.apache.paimon.rest.server.utils.MetricsHelper.safePerf;
 
 /**
  * Dispatches incoming HTTP requests to the appropriate handler based on route matching.
@@ -120,6 +123,7 @@ public class RouteDispatcher {
         Router.RouteMatch match = router.findMatch(method, path);
         if (match == null) {
             LOG.warn("REST route not found: {} {} params={}", method, path, params);
+            safePerf(() -> PerfUtil.perfCount(path, "", "request_not_found"));
             return new RouteResult(404, null);
         }
 
@@ -127,6 +131,8 @@ public class RouteDispatcher {
         long startTime = System.currentTimeMillis();
 
         boolean shouldAudit = metadataStore != null && isMutatingMethod(method);
+
+        String routePattern = match.matchedPattern();
 
         RouteResult result;
         try {
@@ -140,6 +146,7 @@ public class RouteDispatcher {
                     e.getClass().getSimpleName(),
                     e.getMessage(),
                     duration);
+            reportRequestMetrics(routePattern, method, path, duration, true);
             if (shouldAudit) {
                 auditLog(authContext, match, body, "FAILED", truncateMessage(e.getMessage()));
             }
@@ -153,6 +160,7 @@ public class RouteDispatcher {
                 path,
                 result.status(),
                 duration);
+        reportRequestMetrics(routePattern, method, path, duration, result.status() >= 400);
 
         if (shouldAudit) {
             if (result.status() < 400) {
@@ -163,6 +171,23 @@ public class RouteDispatcher {
         }
 
         return result;
+    }
+
+    private static void reportRequestMetrics(
+            String routePattern, String method, String path, long durationMs, boolean isError) {
+        String subtag = method + ":" + routePattern;
+        safePerf(() -> PerfUtil.perfCount(subtag, "", "request_total"));
+        safePerf(() -> PerfUtil.perfValue(subtag, "request_latency", durationMs));
+        if (isError) {
+            safePerf(() -> PerfUtil.perfCount(subtag, "", "request_error"));
+            safePerf(() -> PerfUtil.perfCount(path, "", "request_error_detail"));
+        }
+        if (durationMs > 1000) {
+            safePerf(() -> PerfUtil.perfCount(subtag, "", "request_slow_1s"));
+        }
+        if (durationMs > 5000) {
+            safePerf(() -> PerfUtil.perfCount(subtag, "", "request_slow_5s"));
+        }
     }
 
     private static boolean isMutatingMethod(String method) {

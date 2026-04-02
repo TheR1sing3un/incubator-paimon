@@ -28,6 +28,7 @@ import org.apache.paimon.rest.responses.GetTableTokenResponse;
 import org.apache.paimon.rest.server.RouteRegistrar;
 import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
+import org.apache.paimon.rest.server.utils.MetricsHelper;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
 import org.slf4j.Logger;
@@ -60,14 +61,16 @@ public class TableTokenHandler implements RouteRegistrar {
                 tokenPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    RESTResponse response = getTableToken(id);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp("get_table_token", () -> getTableToken(id));
                     return new RouteResult(200, response);
                 });
         router.post(
                 authPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    RESTResponse response = authTable(id, body);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp("auth_table", () -> authTable(id, body));
                     return new RouteResult(200, response);
                 });
     }

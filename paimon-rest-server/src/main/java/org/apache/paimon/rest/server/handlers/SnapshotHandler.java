@@ -33,6 +33,7 @@ import org.apache.paimon.rest.responses.ListSnapshotsResponse;
 import org.apache.paimon.rest.server.RouteRegistrar;
 import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
+import org.apache.paimon.rest.server.utils.MetricsHelper;
 import org.apache.paimon.table.TableSnapshot;
 import org.apache.paimon.utils.JsonSerdeUtil;
 import org.apache.paimon.utils.SnapshotNotExistException;
@@ -73,35 +74,44 @@ public class SnapshotHandler implements RouteRegistrar {
                 snapshotPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    RESTResponse response = getLatestSnapshot(id);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "get_latest_snapshot", () -> getLatestSnapshot(id));
                     return new RouteResult(200, response);
                 });
         router.get(
                 snapshotVersionPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    RESTResponse response = loadSnapshot(id, vars.get("version"));
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "load_snapshot", () -> loadSnapshot(id, vars.get("version")));
                     return new RouteResult(200, response);
                 });
         router.get(
                 snapshotsPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    RESTResponse response = listSnapshots(id, params);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "list_snapshots", () -> listSnapshots(id, params));
                     return new RouteResult(200, response);
                 });
         router.post(
                 commitPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    RESTResponse response = commitSnapshot(id, body);
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "commit_snapshot", () -> commitSnapshot(id, body));
                     return new RouteResult(200, response);
                 });
         router.post(
                 rollbackPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    rollbackTable(id, body);
+                    MetricsHelper.wrapCatalogOpVoid(
+                            "rollback_table", () -> rollbackTable(id, body));
                     return new RouteResult(200, null);
                 });
     }
