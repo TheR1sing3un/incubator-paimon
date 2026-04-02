@@ -16,9 +16,9 @@
  * limitations under the License.
  */
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { Button, Space, Alert, message } from 'antd';
-import { PlayCircleOutlined, ClearOutlined } from '@ant-design/icons';
+import { PlayCircleOutlined, ClearOutlined, StopOutlined } from '@ant-design/icons';
 import {
   executeQuery,
   buildCatalogOptions,
@@ -41,6 +41,7 @@ export default function SqlPlayground({ database, table }: SqlPlaygroundProps) {
   const [result, setResult] = useState<QueryResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     setSqlValue(`SELECT * FROM ${table} LIMIT 10`);
@@ -60,24 +61,37 @@ export default function SqlPlayground({ database, table }: SqlPlaygroundProps) {
       return;
     }
 
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setLoading(true);
     setError(null);
 
     try {
-      const res = await executeQuery(queryUrl, {
-        sql: trimmed,
-        database,
-        catalog_options: buildCatalogOptions(active),
-      });
+      const res = await executeQuery(
+        queryUrl,
+        { sql: trimmed, database, catalog_options: buildCatalogOptions(active) },
+        controller.signal,
+      );
       setResult(res);
     } catch (err: unknown) {
+      if (controller.signal.aborted) return;
       const errData = (err as { response?: { data?: { error?: string } } })?.response?.data;
       setError(errData?.error || (err instanceof Error ? err.message : 'Unknown error'));
       setResult(null);
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+      }
     }
   }, [sqlValue, database, active]);
+
+  const handleCancel = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setLoading(false);
+  }, []);
 
   const handleClear = useCallback(() => {
     setSqlValue(defaultSql);
@@ -113,6 +127,11 @@ export default function SqlPlayground({ database, table }: SqlPlaygroundProps) {
         >
           Run (⌘↵)
         </Button>
+        {loading && (
+          <Button danger icon={<StopOutlined />} onClick={handleCancel}>
+            Cancel
+          </Button>
+        )}
         <Button icon={<ClearOutlined />} onClick={handleClear}>
           Reset
         </Button>

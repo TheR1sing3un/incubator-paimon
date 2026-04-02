@@ -65,12 +65,16 @@ export function buildCatalogOptions(catalog: CatalogConfig | null): Record<strin
   };
 }
 
-export async function executeQuery(queryServiceUrl: string, req: QueryRequest): Promise<QueryResult> {
+export async function executeQuery(
+  queryServiceUrl: string,
+  req: QueryRequest,
+  signal?: AbortSignal,
+): Promise<QueryResult> {
   const base = queryServiceUrl.replace(/\/+$/, '');
   const resp = await axios.post<QueryResult>(
     `${base}/query/execute`,
     req,
-    { timeout: 120000, headers: { 'Content-Type': 'application/json' } },
+    { timeout: 120000, signal, headers: { 'Content-Type': 'application/json' } },
   );
   return resp.data;
 }

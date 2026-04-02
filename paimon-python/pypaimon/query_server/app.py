@@ -16,6 +16,8 @@
 # limitations under the License.
 ################################################################################
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -26,8 +28,16 @@ from pypaimon.query_server.executor import (
     QuerySecurityError,
     QueryTimeoutError,
 )
+from pypaimon.query_server.pool import get_pool
 
-app = FastAPI(title="Paimon Query Service")
+
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    yield
+    get_pool().close_all()
+
+
+app = FastAPI(title="Paimon Query Service", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

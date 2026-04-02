@@ -22,9 +22,15 @@ import threading
 from typing import Dict, List, Tuple, Any
 
 from pypaimon.query_server.models import QueryColumn, QueryResult
+from pypaimon.query_server.pool import get_pool
 
 _BLOCKED_KEYWORDS = re.compile(
     r"\b(CREATE|DROP|ALTER|INSERT|UPDATE|DELETE|COPY|ATTACH|INSTALL|LOAD|EXPORT)\b",
+    re.IGNORECASE,
+)
+
+_LIMIT_PATTERN = re.compile(
+    r"\bLIMIT\s+(\d+)\s*$",
     re.IGNORECASE,
 )
 
@@ -50,6 +56,15 @@ def _validate_sql(sql: str) -> None:
         )
 
 
+def _extract_limit(sql: str) -> int | None:
+    """Extract a trailing LIMIT N from the SQL statement."""
+    stripped = sql.strip().rstrip(";").strip()
+    m = _LIMIT_PATTERN.search(stripped)
+    if m:
+        return int(m.group(1))
+    return None
+
+
 def execute_query(
     sql: str,
     database: str,
@@ -57,37 +72,38 @@ def execute_query(
     max_rows: int = 1000,
     timeout_seconds: int = 30,
 ) -> QueryResult:
-    from pypaimon.duckdb import PaimonDuckDB
-
     _validate_sql(sql)
+    limit_hint = _extract_limit(sql)
 
-    db = PaimonDuckDB(catalog_options, database=database)
-    start = time.monotonic()
+    def _run(db):
+        start = time.monotonic()
 
-    timer = threading.Timer(timeout_seconds, db.con.interrupt)
-    timer.start()
-    try:
-        cursor = db.sql(sql)
-    except Exception as e:
-        if not timer.is_alive():
-            raise QueryTimeoutError(
-                f"Query timed out after {timeout_seconds} seconds"
-            ) from e
-        raise
-    finally:
-        timer.cancel()
+        timer = threading.Timer(timeout_seconds, db.con.interrupt)
+        timer.start()
+        try:
+            cursor = db.sql(sql, limit_hint=limit_hint)
+            columns = _extract_columns(cursor)
+            rows, truncated = _fetch_rows(cursor, max_rows)
+        except Exception as e:
+            if not timer.is_alive():
+                raise QueryTimeoutError(
+                    f"Query timed out after {timeout_seconds} seconds"
+                ) from e
+            raise
+        finally:
+            timer.cancel()
 
-    columns = _extract_columns(cursor)
-    rows, truncated = _fetch_rows(cursor, max_rows)
-    elapsed_ms = int((time.monotonic() - start) * 1000)
+        elapsed_ms = int((time.monotonic() - start) * 1000)
 
-    return QueryResult(
-        columns=columns,
-        rows=rows,
-        row_count=len(rows),
-        truncated=truncated,
-        elapsed_ms=elapsed_ms,
-    )
+        return QueryResult(
+            columns=columns,
+            rows=rows,
+            row_count=len(rows),
+            truncated=truncated,
+            elapsed_ms=elapsed_ms,
+        )
+
+    return get_pool().execute(catalog_options, database, _run)
 
 
 def _extract_columns(cursor) -> List[QueryColumn]:

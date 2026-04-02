@@ -78,11 +78,13 @@ def _build_reader(
     limit: Optional[int] = None,
     snapshot_id: Optional[int] = None,
     tag_name: Optional[str] = None,
+    catalog=None,
 ) -> pyarrow.ipc.RecordBatchReader:
     """Build a streaming RecordBatchReader from a Paimon table."""
-    from pypaimon.catalog.catalog_factory import CatalogFactory
+    if catalog is None:
+        from pypaimon.catalog.catalog_factory import CatalogFactory
 
-    catalog = CatalogFactory.create(catalog_options)
+        catalog = CatalogFactory.create(catalog_options)
     table = catalog.get_table(table_identifier)
 
     copy_options = {}
@@ -257,6 +259,21 @@ class PaimonDuckDB:
         self.database = database
         self.con = duckdb.connect(database=":memory:")
         self._registered: Dict[str, str] = {}
+        self._catalog = None
+
+    def _get_catalog(self):
+        """Return a cached Catalog instance, creating one on first call."""
+        if self._catalog is None:
+            from pypaimon.catalog.catalog_factory import CatalogFactory
+
+            self._catalog = CatalogFactory.create(self.catalog_options)
+        return self._catalog
+
+    def close(self):
+        """Close the DuckDB connection and release resources."""
+        self._registered.clear()
+        self._catalog = None
+        self.con.close()
 
     def register(
         self,
@@ -295,14 +312,20 @@ class PaimonDuckDB:
             table_identifier, self.catalog_options,
             filter=filter, projection=projection, limit=limit,
             snapshot_id=snapshot_id, tag_name=tag_name,
+            catalog=self._get_catalog(),
         )
 
         if materialize:
             tmp = f"__paimon_tmp_{duckdb_name}"
             self.con.register(tmp, reader)
+            # Apply a safety cap to prevent accidental full-table
+            # materialisation when no explicit limit is provided.
+            limit_clause = ""
+            if limit is None:
+                limit_clause = " LIMIT 100000"
             self.con.execute(
                 f'CREATE OR REPLACE TABLE "{duckdb_name}" '
-                f'AS SELECT * FROM "{tmp}"'
+                f'AS SELECT * FROM "{tmp}"{limit_clause}'
             )
             self.con.unregister(tmp)
         else:
@@ -311,7 +334,11 @@ class PaimonDuckDB:
         self._registered[duckdb_name] = table_identifier
         return self
 
-    def sql(self, query: str) -> "duckdb.DuckDBPyConnection":
+    def sql(
+        self,
+        query: str,
+        limit_hint: Optional[int] = None,
+    ) -> "duckdb.DuckDBPyConnection":
         """Execute SQL, auto-registering any referenced Paimon tables.
 
         Table names in the query that have not been explicitly registered
@@ -328,6 +355,10 @@ class PaimonDuckDB:
 
         Args:
             query: SQL query string.
+            limit_hint: Optional row limit extracted from the SQL query.
+                When provided, the Paimon reader will limit the number of
+                rows read at the source level to avoid full-table
+                materialisation.
 
         Returns:
             The DuckDB connection with cursor at the result.
@@ -340,6 +371,7 @@ class PaimonDuckDB:
                 identifier, table_name=table_name,
                 snapshot_id=spec.get("snapshot_id"),
                 tag_name=spec.get("tag_name"),
+                limit=limit_hint,
                 materialize=True,
             )
 
@@ -347,6 +379,9 @@ class PaimonDuckDB:
         for name in referenced:
             if name not in self._registered:
                 identifier = f"{self.database}.{name}"
-                self.register(identifier, table_name=name, materialize=True)
+                self.register(
+                    identifier, table_name=name,
+                    limit=limit_hint, materialize=True,
+                )
 
         return self.con.execute(cleaned_query)
