@@ -126,6 +126,11 @@ def main():
     from pypaimon.cli.cli_sql import add_sql_subcommand
     add_sql_subcommand(sql_parser)
 
+    # Query server commands
+    qs_parser = subparsers.add_parser('query-server', help='Query server management')
+    from pypaimon.cli.cli_query_server import add_query_server_subcommands
+    add_query_server_subcommands(qs_parser)
+
     args = parser.parse_args()
     
     if args.command is None:
