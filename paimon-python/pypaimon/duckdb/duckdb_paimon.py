@@ -262,7 +262,9 @@ class PaimonDuckDB:
         self.catalog_options = catalog_options
         self.database = database
         self.con = duckdb.connect(database=":memory:")
-        self._registered: Dict[str, tuple] = {}
+        self._registered: Dict[str, str] = {}
+        self._explicitly_registered: set = set()
+        self._in_auto_register: bool = False
         self._catalog = None
 
     def _get_catalog(self):
@@ -284,6 +286,7 @@ class PaimonDuckDB:
             self.database, len(self._registered),
         )
         self._registered.clear()
+        self._explicitly_registered.clear()
         self._catalog = None
         self.con.close()
 
@@ -349,7 +352,9 @@ class PaimonDuckDB:
             "Registered table: %s as '%s', materialize=%s, limit=%s, elapsed=%dms",
             table_identifier, duckdb_name, materialize, limit, reg_ms,
         )
-        self._registered[duckdb_name] = (table_identifier, limit)
+        self._registered[duckdb_name] = table_identifier
+        if not self._in_auto_register:
+            self._explicitly_registered.add(duckdb_name)
         return self
 
     def sql(
@@ -383,30 +388,31 @@ class PaimonDuckDB:
         """
         cleaned_query, time_travel_specs = _parse_time_travel(query)
 
-        for table_name, spec in time_travel_specs.items():
-            identifier = f"{self.database}.{table_name}"
-            self.register(
-                identifier, table_name=table_name,
-                snapshot_id=spec.get("snapshot_id"),
-                tag_name=spec.get("tag_name"),
-                limit=limit_hint,
-                materialize=True,
-            )
+        self._in_auto_register = True
+        try:
+            for table_name, spec in time_travel_specs.items():
+                identifier = f"{self.database}.{table_name}"
+                self.register(
+                    identifier, table_name=table_name,
+                    snapshot_id=spec.get("snapshot_id"),
+                    tag_name=spec.get("tag_name"),
+                    limit=limit_hint,
+                    materialize=True,
+                )
 
-        referenced = self.con.get_table_names(cleaned_query)
-        for name in referenced:
-            cached = self._registered.get(name)
-            if cached is None or cached[1] != limit_hint:
-                if cached is not None:
-                    logger.debug("Re-registering table '%s': limit changed %s -> %s",
-                                 name, cached[1], limit_hint)
-                else:
+            referenced = self.con.get_table_names(cleaned_query)
+            for name in referenced:
+                if name in time_travel_specs or name in self._explicitly_registered:
+                    continue
+                if name not in self._registered:
                     logger.debug("Auto-registering table: %s", name)
                 identifier = f"{self.database}.{name}"
                 self.register(
                     identifier, table_name=name,
                     limit=limit_hint, materialize=True,
                 )
+        finally:
+            self._in_auto_register = False
 
         logger.debug("Executing SQL on DuckDB: %s", cleaned_query[:200])
         return self.con.execute(cleaned_query)
