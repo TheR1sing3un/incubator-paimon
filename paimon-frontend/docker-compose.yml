@@ -1,0 +1,10 @@
+services:
+  frontend:
+    build: .
+    ports:
+      - "5173:4173"
+    environment:
+      - VITE_REST_CATALOG_URL=http://host.docker.internal:8090
+      - VITE_QUERY_SERVICE_URL=http://host.docker.internal:8187
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
