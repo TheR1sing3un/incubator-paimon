@@ -51,6 +51,7 @@ from pypaimon.read.reader.iface.record_reader import RecordReader
 from pypaimon.read.reader.key_value_unwrap_reader import \
     KeyValueUnwrapRecordReader
 from pypaimon.read.reader.key_value_wrap_reader import KeyValueWrapReader
+from pypaimon.read.reader.limited_record_reader import LimitedRecordReader
 from pypaimon.read.reader.shard_batch_reader import ShardBatchReader
 from pypaimon.read.reader.merge_function_factory import create_merge_function
 from pypaimon.read.reader.sort_merge_reader import SortMergeReaderWithMinHeap
@@ -416,6 +417,10 @@ class RawFileSplitRead(SplitRead):
 
 
 class MergeFileSplitRead(SplitRead):
+    def __init__(self, table, predicate, read_type, split, row_tracking_enabled, limit=None):
+        super().__init__(table, predicate, read_type, split, row_tracking_enabled)
+        self.limit = limit
+
     def kv_reader_supplier(self, file: DataFileMeta, dv_factory: Optional[Callable] = None) -> RecordReader:
         file_batch_reader = self.file_reader_supplier(file, True, self._get_final_read_data_fields(), False)
         merge_mode = file.merge_mode if file.merge_mode is not None else 0
@@ -452,11 +457,13 @@ class MergeFileSplitRead(SplitRead):
             supplier = partial(self.section_reader_supplier, section)
             section_readers.append(supplier)
         concat_reader = ConcatRecordReader(section_readers)
-        kv_unwrap_reader = KeyValueUnwrapRecordReader(DropDeleteRecordReader(concat_reader))
+        reader = KeyValueUnwrapRecordReader(DropDeleteRecordReader(concat_reader))
+        if self.limit is not None:
+            reader = LimitedRecordReader(reader, self.limit)
         if self.predicate_for_reader:
-            return FilterRecordReader(kv_unwrap_reader, self.predicate_for_reader)
+            return FilterRecordReader(reader, self.predicate_for_reader)
         else:
-            return kv_unwrap_reader
+            return reader
 
     def _get_all_data_fields(self):
         return self._create_key_value_fields(self.table.fields)

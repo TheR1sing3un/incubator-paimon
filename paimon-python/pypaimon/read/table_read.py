@@ -41,7 +41,8 @@ class TableRead:
         table,
         predicate: Optional[Predicate],
         read_type: List[DataField],
-        include_row_kind: bool = False
+        include_row_kind: bool = False,
+        limit: Optional[int] = None
     ):
         from pypaimon.table.file_store_table import FileStoreTable
 
@@ -49,14 +50,23 @@ class TableRead:
         self.predicate = predicate
         self.read_type = read_type
         self.include_row_kind = include_row_kind
+        self.limit = limit
 
     def to_iterator(self, splits: List[Split]) -> Iterator:
+        limit = self.limit
+
         def _record_generator():
+            count = 0
             for split in splits:
                 reader = self._create_split_read(split).create_reader()
                 try:
                     for batch in iter(reader.read_batch, None):
-                        yield from iter(batch.next, None)
+                        for row in iter(batch.next, None):
+                            yield row
+                            if limit is not None:
+                                count += 1
+                                if count >= limit:
+                                    return
                 finally:
                     reader.close()
 
@@ -161,20 +171,28 @@ class TableRead:
 
     def _arrow_batch_generator(self, splits: List[Split], schema: pyarrow.Schema) -> Iterator[pyarrow.RecordBatch]:
         chunk_size = 65536
+        remaining = self.limit
 
         for split in splits:
+            if remaining is not None and remaining <= 0:
+                break
             reader = self._create_split_read(split).create_reader()
             try:
                 if isinstance(reader, RecordBatchReader):
-                    # Add row kind column if requested (default to +I for RecordBatchReader)
-                    if self.include_row_kind:
-                        for batch in iter(reader.read_arrow_batch, None):
-                            yield self._add_row_kind_column_to_batch(batch, "+I")
-                    else:
-                        yield from iter(reader.read_arrow_batch, None)
+                    for batch in iter(reader.read_arrow_batch, None):
+                        if self.include_row_kind:
+                            batch = self._add_row_kind_column_to_batch(batch, "+I")
+                        if remaining is not None:
+                            if batch.num_rows >= remaining:
+                                yield batch.slice(0, remaining)
+                                remaining = 0
+                                break
+                            remaining -= batch.num_rows
+                        yield batch
                 else:
                     row_tuple_chunk = []
                     row_kind_chunk = []
+                    limit_reached = False
                     for row_iterator in iter(reader.read_batch, None):
                         for row in iter(row_iterator.next, None):
                             if not isinstance(row, OffsetRow):
@@ -183,6 +201,12 @@ class TableRead:
                             if self.include_row_kind:
                                 row_kind_chunk.append(row.get_row_kind().to_string())
 
+                            if remaining is not None:
+                                remaining -= 1
+                                if remaining <= 0:
+                                    limit_reached = True
+                                    break
+
                             if len(row_tuple_chunk) >= chunk_size:
                                 batch = self._convert_rows_to_arrow_batch_with_row_kind(
                                     row_tuple_chunk, row_kind_chunk, schema
@@ -190,6 +214,9 @@ class TableRead:
                                 yield batch
                                 row_tuple_chunk = []
                                 row_kind_chunk = []
+
+                        if limit_reached:
+                            break
 
                     if row_tuple_chunk:
                         batch = self._convert_rows_to_arrow_batch_with_row_kind(
@@ -314,7 +341,8 @@ class TableRead:
                 predicate=self.predicate,
                 read_type=self.read_type,
                 split=split,
-                row_tracking_enabled=False
+                row_tracking_enabled=False,
+                limit=self.limit
             )
         elif self.table.options.data_evolution_enabled():
             return DataEvolutionSplitRead(

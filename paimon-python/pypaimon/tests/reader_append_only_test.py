@@ -371,9 +371,8 @@ class AoReaderTest(unittest.TestCase):
 
         read_builder = table.new_read_builder().with_limit(1)
         actual = self._read_test_table(read_builder)
-        # only records from 1st commit (1st split) will be read
-        # might be split of "dt=1" or split of "dt=2"
-        self.assertEqual(actual.num_rows, 4)
+        # limit=1 means at most 1 row returned (row-level limit)
+        self.assertEqual(actual.num_rows, 1)
 
     def test_incremental_timestamp(self):
         schema = Schema.from_pyarrow_schema(self.pa_schema, partition_keys=['dt'])

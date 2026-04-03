@@ -39,14 +39,14 @@ RAY_VERSION_SCHEMA_IN_READ_TASK = "2.48.0"  # Schema moved from BlockMetadata to
 RAY_VERSION_PER_TASK_ROW_LIMIT = "2.52.0"  # per_task_row_limit parameter introduced
 
 
-def _paimon_read_task(splits, table, predicate, read_type, schema):
+def _paimon_read_task(splits, table, predicate, read_type, schema, limit=None):
     """Module-level read function that yields Arrow tables per batch.
 
     Using a generator avoids loading all data into memory at once —
     memory usage is proportional to batch size rather than entire split group.
     """
     from pypaimon.read.table_read import TableRead
-    worker_table_read = TableRead(table, predicate, read_type)
+    worker_table_read = TableRead(table, predicate, read_type, limit=limit)
     batch_reader = worker_table_read.to_arrow_batch_reader(splits)
 
     has_yielded = False
@@ -157,7 +157,7 @@ class RayDatasource(Datasource):
         ds.catalog_options = None
         ds.predicate = table_read.predicate
         ds.projection = None
-        ds.limit = None
+        ds.limit = table_read.limit
         ds._table = table_read.table
         ds._splits = splits
         ds._read_type = table_read.read_type
@@ -292,6 +292,7 @@ class RayDatasource(Datasource):
                 predicate=predicate,
                 read_type=read_type,
                 schema=schema,
+                limit=self.limit,
             )
             read_task_kwargs = {
                 'read_fn': read_fn,
