@@ -23,6 +23,16 @@ import {
   getPrefix,
 } from '../store/catalogStore';
 
+/**
+ * Convert an absolute URL into a /proxy path so that nginx (or the Vite dev
+ * middleware) can reverse-proxy the request and avoid CORS issues.
+ * e.g. "https://host.com/v1/paimon/databases" → "/proxy/https/host.com/v1/paimon/databases"
+ */
+export function toProxyUrl(absoluteUrl: string): string {
+  const parsed = new URL(absoluteUrl);
+  return `/proxy/${parsed.protocol.replace(':', '')}/${parsed.host}${parsed.pathname}${parsed.search}`;
+}
+
 let currentCatalog: CatalogConfig | null = null;
 
 export function setCurrentCatalog(catalog: CatalogConfig | null) {
@@ -42,7 +52,7 @@ const apiClient = axios.create({
 
 // Dynamically route requests:
 // - Local catalog (baseUrl empty): request /v1/... directly (same origin)
-// - Remote catalog: request /proxy?target=<baseUrl>/v1/... (server-side proxy)
+// - Remote catalog: request /proxy/<scheme>/<host>/v1/... (server-side proxy)
 apiClient.interceptors.request.use((config) => {
   const baseUrl = currentCatalog?.baseUrl?.replace(/\/+$/, '');
   const path = config.url || '';
@@ -51,7 +61,7 @@ apiClient.interceptors.request.use((config) => {
     // Remote catalog: route through server-side proxy
     const targetUrl = `${baseUrl}/v1${path}`;
     config.baseURL = '';
-    config.url = `/proxy?target=${encodeURIComponent(targetUrl)}`;
+    config.url = toProxyUrl(targetUrl);
   } else {
     // Local catalog: direct same-origin request
     config.baseURL = '/v1';

@@ -1,0 +1,47 @@
+server {
+    listen PORT;
+    server_name _;
+
+    root /var/www;
+    index index.html;
+
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript image/svg+xml;
+    gzip_min_length 1024;
+
+    # Health check
+    location /health {
+        access_log off;
+        return 200 "ok";
+        add_header Content-Type text/plain;
+    }
+
+    # Proxy for remote catalog requests: /proxy/<scheme>/<host>/<path>
+    # e.g. /proxy/https/example.com/v1/paimon/databases
+    location ~ ^/proxy/(https?)/([^/]+)(/.*)$ {
+        # Use internal DNS servers; adjust to match your environment
+        resolver RESOLVER valid=30s;
+
+        set $backend_scheme $1;
+        set $backend_host $2;
+        set $backend_path $3;
+
+        proxy_pass $backend_scheme://$backend_host$backend_path$is_args$args;
+        proxy_set_header Host $backend_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_ssl_server_name on;
+        proxy_ssl_name $backend_host;
+    }
+
+    # SPA fallback
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Cache static assets
+    location /assets/ {
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+}

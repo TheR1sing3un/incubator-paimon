@@ -21,6 +21,7 @@ import { Modal, Form, Input, Button, Table, Space, Popconfirm, message, Tag } fr
 import { PlusOutlined, EditOutlined, DeleteOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { useCatalog, type CatalogConfig } from '../store/catalogStore';
 import { loadQueryServiceUrl, saveQueryServiceUrl } from '../api/query';
+import { toProxyUrl } from '../api/client';
 import axios from 'axios';
 
 interface Props {
@@ -77,7 +78,7 @@ export default function CatalogManager({ open, onClose }: Props) {
       const baseUrl = values.baseUrl.replace(/\/+$/, '');
       setTesting(true);
       const targetUrl = `${baseUrl}/v1/config`;
-      const url = `/proxy?target=${encodeURIComponent(targetUrl)}`;
+      const url = toProxyUrl(targetUrl);
       const resp = await axios.get(url, { timeout: 10000 });
       if (resp.data?.defaults) {
         const serverPrefix = resp.data.defaults.prefix;

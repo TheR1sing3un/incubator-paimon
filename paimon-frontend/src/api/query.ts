@@ -17,6 +17,7 @@
  */
 
 import axios from 'axios';
+import { toProxyUrl } from './client';
 import type { CatalogConfig } from '../store/catalogStore';
 
 const QUERY_URL_KEY = 'paimon-query-service-url';
@@ -83,8 +84,8 @@ function buildQueryUrl(queryServiceUrl: string): string {
     // Relative path — use as-is.
     return targetUrl;
   }
-  // Remote query service: route through the dev-server proxy to avoid CORS.
-  return `/proxy?target=${encodeURIComponent(targetUrl)}`;
+  // Remote query service: route through the proxy to avoid CORS.
+  return toProxyUrl(targetUrl);
 }
 
 export async function executeQuery(

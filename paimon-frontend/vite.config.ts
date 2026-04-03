@@ -38,29 +38,29 @@ function catalogProxyPlugin() {
       });
 
       server.middlewares.use((req, res, next) => {
-        if (!req.url?.startsWith('/proxy?')) {
+        // Match /proxy/<scheme>/<host>/<path>
+        const match = req.url?.match(/^\/proxy\/(https?)\/(.*)/);
+        if (!match) {
           next();
           return;
         }
-        const url = new URL(req.url, 'http://localhost');
-        const target = url.searchParams.get('target');
-        if (!target) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ message: 'Missing target parameter' }));
-          return;
-        }
+
+        const scheme = match[1];
+        const rest = match[2]; // host/path?query
+        const slashIdx = rest.indexOf('/');
+        const host = slashIdx >= 0 ? rest.substring(0, slashIdx) : rest;
+        const pathAndQuery = slashIdx >= 0 ? rest.substring(slashIdx) : '/';
 
         try {
-          const targetUrl = new URL(target);
-          req.url = targetUrl.pathname + targetUrl.search;
+          req.url = pathAndQuery;
           proxy.web(req, res, {
-            target: targetUrl.origin,
+            target: `${scheme}://${host}`,
             changeOrigin: true,
             secure: false,
           });
         } catch {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ message: 'Invalid target URL' }));
+          res.end(JSON.stringify({ message: 'Invalid proxy target' }));
         }
       });
     },
@@ -74,13 +74,29 @@ export default defineConfig({
     proxy: {
       // Local catalog proxy (when baseUrl is empty)
       '/v1': {
-        target: 'http://127.0.0.1:8090',
+        target: process.env.VITE_REST_CATALOG_URL || 'http://127.0.0.1:8090',
         secure: false,
         changeOrigin: true,
       },
       // Python query service proxy (local)
       '/query': {
-        target: 'http://127.0.0.1:8187',
+        target: process.env.VITE_QUERY_SERVICE_URL || 'http://127.0.0.1:8187',
+        secure: false,
+        changeOrigin: true,
+      },
+    },
+  },
+  preview: {
+    host: '0.0.0.0',
+    port: 4173,
+    proxy: {
+      '/v1': {
+        target: process.env.VITE_REST_CATALOG_URL || 'http://127.0.0.1:8090',
+        secure: false,
+        changeOrigin: true,
+      },
+      '/query': {
+        target: process.env.VITE_QUERY_SERVICE_URL || 'http://127.0.0.1:8187',
         secure: false,
         changeOrigin: true,
       },
