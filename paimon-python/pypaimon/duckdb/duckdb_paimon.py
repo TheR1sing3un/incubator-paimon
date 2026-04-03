@@ -262,7 +262,7 @@ class PaimonDuckDB:
         self.catalog_options = catalog_options
         self.database = database
         self.con = duckdb.connect(database=":memory:")
-        self._registered: Dict[str, str] = {}
+        self._registered: Dict[str, tuple] = {}
         self._catalog = None
 
     def _get_catalog(self):
@@ -349,7 +349,7 @@ class PaimonDuckDB:
             "Registered table: %s as '%s', materialize=%s, limit=%s, elapsed=%dms",
             table_identifier, duckdb_name, materialize, limit, reg_ms,
         )
-        self._registered[duckdb_name] = table_identifier
+        self._registered[duckdb_name] = (table_identifier, limit)
         return self
 
     def sql(
@@ -394,11 +394,14 @@ class PaimonDuckDB:
             )
 
         referenced = self.con.get_table_names(cleaned_query)
-        auto_registered = [n for n in referenced if n not in self._registered]
-        if auto_registered:
-            logger.debug("Auto-registering tables: %s", auto_registered)
         for name in referenced:
-            if name not in self._registered:
+            cached = self._registered.get(name)
+            if cached is None or cached[1] != limit_hint:
+                if cached is not None:
+                    logger.debug("Re-registering table '%s': limit changed %s -> %s",
+                                 name, cached[1], limit_hint)
+                else:
+                    logger.debug("Auto-registering table: %s", name)
                 identifier = f"{self.database}.{name}"
                 self.register(
                     identifier, table_name=name,
