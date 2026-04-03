@@ -33,7 +33,7 @@ import {
   loadActiveName,
   saveActiveName,
 } from './store/catalogStore';
-import { setCurrentCatalog } from './api/client';
+import { setCurrentCatalog, toProxyUrl } from './api/client';
 
 class ErrorBoundary extends Component<
   { children: ReactNode },
@@ -71,6 +71,11 @@ function CatalogProvider({ children }: { children: ReactNode }) {
 
   const active = catalogs.find((c) => c.name === activeName) ?? null;
 
+  // Sync current catalog to api client synchronously so that child
+  // components (e.g. React Query hooks) already see the correct prefix
+  // on their very first render / effect cycle.
+  setCurrentCatalog(active);
+
   // Auto-detect local REST server on first visit (no catalogs configured)
   useEffect(() => {
     if (catalogs.length > 0) return;
@@ -92,16 +97,14 @@ function CatalogProvider({ children }: { children: ReactNode }) {
     return () => { cancelled = true; };
   }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Sync current catalog to api client, auto-detect prefix if missing
+  // Auto-detect prefix if missing
   useEffect(() => {
-    setCurrentCatalog(active);
-
     if (active && !active.prefix) {
       const fetchPrefix = async () => {
         try {
           const baseUrl = active.baseUrl.replace(/\/+$/, '');
           const url = baseUrl
-            ? `/proxy?target=${encodeURIComponent(`${baseUrl}/v1/config`)}`
+            ? toProxyUrl(`${baseUrl}/v1/config`)
             : '/v1/config';
           const resp = await fetch(url);
           const data = await resp.json();
