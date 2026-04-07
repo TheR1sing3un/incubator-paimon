@@ -135,22 +135,6 @@ class LimitPushdownTest(unittest.TestCase):
             total_rows += batch.num_rows
         self.assertEqual(total_rows, limit)
 
-    def test_pk_merge_on_read_limit_with_duckdb(self):
-        """Limit should work correctly when reading via DuckDB integration."""
-        table = self._create_merge_on_read_table('default.test_limit_duckdb')
-        self._verify_has_merge_on_read_splits(table)
-
-        from pypaimon.duckdb.duckdb_paimon import register_paimon
-
-        limit = 5
-        con = register_paimon(
-            'default.test_limit_duckdb',
-            self.catalog_options,
-            limit=limit
-        )
-        df = con.execute("SELECT * FROM test_limit_duckdb").fetchdf()
-        self.assertEqual(len(df), limit)
-
     def test_pk_merge_on_read_limit_larger_than_data(self):
         """When limit > total rows, all rows should be returned."""
         total_rows = 20

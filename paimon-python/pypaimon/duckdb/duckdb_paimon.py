@@ -79,7 +79,6 @@ def _build_reader(
     catalog_options: Dict[str, str],
     filter: Optional[Predicate] = None,
     projection: Optional[List[str]] = None,
-    limit: Optional[int] = None,
     snapshot_id: Optional[int] = None,
     tag_name: Optional[str] = None,
     catalog=None,
@@ -104,8 +103,6 @@ def _build_reader(
         read_builder = read_builder.with_filter(filter)
     if projection is not None:
         read_builder = read_builder.with_projection(projection)
-    if limit is not None:
-        read_builder = read_builder.with_limit(limit)
 
     table_read = read_builder.new_read()
     splits = read_builder.new_scan().plan().splits()
@@ -120,7 +117,6 @@ def register_paimon(
     connection: Optional["duckdb.DuckDBPyConnection"] = None,
     filter: Optional[Predicate] = None,
     projection: Optional[List[str]] = None,
-    limit: Optional[int] = None,
     snapshot_id: Optional[int] = None,
     tag_name: Optional[str] = None,
     materialize: bool = False,
@@ -138,7 +134,6 @@ def register_paimon(
             connection is created when *None*.
         filter: Optional predicate to push down into the scan.
         projection: Optional list of column names to read.
-        limit: Optional row limit for the scan.
         snapshot_id: Read from a specific snapshot.
         tag_name: Read from a specific tagged snapshot.
         materialize: If *True*, materialise the data into a DuckDB table
@@ -161,7 +156,7 @@ def register_paimon(
     duckdb_table_name = table_name or table_identifier.split(".")[-1]
     reader = _build_reader(
         table_identifier, catalog_options,
-        filter=filter, projection=projection, limit=limit,
+        filter=filter, projection=projection,
         snapshot_id=snapshot_id, tag_name=tag_name,
     )
 
@@ -186,7 +181,6 @@ def query_paimon(
     *,
     filter: Optional[Predicate] = None,
     projection: Optional[List[str]] = None,
-    limit: Optional[int] = None,
     snapshot_id: Optional[int] = None,
     tag_name: Optional[str] = None,
 ) -> "duckdb.DuckDBPyConnection":
@@ -201,7 +195,6 @@ def query_paimon(
         query: SQL query to execute against the registered table.
         filter: Optional predicate to push down into the scan.
         projection: Optional list of column names to read.
-        limit: Optional row limit for the scan.
         snapshot_id: Read from a specific snapshot.
         tag_name: Read from a specific tagged snapshot.
 
@@ -220,7 +213,7 @@ def query_paimon(
     duckdb_table_name = table_identifier.split(".")[-1]
     reader = _build_reader(
         table_identifier, catalog_options,
-        filter=filter, projection=projection, limit=limit,
+        filter=filter, projection=projection,
         snapshot_id=snapshot_id, tag_name=tag_name,
     )
     con.register(duckdb_table_name, reader)
@@ -297,7 +290,6 @@ class PaimonDuckDB:
         table_name: Optional[str] = None,
         filter: Optional[Predicate] = None,
         projection: Optional[List[str]] = None,
-        limit: Optional[int] = None,
         snapshot_id: Optional[int] = None,
         tag_name: Optional[str] = None,
         materialize: bool = True,
@@ -311,10 +303,14 @@ class PaimonDuckDB:
                 of *table_identifier*.
             filter: Optional predicate to push down.
             projection: Optional column projection.
-            limit: Optional row limit.
             snapshot_id: Read from a specific snapshot.
             tag_name: Read from a specific tagged snapshot.
             materialize: Materialise into DuckDB table (default *True*).
+                When materialising, an unconditional ``LIMIT 100000``
+                safety cap is applied to prevent accidental full-table
+                materialisation. Any user-supplied ``LIMIT`` clause in
+                subsequent SQL is evaluated by DuckDB on top of this
+                cap.
 
         Returns:
             *self* for method chaining.
@@ -326,7 +322,7 @@ class PaimonDuckDB:
         reg_start = time.monotonic()
         reader = _build_reader(
             table_identifier, self.catalog_options,
-            filter=filter, projection=projection, limit=limit,
+            filter=filter, projection=projection,
             snapshot_id=snapshot_id, tag_name=tag_name,
             catalog=self._get_catalog(),
         )
@@ -334,14 +330,12 @@ class PaimonDuckDB:
         if materialize:
             tmp = f"__paimon_tmp_{duckdb_name}"
             self.con.register(tmp, reader)
-            # Apply a safety cap to prevent accidental full-table
-            # materialisation when no explicit limit is provided.
-            limit_clause = ""
-            if limit is None:
-                limit_clause = " LIMIT 100000"
+            # Hard safety cap to prevent accidental full-table
+            # materialisation. Any user LIMIT in the outer query is
+            # evaluated by DuckDB on top of this materialised table.
             self.con.execute(
                 f'CREATE OR REPLACE TABLE "{duckdb_name}" '
-                f'AS SELECT * FROM "{tmp}"{limit_clause}'
+                f'AS SELECT * FROM "{tmp}" LIMIT 100000'
             )
             self.con.unregister(tmp)
         else:
@@ -349,19 +343,15 @@ class PaimonDuckDB:
 
         reg_ms = int((time.monotonic() - reg_start) * 1000)
         logger.info(
-            "Registered table: %s as '%s', materialize=%s, limit=%s, elapsed=%dms",
-            table_identifier, duckdb_name, materialize, limit, reg_ms,
+            "Registered table: %s as '%s', materialize=%s, elapsed=%dms",
+            table_identifier, duckdb_name, materialize, reg_ms,
         )
         self._registered[duckdb_name] = table_identifier
         if not self._in_auto_register:
             self._explicitly_registered.add(duckdb_name)
         return self
 
-    def sql(
-        self,
-        query: str,
-        limit_hint: Optional[int] = None,
-    ) -> "duckdb.DuckDBPyConnection":
+    def sql(self, query: str) -> "duckdb.DuckDBPyConnection":
         """Execute SQL, auto-registering any referenced Paimon tables.
 
         Table names in the query that have not been explicitly registered
@@ -378,10 +368,6 @@ class PaimonDuckDB:
 
         Args:
             query: SQL query string.
-            limit_hint: Optional row limit extracted from the SQL query.
-                When provided, the Paimon reader will limit the number of
-                rows read at the source level to avoid full-table
-                materialisation.
 
         Returns:
             The DuckDB connection with cursor at the result.
@@ -396,7 +382,6 @@ class PaimonDuckDB:
                     identifier, table_name=table_name,
                     snapshot_id=spec.get("snapshot_id"),
                     tag_name=spec.get("tag_name"),
-                    limit=limit_hint,
                     materialize=True,
                 )
 
@@ -409,7 +394,7 @@ class PaimonDuckDB:
                 identifier = f"{self.database}.{name}"
                 self.register(
                     identifier, table_name=name,
-                    limit=limit_hint, materialize=True,
+                    materialize=True,
                 )
         finally:
             self._in_auto_register = False

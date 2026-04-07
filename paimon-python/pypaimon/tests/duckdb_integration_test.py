@@ -138,16 +138,6 @@ class DuckDBIntegrationTest(unittest.TestCase):
         self.assertEqual(list(df.columns), ['order_id', 'amount'])
         self.assertEqual(len(df), 5)
 
-    def test_register_with_limit(self):
-        con = register_paimon(
-            "default.orders", self.catalog_options, limit=3
-        )
-        df = con.execute("SELECT * FROM orders").fetchdf()
-        # limit is applied at scan level (split planning), so the actual
-        # number of rows may be >= limit when data fits in a single split.
-        self.assertGreater(len(df), 0)
-        self.assertLessEqual(len(df), 5)
-
     def test_table_name_default(self):
         con = register_paimon("default.orders", self.catalog_options)
         # Table should be registered as "orders" (last segment)
@@ -215,6 +205,33 @@ class DuckDBIntegrationTest(unittest.TestCase):
 
         self.assertEqual(len(df), 3)
         self.assertEqual(list(df['name']), ['Alice', 'Bob', 'Charlie'])
+
+    def test_paimon_duckdb_aggregation_with_trailing_limit(self):
+        """Regression for the LIMIT-pushdown bug.
+
+        A trailing LIMIT clause on an aggregation query must NOT cause
+        the underlying Paimon scan to be truncated — the aggregation
+        must see all rows. Previously the query server's regex extracted
+        the trailing LIMIT and pushed it down to the source, producing
+        wrong COUNT/SUM values.
+        """
+        db = PaimonDuckDB(self.catalog_options, database="default")
+
+        # GROUP BY + LIMIT: counts must reflect ALL rows, not the first N.
+        df = db.sql(
+            "SELECT customer_id, COUNT(*) AS cnt, SUM(amount) AS total "
+            "FROM orders GROUP BY customer_id ORDER BY customer_id LIMIT 10"
+        ).fetchdf()
+        self.assertEqual(len(df), 3)
+        self.assertEqual(list(df['customer_id']), [101, 102, 103])
+        self.assertEqual(list(df['cnt']), [2, 2, 1])
+        self.assertAlmostEqual(df[df['customer_id'] == 101]['total'].values[0], 41.0)
+        self.assertAlmostEqual(df[df['customer_id'] == 102]['total'].values[0], 70.5)
+        self.assertAlmostEqual(df[df['customer_id'] == 103]['total'].values[0], 40.0)
+
+        # Single-row aggregation with trailing LIMIT 1: must equal full sum.
+        df2 = db.sql("SELECT SUM(amount) AS total FROM orders LIMIT 1").fetchdf()
+        self.assertAlmostEqual(df2['total'][0], 151.5)
 
     def test_paimon_duckdb_explicit_register(self):
         db = PaimonDuckDB(self.catalog_options, database="default")

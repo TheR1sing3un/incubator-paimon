@@ -32,11 +32,6 @@ _BLOCKED_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
-_LIMIT_PATTERN = re.compile(
-    r"\bLIMIT\s+(\d+)\s*$",
-    re.IGNORECASE,
-)
-
 
 class QuerySecurityError(Exception):
     pass
@@ -63,17 +58,6 @@ def _validate_sql(sql: str) -> None:
         )
 
 
-def _extract_limit(sql: str) -> int | None:
-    """Extract a trailing LIMIT N from the SQL statement."""
-    stripped = sql.strip().rstrip(";").strip()
-    m = _LIMIT_PATTERN.search(stripped)
-    if m:
-        limit = int(m.group(1))
-        logger.debug("Extracted LIMIT %d from SQL", limit)
-        return limit
-    return None
-
-
 def execute_query(
     sql: str,
     database: str,
@@ -82,16 +66,15 @@ def execute_query(
     timeout_seconds: int = 30,
 ) -> QueryResult:
     _validate_sql(sql)
-    limit_hint = _extract_limit(sql)
 
     def _run(db):
         start = time.monotonic()
-        logger.debug("Executing query: limit_hint=%s, sql=%s", limit_hint, sql[:200])
+        logger.debug("Executing query: sql=%s", sql[:200])
 
         timer = threading.Timer(timeout_seconds, db.con.interrupt)
         timer.start()
         try:
-            cursor = db.sql(sql, limit_hint=limit_hint)
+            cursor = db.sql(sql)
             columns = _extract_columns(cursor)
             rows, truncated = _fetch_rows(cursor, max_rows)
         except Exception as e:
