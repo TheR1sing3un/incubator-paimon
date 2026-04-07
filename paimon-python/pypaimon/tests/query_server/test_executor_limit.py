@@ -66,6 +66,29 @@ class ExecutorLimitTest(unittest.TestCase):
         writer.close()
         commit.close()
 
+        # A second table with > 100000 rows used to expose the silent
+        # truncation bug in the materialise-with-cap path.
+        cls.big_schema = pa.schema([
+            ('id', pa.int64()),
+            ('val', pa.int64()),
+        ])
+        cls.big_n = 150_000
+        big_data = {
+            'id': list(range(cls.big_n)),
+            'val': list(range(cls.big_n)),
+        }
+        catalog.create_table(
+            'default.big_sales',
+            Schema.from_pyarrow_schema(cls.big_schema), False)
+        big = catalog.get_table('default.big_sales')
+        wb = big.new_batch_write_builder()
+        bw = wb.new_write()
+        bc = wb.new_commit()
+        bw.write_arrow(pa.Table.from_pydict(big_data, schema=cls.big_schema))
+        bc.commit(bw.prepare_commit())
+        bw.close()
+        bc.close()
+
     @classmethod
     def tearDownClass(cls):
         # Drop pooled connections so the temp warehouse can be removed cleanly.
@@ -105,6 +128,31 @@ class ExecutorLimitTest(unittest.TestCase):
         rows = self._row_dict(result)
         self.assertEqual(len(rows), 1)
         self.assertAlmostEqual(rows[0]['total'], 1770.0)
+
+    def test_aggregation_over_more_than_100k_rows_via_executor(self):
+        """Regression for the 100k silent-truncation bug.
+
+        Previously the materialised DuckDB table was capped at 100000
+        rows, so COUNT(*) / SUM over a >100k-row table silently returned
+        the wrong number. After the streaming refactor of register(),
+        DuckDB sees the full Paimon stream.
+        """
+        n = self.big_n
+        result = execute_query(
+            "SELECT COUNT(*) AS cnt FROM big_sales",
+            database="default",
+            catalog_options=self.catalog_options,
+        )
+        rows = self._row_dict(result)
+        self.assertEqual(rows[0]['cnt'], n)
+
+        result = execute_query(
+            "SELECT SUM(val) AS total FROM big_sales",
+            database="default",
+            catalog_options=self.catalog_options,
+        )
+        rows = self._row_dict(result)
+        self.assertEqual(rows[0]['total'], n * (n - 1) // 2)
 
 
 if __name__ == '__main__':

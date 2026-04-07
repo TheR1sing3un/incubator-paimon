@@ -21,7 +21,6 @@ import shutil
 import tempfile
 import unittest
 
-import duckdb
 import pandas as pd
 import pyarrow as pa
 
@@ -233,6 +232,63 @@ class DuckDBIntegrationTest(unittest.TestCase):
         df2 = db.sql("SELECT SUM(amount) AS total FROM orders LIMIT 1").fetchdf()
         self.assertAlmostEqual(df2['total'][0], 151.5)
 
+    def test_paimon_duckdb_aggregation_over_more_than_100k_rows(self):
+        """Regression for the 100k silent-truncation bug.
+
+        Previously PaimonDuckDB.register() materialised via
+        ``CREATE TABLE ... AS SELECT * FROM tmp LIMIT 100000``, so any
+        aggregation over a table with more than 100000 rows silently
+        operated on the first 100000 rows only. The fix replaces the
+        materialise-with-cap path with streaming Arrow registration, so
+        DuckDB sees the full data.
+        """
+        big_schema = pa.schema([
+            ('id', pa.int64()),
+            ('val', pa.int64()),
+        ])
+        catalog = CatalogFactory.create(self.catalog_options)
+        catalog.create_table(
+            'default.big_sales',
+            Schema.from_pyarrow_schema(big_schema), True)
+        big = catalog.get_table('default.big_sales')
+        n = 150_000
+        self._write_data(big, big_schema, {
+            'id': list(range(n)),
+            'val': list(range(n)),
+        })
+
+        db = PaimonDuckDB(self.catalog_options, database="default")
+
+        df = db.sql("SELECT COUNT(*) AS cnt FROM big_sales").fetchdf()
+        self.assertEqual(int(df['cnt'][0]), n)
+
+        df2 = db.sql("SELECT SUM(val) AS total FROM big_sales").fetchdf()
+        self.assertEqual(int(df2['total'][0]), n * (n - 1) // 2)
+
+        # Cross-call freshness: a third sql() must still see all rows.
+        df3 = db.sql("SELECT COUNT(*) AS cnt FROM big_sales").fetchdf()
+        self.assertEqual(int(df3['cnt'][0]), n)
+
+    def test_paimon_duckdb_explicit_materialize_supports_self_join(self):
+        """Self-join inside a single SQL works when the table is
+        explicitly registered with materialize=True (Arrow Table)."""
+        db = PaimonDuckDB(self.catalog_options, database="default")
+        db.register("default.orders", table_name="orders", materialize=True)
+
+        df = db.sql("""
+            SELECT a.order_id AS a_id, b.order_id AS b_id
+            FROM orders a JOIN orders b ON a.order_id = b.order_id
+            ORDER BY a.order_id
+        """).fetchdf()
+        self.assertEqual(len(df), 5)
+        self.assertEqual(list(df['a_id']), [1, 2, 3, 4, 5])
+
+        # Multiple queries against the explicitly-materialised table all work.
+        df1 = db.sql("SELECT COUNT(*) AS cnt FROM orders").fetchdf()
+        self.assertEqual(int(df1['cnt'][0]), 5)
+        df2 = db.sql("SELECT SUM(amount) AS total FROM orders").fetchdf()
+        self.assertAlmostEqual(df2['total'][0], 151.5)
+
     def test_paimon_duckdb_explicit_register(self):
         db = PaimonDuckDB(self.catalog_options, database="default")
 
@@ -240,6 +296,29 @@ class DuckDBIntegrationTest(unittest.TestCase):
         db.register("default.orders", table_name="o")
         df = db.sql("SELECT COUNT(*) AS cnt FROM o").fetchdf()
         self.assertEqual(df['cnt'][0], 5)
+
+    def test_paimon_duckdb_explicit_streaming_register_survives_multi_sql(self):
+        """Regression: an explicit register() with the default
+        materialize=False must keep returning correct results across
+        successive sql() calls. The underlying RecordBatchReader is
+        single-use, so the connection has to rebuild it on each sql()."""
+        db = PaimonDuckDB(self.catalog_options, database="default")
+
+        # Default materialize=False (streaming).
+        db.register("default.orders", table_name="orders")
+
+        df1 = db.sql("SELECT COUNT(*) AS cnt FROM orders").fetchdf()
+        self.assertEqual(int(df1['cnt'][0]), 5)
+
+        # Without the per-sql() refresh of explicit streaming
+        # registrations, this returns NaN because the reader is
+        # exhausted after the first scan.
+        df2 = db.sql("SELECT SUM(amount) AS total FROM orders").fetchdf()
+        self.assertAlmostEqual(df2['total'][0], 151.5)
+
+        # A third call must also still work.
+        df3 = db.sql("SELECT COUNT(*) AS cnt FROM orders").fetchdf()
+        self.assertEqual(int(df3['cnt'][0]), 5)
 
     def test_paimon_duckdb_register_chaining(self):
         db = PaimonDuckDB(self.catalog_options, database="default")
