@@ -18,18 +18,17 @@
 """
 Module to read a Paimon table into a Ray Dataset, by using the Ray Datasource API.
 """
-import heapq
 import itertools
 import logging
 from functools import partial
-from typing import Dict, List, Optional, Iterable
+from typing import Dict, List, Optional
 
 import pyarrow
 from packaging.version import parse
 import ray
 from ray.data.datasource import Datasource
 
-from pypaimon.read.split import Split
+from pypaimon.read.datasource._split_balance import distribute_splits_into_equal_chunks
 from pypaimon.schema.data_types import PyarrowFieldParser
 
 logger = logging.getLogger(__name__)
@@ -178,32 +177,6 @@ class RayDatasource(Datasource):
         total_size = sum(split.file_size for split in self.splits)
         return total_size if total_size > 0 else None
 
-    @staticmethod
-    def _distribute_splits_into_equal_chunks(
-            splits: Iterable[Split], n_chunks: int
-    ) -> List[List[Split]]:
-        """
-        Implement a greedy knapsack algorithm to distribute the splits across tasks,
-        based on their file size, as evenly as possible.
-        """
-        chunks = [list() for _ in range(n_chunks)]
-        chunk_sizes = [(0, chunk_id) for chunk_id in range(n_chunks)]
-        heapq.heapify(chunk_sizes)
-
-        # From largest to smallest, add the splits to the smallest chunk one at a time
-        for split in sorted(
-                splits, key=lambda s: s.file_size if hasattr(s, 'file_size') and s.file_size > 0 else 0, reverse=True
-        ):
-            smallest_chunk = heapq.heappop(chunk_sizes)
-            chunks[smallest_chunk[1]].append(split)
-            split_size = split.file_size if hasattr(split, 'file_size') and split.file_size > 0 else 0
-            heapq.heappush(
-                chunk_sizes,
-                (smallest_chunk[0] + split_size, smallest_chunk[1]),
-            )
-
-        return chunks
-
     def get_read_tasks(self, parallelism: int, **kwargs) -> List:
         """Return a list of read tasks that can be executed in parallel."""
         from ray.data.datasource import ReadTask
@@ -235,7 +208,7 @@ class RayDatasource(Datasource):
         read_tasks = []
 
         # Distribute splits across tasks using load balancing algorithm
-        for chunk_splits in self._distribute_splits_into_equal_chunks(splits, parallelism):
+        for chunk_splits in distribute_splits_into_equal_chunks(splits, parallelism):
             if not chunk_splits:
                 continue
 

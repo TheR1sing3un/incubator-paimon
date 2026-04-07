@@ -73,6 +73,53 @@ paimon sql -d mydb                 # set default database
 
 Dot commands available inside the shell: `.tables`, `.schema <table>`, `.databases`, `.use <db>`, `.help`, `.quit`.
 
+# Daft Integration
+
+PyPaimon provides a high-level [Daft](https://www.getdaft.io) integration that mirrors the Ray integration: top-level `read_paimon` / `write_paimon` functions backed by a custom `daft.io.source.DataSource` and `daft.io.sink.DataSink`. Predicate, projection, limit, and snapshot/tag time-travel are pushed down into the Paimon scan; the write path goes through `BatchTableWrite` / `BatchTableCommit` with proper abort-on-failure semantics.
+
+## Installation
+
+```bash
+pip install 'pypaimon[daft]'
+```
+
+Daft 0.7+ requires Python 3.10 or newer.
+
+## Python API
+
+```python
+import daft
+from pypaimon.daft import read_paimon, write_paimon
+
+opts = {"warehouse": "/path/to/warehouse"}
+
+# Read
+df = read_paimon("db.table", opts)
+df = read_paimon("db.table", opts, projection=["id", "name"], limit=100)
+df = read_paimon("db.table", opts, snapshot_id=42)
+df = read_paimon("db.table", opts, tag_name="release_v1")
+
+# Predicate pushdown — pass a pypaimon Predicate via filter=
+from pypaimon import CatalogFactory
+table = CatalogFactory.create(opts).get_table("db.table")
+pb = table.new_read_builder().new_predicate_builder()
+df = read_paimon("db.table", opts, filter=pb.equal("region", "us"))
+
+# Write
+df = daft.from_pydict({"id": [1, 2, 3], "name": ["a", "b", "c"]})
+write_paimon(df, "db.table", opts)
+write_paimon(df, "db.table", opts, overwrite=True)
+write_paimon(df, "db.table", opts,
+             committer="etl_job", message="daily refresh",
+             options={"target-file-size": "256mb"})
+```
+
+## Notes
+
+- Daft 0.7+ also ships an upstream Paimon integration via `daft.read_paimon` and `df.write_paimon`. The integration in `pypaimon.daft` is a parallel implementation in the pypaimon namespace and offers stronger Paimon-side feature support: snapshot/tag time-travel, custom commit metadata, and abort-on-failure write semantics.
+- Daft-side `df.where(...)` filters are currently kept as residuals (Daft applies them post-scan). For real Paimon-side predicate pushdown, pass a `pypaimon.Predicate` via the `filter=` argument.
+- `min_rows_per_file` (available in `pypaimon.ray`) is not supported in v1 because Daft's `DataSink` lacks an equivalent block-coalescing hook. To control output file sizes, call `df.repartition(N)` before `write_paimon`.
+
 # Query Server
 
 A lightweight HTTP query service (FastAPI + DuckDB) that allows browser-based SQL querying of Paimon tables. It is designed for ad-hoc exploration via the Paimon frontend SQL Playground.
