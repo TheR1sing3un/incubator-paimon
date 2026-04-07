@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from pypaimon.query_server.models import QueryRequest, QueryResult, QueryError
 from pypaimon.query_server.executor import (
@@ -30,6 +30,8 @@ from pypaimon.query_server.executor import (
     QueryTimeoutError,
 )
 from pypaimon.query_server.pool import get_pool
+from pypaimon.query_server.dag.executor import run_dag_sse
+from pypaimon.query_server.dag.models import DagRequest
 
 logger = logging.getLogger(__name__)
 
@@ -97,3 +99,29 @@ def execute(req: QueryRequest):
                 error=str(e), error_type=type(e).__name__
             ).model_dump(),
         )
+
+
+@app.post("/dag/execute")
+def execute_dag(req: DagRequest):
+    """Execute a visual DAG, streaming events back over SSE.
+
+    The response body is ``text/event-stream`` — each event is a single
+    ``data: {json}\\n\\n`` line. Clients should use ``fetch`` +
+    ``ReadableStream`` (not ``EventSource``) because EventSource does
+    not support POST bodies.
+    """
+    logger.info(
+        "DAG received: runner=%s, nodes=%d, edges=%d, timeout=%ds",
+        req.runner, len(req.nodes), len(req.edges), req.timeout_seconds,
+    )
+    return StreamingResponse(
+        run_dag_sse(req),
+        media_type="text/event-stream",
+        headers={
+            # Disable proxy buffering so nginx / similar flush events
+            # through as they are produced.
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
