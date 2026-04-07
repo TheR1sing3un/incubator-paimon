@@ -24,6 +24,7 @@ import AppLayout from './components/Layout/AppLayout';
 import DatabaseList from './components/Database/DatabaseList';
 import DatabaseDetail from './components/Database/DatabaseDetail';
 import TableDetail from './components/Table/TableDetail';
+import DagPage from './components/Dag/DagPage';
 import {
   CatalogContext,
   type CatalogConfig,
@@ -215,6 +216,7 @@ function App() {
               <Route path="/" element={<DatabaseList />} />
               <Route path="/databases/:db" element={<DatabaseDetail />} />
               <Route path="/databases/:db/tables/:table" element={<TableDetail />} />
+              <Route path="/dag" element={<DagPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>

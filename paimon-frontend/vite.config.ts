@@ -84,6 +84,19 @@ export default defineConfig({
         secure: false,
         changeOrigin: true,
       },
+      // Python DAG execution SSE endpoint (shares the query-server process)
+      '/dag': {
+        target: process.env.VITE_QUERY_SERVICE_URL || 'http://127.0.0.1:8187',
+        secure: false,
+        changeOrigin: true,
+        // SSE responses must not be buffered by the proxy.
+        ws: false,
+        configure: (proxy) => {
+          proxy.on('proxyRes', (proxyRes) => {
+            proxyRes.headers['x-accel-buffering'] = 'no';
+          });
+        },
+      },
     },
   },
   preview: {
@@ -108,6 +121,7 @@ export default defineConfig({
         manualChunks: {
           vendor: ['react', 'react-dom', 'react-router-dom'],
           antd: ['antd', '@ant-design/icons'],
+          xyflow: ['@xyflow/react'],
         },
       },
     },

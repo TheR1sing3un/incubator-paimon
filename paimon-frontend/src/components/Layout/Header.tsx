@@ -18,7 +18,12 @@
 
 import { useState } from 'react';
 import { Layout, Breadcrumb, Select, Button, Space } from 'antd';
-import { HomeOutlined, SettingOutlined, PlusOutlined } from '@ant-design/icons';
+import {
+  HomeOutlined,
+  SettingOutlined,
+  PlusOutlined,
+  ApartmentOutlined,
+} from '@ant-design/icons';
 import { useLocation, Link } from 'react-router-dom';
 import { useCatalog } from '../../store/catalogStore';
 import CatalogManager from '../CatalogManager';
@@ -41,6 +46,12 @@ export default function AppHeader() {
       ),
     },
   ];
+
+  if (pathParts[0] === 'dag') {
+    breadcrumbItems.push({
+      title: <span>DAG</span>,
+    });
+  }
 
   if (pathParts[0] === 'databases' && pathParts[1]) {
     const db = decodeURIComponent(pathParts[1]);
@@ -75,6 +86,14 @@ export default function AppHeader() {
       >
         <Breadcrumb items={breadcrumbItems} />
         <Space>
+          <Link to="/dag">
+            <Button
+              type={location.pathname.startsWith('/dag') ? 'primary' : 'default'}
+              icon={<ApartmentOutlined />}
+            >
+              DAG
+            </Button>
+          </Link>
           {catalogs.length > 0 && (
             <Select
               value={active?.name}
