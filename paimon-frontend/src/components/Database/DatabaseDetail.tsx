@@ -16,12 +16,12 @@
  * limitations under the License.
  */
 
-import { useState } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   Table, Typography, Descriptions, Card, Spin, Alert, Button, Space,
   Popconfirm, Modal, Form, Input, Select, message, Drawer, Checkbox,
 } from 'antd';
-import { TableOutlined, PlusOutlined, DeleteOutlined, EditOutlined, MinusCircleOutlined } from '@ant-design/icons';
+import { TableOutlined, PlusOutlined, DeleteOutlined, EditOutlined, MinusCircleOutlined, SearchOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getDatabase, dropDatabase, alterDatabase } from '../../api/databases';
@@ -38,6 +38,11 @@ export default function DatabaseDetail() {
   const [createTableOpen, setCreateTableOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState('');
+  const [tableQuery, setTableQuery] = useState('');
+
+  useEffect(() => {
+    setTableQuery('');
+  }, [db]);
   const [propsForm] = Form.useForm();
   const [tableForm] = Form.useForm();
   const [renameForm] = Form.useForm();
@@ -53,6 +58,12 @@ export default function DatabaseDetail() {
     queryFn: () => listTables(db!),
     enabled: !!db,
   });
+
+  const filteredTables = useMemo(() => {
+    const q = tableQuery.trim().toLowerCase();
+    if (!q) return tables;
+    return tables.filter((t) => t.toLowerCase().includes(q));
+  }, [tables, tableQuery]);
 
   const dropDbMutation = useMutation({
     mutationFn: () => dropDatabase(db!),
@@ -227,13 +238,23 @@ export default function DatabaseDetail() {
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
         <Title level={4} style={{ margin: 0 }}>Tables</Title>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => { setCreateTableOpen(true); tableForm.resetFields(); }}>
-          Create Table
-        </Button>
+        <Space>
+          <Input
+            allowClear
+            placeholder="Search tables"
+            prefix={<SearchOutlined />}
+            value={tableQuery}
+            onChange={(e) => setTableQuery(e.target.value)}
+            style={{ width: 240 }}
+          />
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => { setCreateTableOpen(true); tableForm.resetFields(); }}>
+            Create Table
+          </Button>
+        </Space>
       </div>
       <Table
         loading={tablesLoading}
-        dataSource={tables.map((t) => ({ name: t }))}
+        dataSource={filteredTables.map((t) => ({ name: t }))}
         rowKey="name"
         columns={[
           {

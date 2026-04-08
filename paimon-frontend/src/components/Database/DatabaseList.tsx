@@ -16,9 +16,9 @@
  * limitations under the License.
  */
 
-import { useState } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Card, List, Typography, Empty, Button, Modal, Form, Input, Space, message } from 'antd';
-import { DatabaseOutlined, PlusOutlined, MinusCircleOutlined } from '@ant-design/icons';
+import { DatabaseOutlined, PlusOutlined, MinusCircleOutlined, SearchOutlined } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { listDatabases, createDatabase } from '../../api/databases';
@@ -32,12 +32,23 @@ export default function DatabaseList() {
   const queryClient = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
   const [form] = Form.useForm();
+  const [dbQuery, setDbQuery] = useState('');
 
   const { data: databases = [], isLoading } = useQuery({
     queryKey: ['databases', active?.name],
     queryFn: listDatabases,
     enabled: !!active,
   });
+
+  useEffect(() => {
+    setDbQuery('');
+  }, [active?.name]);
+
+  const filteredDatabases = useMemo(() => {
+    const q = dbQuery.trim().toLowerCase();
+    if (!q) return databases;
+    return databases.filter((d) => d.toLowerCase().includes(q));
+  }, [databases, dbQuery]);
 
   const createMutation = useMutation({
     mutationFn: createDatabase,
@@ -81,14 +92,24 @@ export default function DatabaseList() {
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <Title level={3} style={{ margin: 0 }}>Databases</Title>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-          Create Database
-        </Button>
+        <Space>
+          <Input
+            allowClear
+            placeholder="Search databases"
+            prefix={<SearchOutlined />}
+            value={dbQuery}
+            onChange={(e) => setDbQuery(e.target.value)}
+            style={{ width: 240 }}
+          />
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+            Create Database
+          </Button>
+        </Space>
       </div>
       <List
         grid={{ gutter: 16, xs: 1, sm: 2, md: 3, lg: 4, xl: 4 }}
         loading={isLoading}
-        dataSource={databases}
+        dataSource={filteredDatabases}
         renderItem={(db) => (
           <List.Item>
             <Card

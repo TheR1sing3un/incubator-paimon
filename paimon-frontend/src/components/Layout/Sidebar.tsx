@@ -17,8 +17,8 @@
  */
 
 import { useState, useEffect, useMemo } from 'react';
-import { Layout, Menu, Spin, Empty } from 'antd';
-import { DatabaseOutlined, TableOutlined } from '@ant-design/icons';
+import { Layout, Menu, Spin, Empty, Input } from 'antd';
+import { DatabaseOutlined, TableOutlined, SearchOutlined } from '@ant-design/icons';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useQuery, useQueries } from '@tanstack/react-query';
 import { listDatabases } from '../../api/databases';
@@ -34,6 +34,7 @@ export default function Sidebar() {
   const location = useLocation();
   const { active } = useCatalog();
   const [openKeys, setOpenKeys] = useState<string[]>([]);
+  const [query, setQuery] = useState('');
 
   const { data: databases = [], isLoading } = useQuery({
     queryKey: ['databases', active?.name],
@@ -44,6 +45,7 @@ export default function Sidebar() {
   // Reset sidebar state when catalog changes
   useEffect(() => {
     setOpenKeys([]);
+    setQuery('');
   }, [active?.name]);
 
   // Auto-expand current database from URL
@@ -71,18 +73,64 @@ export default function Sidebar() {
     return result;
   }, [openKeys, tableQueries]);
 
-  const menuItems: ItemType[] = databases.map((db) => ({
-    key: db,
-    icon: <DatabaseOutlined />,
-    label: db,
-    children: dbTables[db]
-      ? dbTables[db].map((t) => ({
-          key: `${db}/${t}`,
-          icon: <TableOutlined />,
-          label: t,
-        }))
-      : [{ key: `${db}/__loading`, label: 'Loading...', disabled: true }],
-  }));
+  const trimmedQuery = query.trim().toLowerCase();
+  const isSearching = trimmedQuery.length > 0;
+
+  const { menuItems, searchMatchedDbs } = useMemo(() => {
+    const buildChildren = (db: string, tableFilter?: (t: string) => boolean) => {
+      const loaded = dbTables[db];
+      if (!loaded) {
+        return [{ key: `${db}/__loading`, label: 'Loading...', disabled: true }];
+      }
+      const tables = tableFilter ? loaded.filter(tableFilter) : loaded;
+      return tables.map((t) => ({
+        key: `${db}/${t}`,
+        icon: <TableOutlined />,
+        label: t,
+      }));
+    };
+
+    if (!isSearching) {
+      const items: ItemType[] = databases.map((db) => ({
+        key: db,
+        icon: <DatabaseOutlined />,
+        label: db,
+        children: buildChildren(db),
+      }));
+      return { menuItems: items, searchMatchedDbs: [] as string[] };
+    }
+
+    const matchedDbs: string[] = [];
+    const items: ItemType[] = [];
+    for (const db of databases) {
+      const dbHit = db.toLowerCase().includes(trimmedQuery);
+      const loaded = dbTables[db];
+      const tableHits = loaded
+        ? loaded.filter((t) => t.toLowerCase().includes(trimmedQuery))
+        : [];
+      const hasTableHit = tableHits.length > 0;
+
+      if (!dbHit && !hasTableHit) continue;
+
+      matchedDbs.push(db);
+      items.push({
+        key: db,
+        icon: <DatabaseOutlined />,
+        label: db,
+        // If db name matches, show all loaded tables; otherwise show only matching tables.
+        children: dbHit
+          ? buildChildren(db)
+          : buildChildren(db, (t) => t.toLowerCase().includes(trimmedQuery)),
+      });
+    }
+    return { menuItems: items, searchMatchedDbs: matchedDbs };
+  }, [databases, dbTables, isSearching, trimmedQuery]);
+
+  const effectiveOpenKeys = collapsed
+    ? []
+    : isSearching
+      ? searchMatchedDbs
+      : openKeys;
 
   const handleClick = (info: { key: string }) => {
     const key = info.key;
@@ -112,12 +160,19 @@ export default function Sidebar() {
         </div>
       );
     }
+    if (menuItems.length === 0) {
+      return (
+        <div style={{ padding: 24, textAlign: 'center' }}>
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No matches" />
+        </div>
+      );
+    }
     return (
       <Menu
         mode="inline"
         items={menuItems}
-        openKeys={collapsed ? [] : openKeys}
-        onOpenChange={setOpenKeys}
+        openKeys={effectiveOpenKeys}
+        onOpenChange={isSearching ? undefined : setOpenKeys}
         onClick={handleClick}
         style={{ borderRight: 0 }}
       />
@@ -145,6 +200,18 @@ export default function Sidebar() {
       >
         {collapsed ? 'P' : 'Paimon'}
       </div>
+      {!collapsed && active && (
+        <div style={{ padding: '0 12px 8px' }}>
+          <Input
+            allowClear
+            size="small"
+            placeholder="Search db / table"
+            prefix={<SearchOutlined />}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+      )}
       {renderContent()}
     </Sider>
   );
