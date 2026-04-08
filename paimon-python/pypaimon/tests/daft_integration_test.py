@@ -446,6 +446,85 @@ class DaftIntegrationTest(unittest.TestCase):
         df_out = read_paimon(dst_id, self.catalog_options)
         self.assertEqual(df_out.count_rows(), 2)
 
+    # ------------------------------------------------------------------ #
+    # Partial column write through Daft sink
+    # ------------------------------------------------------------------ #
+
+    def test_write_paimon_partial_column_pk_table(self):
+        """Daft DataFrame missing non-key columns should be auto-padded by
+        ``_align_schema`` (same behavior as the PyArrow / Ray paths).
+        """
+        from pypaimon.daft import read_paimon, write_paimon
+
+        pa_schema = pa.schema([
+            pa.field('pk', pa.int32(), nullable=False),
+            ('col_a', pa.int64()),
+            ('col_b', pa.string()),
+            ('col_c', pa.float64()),
+        ])
+        identifier = 'default.daft_partial_col_pk'
+        catalog = CatalogFactory.create(self.catalog_options)
+        schema = Schema.from_pyarrow_schema(
+            pa_schema,
+            primary_keys=['pk'],
+            options={
+                'merge-engine': 'versioned-partial-update',
+                'bucket': '1',
+            },
+        )
+        catalog.create_table(identifier, schema, False)
+
+        # Seed full row
+        df_full = daft.from_pydict({
+            'pk': [1, 2],
+            'col_a': [10, 20],
+            'col_b': ['x', 'y'],
+            'col_c': [1.5, 2.5],
+        })
+        write_paimon(df_full, identifier, self.catalog_options)
+
+        # Partial Daft write: only pk + col_a + col_c — col_b must be NULL-padded
+        # by the sink, not rejected.
+        df_partial = daft.from_pydict({
+            'pk': [1, 2],
+            'col_a': [100, 200],
+            'col_c': [10.5, 20.5],
+        })
+        write_paimon(df_partial, identifier, self.catalog_options)
+
+        result = read_paimon(identifier, self.catalog_options).to_pydict()
+        rows = sorted(zip(
+            result['pk'], result['col_a'], result['col_b'], result['col_c']))
+        self.assertEqual(rows, [
+            (1, 100, 'x', 10.5),
+            (2, 200, 'y', 20.5),
+        ])
+
+    def test_write_paimon_missing_primary_key_raises(self):
+        """Daft DataFrame missing the PK column must surface a ValueError
+        from ``_align_schema`` rather than corrupting the table.
+        """
+        from pypaimon.daft import write_paimon
+
+        pa_schema = pa.schema([
+            pa.field('pk', pa.int32(), nullable=False),
+            ('val', pa.string()),
+        ])
+        identifier = 'default.daft_partial_col_missing_pk'
+        catalog = CatalogFactory.create(self.catalog_options)
+        schema = Schema.from_pyarrow_schema(
+            pa_schema,
+            primary_keys=['pk'],
+            options={'bucket': '1'},
+        )
+        catalog.create_table(identifier, schema, False)
+
+        df_no_pk = daft.from_pydict({'val': ['a', 'b']})
+        with self.assertRaises(Exception) as ctx:
+            write_paimon(df_no_pk, identifier, self.catalog_options)
+        # Daft may wrap the worker exception, so match the inner message text.
+        self.assertIn("Primary key column 'pk'", str(ctx.exception))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -70,6 +70,15 @@ class PartialColumnWriteTest(unittest.TestCase):
         tw.close()
         tc.close()
 
+    def _write_pandas_and_commit(self, table, dataframe):
+        wb = table.new_batch_write_builder()
+        tw = wb.new_write()
+        tc = wb.new_commit()
+        tw.write_pandas(dataframe)
+        tc.commit(tw.prepare_commit())
+        tw.close()
+        tc.close()
+
     def _read_all(self, table):
         rb = table.new_read_builder()
         splits = rb.new_scan().plan().splits()
@@ -241,6 +250,85 @@ class PartialColumnWriteTest(unittest.TestCase):
         self.assertEqual(result.column('pk').to_pylist(), [1, 2])
         self.assertEqual(result.column('col_a').to_pylist(), [None, None])
         self.assertEqual(result.column('col_b').to_pylist(), [None, None])
+
+    # ------------------------------------------------------------------ #
+    # pandas write_pandas() partial-column path
+    # ------------------------------------------------------------------ #
+    def test_pandas_partial_column_pk_table(self):
+        """write_pandas: PK table accepts pandas DataFrame missing non-key columns."""
+        import pandas as pd
+
+        pa_schema = pa.schema([
+            ('pk', pa.int32()),
+            ('col_a', pa.int64()),
+            ('col_b', pa.string()),
+            ('col_c', pa.float64()),
+        ])
+        table = self._create_pk_table(pa_schema, primary_keys=['pk'])
+
+        # Seed full row
+        self._write_pandas_and_commit(table, pd.DataFrame({
+            'pk': pd.array([1, 2], dtype='int32'),
+            'col_a': pd.array([10, 20], dtype='int64'),
+            'col_b': ['x', 'y'],
+            'col_c': [1.5, 2.5],
+        }))
+
+        # Partial pandas write: only pk + col_a + col_c, col_b should be padded
+        self._write_pandas_and_commit(table, pd.DataFrame({
+            'pk': pd.array([1, 2], dtype='int32'),
+            'col_a': pd.array([100, 200], dtype='int64'),
+            'col_c': [10.5, 20.5],
+        }))
+
+        result = self._read_all(table).sort_by('pk')
+        self.assertEqual(result.column('pk').to_pylist(), [1, 2])
+        self.assertEqual(result.column('col_a').to_pylist(), [100, 200])
+        # versioned-partial-update keeps the prior non-null col_b
+        self.assertEqual(result.column('col_b').to_pylist(), ['x', 'y'])
+        self.assertEqual(result.column('col_c').to_pylist(), [10.5, 20.5])
+
+    def test_pandas_missing_primary_key_raises(self):
+        """write_pandas: missing primary key column raises ValueError from _align_schema."""
+        import pandas as pd
+
+        pa_schema = pa.schema([
+            ('pk', pa.int32()),
+            ('val', pa.string()),
+        ])
+        table = self._create_pk_table(pa_schema, primary_keys=['pk'])
+
+        wb = table.new_batch_write_builder()
+        tw = wb.new_write()
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                tw.write_pandas(pd.DataFrame({'val': ['a', 'b']}))
+            self.assertIn("Primary key column 'pk'", str(ctx.exception))
+        finally:
+            tw.close()
+
+    def test_pandas_append_only_missing_column_raises(self):
+        """write_pandas: append-only table still requires the full column set."""
+        import pandas as pd
+
+        pa_schema = pa.schema([
+            ('col_a', pa.int32()),
+            ('col_b', pa.string()),
+        ])
+        schema = Schema.from_pyarrow_schema(pa_schema)
+        table_name = self._unique_table_name()
+        self.catalog.create_table(table_name, schema, False)
+        table = self.catalog.get_table(table_name)
+
+        wb = table.new_batch_write_builder()
+        tw = wb.new_write()
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                tw.write_pandas(pd.DataFrame(
+                    {'col_a': pd.array([1, 2], dtype='int32')}))
+            self.assertIn('col_b', str(ctx.exception))
+        finally:
+            tw.close()
 
 
 if __name__ == '__main__':

@@ -59,8 +59,10 @@ class TableWrite:
             self.file_store_write.write(partition, bucket, sub_table)
 
     def write_pandas(self, dataframe):
-        pa_schema = PyarrowFieldParser.from_paimon_schema(self.table.table_schema.fields)
-        record_batch = pa.RecordBatch.from_pandas(dataframe, schema=pa_schema)
+        # Convert without forcing the full table schema so that pandas inputs
+        # missing some non-key columns can flow through ``_align_schema`` for
+        # null-padding (consistent with the PyArrow / Ray / Daft paths).
+        record_batch = pa.RecordBatch.from_pandas(dataframe, preserve_index=False)
         return self.write_arrow_batch(record_batch)
 
     def with_write_type(self, write_cols: List[str]):

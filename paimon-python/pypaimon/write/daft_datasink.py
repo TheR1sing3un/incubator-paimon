@@ -127,9 +127,6 @@ class PaimonDataSink(DataSink[List[Any]]):
         worker_write_builder = self._make_write_builder()
         table_write = worker_write_builder.new_write()
 
-        # Lazily compute which columns need type casting on the first batch.
-        cast_fields: Optional[List[tuple]] = None
-
         total_rows = 0
         total_bytes = 0
         try:
@@ -138,20 +135,10 @@ class PaimonDataSink(DataSink[List[Any]]):
                     batch = rb.to_arrow_record_batch()
                     if batch.num_rows == 0:
                         continue
-                    if cast_fields is None:
-                        cast_fields = [
-                            (i, field.type)
-                            for i, field in enumerate(self._target_schema)
-                            if i < batch.num_columns
-                            and batch.column(i).type != field.type
-                        ]
-                    if cast_fields:
-                        arrays = list(batch.columns)
-                        for i, target_type in cast_fields:
-                            arrays[i] = arrays[i].cast(target_type)
-                        batch = pa.RecordBatch.from_arrays(
-                            arrays, schema=self._target_schema
-                        )
+                    # ``write_arrow_batch`` invokes ``_align_schema`` which
+                    # handles column subset null-padding, type casting and
+                    # nullability fixes — keep the sink in lock-step with the
+                    # PyArrow / Ray paths instead of re-implementing it here.
                     table_write.write_arrow_batch(batch)
                     total_rows += batch.num_rows
                     total_bytes += batch.nbytes
