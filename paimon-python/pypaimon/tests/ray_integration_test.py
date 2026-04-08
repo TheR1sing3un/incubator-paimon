@@ -143,6 +143,45 @@ class RayIntegrationTest(unittest.TestCase):
         df = ds.to_pandas()
         self.assertEqual(set(df['category'].tolist()), {'A'})
 
+    def test_read_paimon_pk_filter_on_non_pk_column(self):
+        """Regression: PK table + filter on non-PK column.
+
+        Without the fix, this raised IndexError when projection narrowed
+        read_type, because Predicate.index was bound to the original
+        schema's column order.
+        """
+        from pypaimon.ray import read_paimon
+
+        pa_schema = pa.schema([
+            pa.field('id', pa.int32(), nullable=False),
+            ('name', pa.string()),
+            ('value', pa.int64()),
+        ])
+        identifier = self._create_and_populate_table(
+            'ray_pk_nonpk_filter', pa_schema,
+            {'id': [1, 2, 3], 'name': ['a', 'b', 'c'], 'value': [10, 20, 30]},
+            primary_keys=['id'],
+            options={'bucket': '2'},
+        )
+
+        catalog = CatalogFactory.create(self.catalog_options)
+        table = catalog.get_table(identifier)
+        pb = table.new_read_builder().new_predicate_builder()
+        pred = pb.equal('value', 30)
+
+        # Full read.
+        ds = read_paimon(identifier, self.catalog_options, filter=pred)
+        df = ds.to_pandas()
+        self.assertEqual(sorted(df['id'].tolist()), [3])
+
+        # Narrowed projection that still contains the predicate column.
+        ds2 = read_paimon(
+            identifier, self.catalog_options,
+            filter=pred, projection=['id', 'value'],
+        )
+        df2 = ds2.to_pandas()
+        self.assertEqual(sorted(df2['id'].tolist()), [3])
+
     def test_read_paimon_empty_table(self):
         """Test read_paimon() on a table with no data returns empty dataset."""
         from pypaimon.ray import read_paimon

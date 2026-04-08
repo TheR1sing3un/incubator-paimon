@@ -29,7 +29,7 @@ from pypaimon.globalindex import Range
 from pypaimon.manifest.schema.data_file_meta import DataFileMeta
 from pypaimon.read.interval_partition import IntervalPartition, SortedRun
 from pypaimon.read.partition_info import PartitionInfo
-from pypaimon.read.push_down_utils import trim_predicate_by_fields
+from pypaimon.read.push_down_utils import trim_predicate_by_fields, rewrite_predicate_indices
 from pypaimon.read.reader.concat_batch_reader import (ConcatBatchReader,
                                                       MergeAllBatchReader, DataEvolutionMergeReader)
 from pypaimon.read.reader.concat_record_reader import ConcatRecordReader
@@ -92,13 +92,25 @@ class SplitRead(ABC):
             self.read_fields = self._create_key_value_fields(read_type)
         self.schema_id_2_fields = {}
         self.deletion_file_readers = {}
-        # Only apply filter when all predicate columns are in read schema.
-        read_names = {f.name for f in self.read_fields}
-        self.predicate_for_reader = (
-            self.predicate
-            if self.predicate is not None and _get_all_fields(self.predicate).issubset(read_names)
-            else None
-        )
+        # Apply filter only when all predicate columns are read by this scan,
+        # AND remap predicate indices into the row layout the reader sees.
+        # Predicates carry an `index` baked in by PredicateBuilder against the
+        # original table schema; if `read_type` is narrower or reordered, that
+        # index no longer matches the OffsetRow handed to FilterRecordReader.
+        # We must use `read_type` here (not `self.read_fields`) because
+        # MergeFileSplitRead's `read_fields` is augmented with _KEY_*/_SEQ/_KIND
+        # prefixes, while KeyValueUnwrapRecordReader returns kv.value whose
+        # arity equals len(read_type) and whose coordinate space is read_type.
+        read_type_names = {f.name for f in read_type}
+        if (
+            self.predicate is not None
+            and _get_all_fields(self.predicate).issubset(read_type_names)
+        ):
+            self.predicate_for_reader = rewrite_predicate_indices(
+                self.predicate, read_type
+            )
+        else:
+            self.predicate_for_reader = None
 
     def _push_down_predicate(self) -> Optional[Predicate]:
         if self.predicate is None:

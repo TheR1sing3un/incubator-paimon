@@ -137,6 +137,65 @@ class DuckDBIntegrationTest(unittest.TestCase):
         self.assertEqual(list(df.columns), ['order_id', 'amount'])
         self.assertEqual(len(df), 5)
 
+    def test_register_pk_filter_on_non_pk_with_narrow_projection(self):
+        """Regression: PK table + filter on non-PK column + projection that
+        narrows / reorders read_type used to either silently drop the
+        filter or raise IndexError, depending on whether the predicate
+        column was inside the projection.
+        """
+        # PK table with id (PK) + name + value.
+        pa_schema = pa.schema([
+            pa.field('pk_id', pa.int32(), nullable=False),
+            ('label', pa.string()),
+            ('amount', pa.int64()),
+        ])
+        identifier = 'default.duckdb_pk_filter_proj'
+        catalog = CatalogFactory.create(self.catalog_options)
+        schema = Schema.from_pyarrow_schema(
+            pa_schema, primary_keys=['pk_id'], options={'bucket': '2'},
+        )
+        catalog.create_table(identifier, schema, False)
+        table = catalog.get_table(identifier)
+        self._write_data(
+            table, pa_schema,
+            {'pk_id': [1, 2, 3], 'label': ['a', 'b', 'c'], 'amount': [10, 20, 30]},
+        )
+
+        pb = table.new_read_builder().new_predicate_builder()
+        pred = pb.equal('amount', 30)
+
+        # Case 1: projection contains the predicate column but reorders /
+        # narrows read_type. Without the fix this raised IndexError.
+        # SQL has no WHERE clause so DuckDB cannot mask a missing
+        # paimon-side filter — wrong result would surface here.
+        con = register_paimon(
+            identifier, self.catalog_options,
+            filter=pred, projection=['pk_id', 'amount'],
+        )
+        try:
+            df = con.execute(
+                "SELECT pk_id FROM duckdb_pk_filter_proj"
+            ).fetchdf()
+            self.assertEqual(df['pk_id'].tolist(), [3])
+            self.assertEqual(len(df), 1)
+        finally:
+            con.close()
+
+        # Case 2: query_paimon with the same setup. Without WHERE clause
+        # in SQL, DuckDB cannot hide a silently dropped paimon-side filter.
+        con2 = query_paimon(
+            identifier, self.catalog_options,
+            "SELECT pk_id, amount FROM duckdb_pk_filter_proj ORDER BY pk_id",
+            filter=pred, projection=['pk_id', 'amount'],
+        )
+        try:
+            df2 = con2.fetchdf()
+            self.assertEqual(df2['pk_id'].tolist(), [3])
+            self.assertEqual(df2['amount'].tolist(), [30])
+            self.assertEqual(len(df2), 1)
+        finally:
+            con2.close()
+
     def test_table_name_default(self):
         con = register_paimon("default.orders", self.catalog_options)
         # Table should be registered as "orders" (last segment)

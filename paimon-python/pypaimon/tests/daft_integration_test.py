@@ -150,6 +150,50 @@ class DaftIntegrationTest(unittest.TestCase):
         result = df.to_pydict()
         self.assertEqual(set(result['category']), {'A'})
 
+    def test_read_paimon_pk_filter_on_non_pk_column(self):
+        """Regression: PK table + filter on non-PK column used to raise
+        IndexError because Predicate.index was bound to the original schema
+        but the row passed to FilterRecordReader uses read_type indices.
+        """
+        from pypaimon.daft import read_paimon
+
+        pa_schema = pa.schema([
+            pa.field('id', pa.int32(), nullable=False),
+            ('name', pa.string()),
+            ('value', pa.int64()),
+        ])
+        identifier = self._create_and_populate_table(
+            'daft_pk_nonpk_filter', pa_schema,
+            {'id': [1, 2, 3], 'name': ['a', 'b', 'c'], 'value': [10, 20, 30]},
+            primary_keys=['id'],
+            options={'bucket': '2'},
+        )
+
+        catalog = CatalogFactory.create(self.catalog_options)
+        table = catalog.get_table(identifier)
+        pb = table.new_read_builder().new_predicate_builder()
+        pred = pb.equal('value', 30)
+
+        # Full select — exercises the path where Daft asks for all columns.
+        df = read_paimon(identifier, self.catalog_options, filter=pred)
+        result = df.to_pydict()
+        self.assertEqual(result['id'], [3])
+        self.assertEqual(result['value'], [30])
+
+        # Narrowed select — Daft pushes columns=['id'], get_tasks expands
+        # scan_projection to ['id', 'value']. This is the exact case from
+        # the original bug report.
+        only_id = read_paimon(
+            identifier, self.catalog_options, filter=pred
+        ).select('id')
+        self.assertEqual(only_id.to_pydict()['id'], [3])
+
+        # count_rows pushes columns=[] — predicate must still apply.
+        n = read_paimon(
+            identifier, self.catalog_options, filter=pred
+        ).count_rows()
+        self.assertEqual(n, 1)
+
     def test_read_paimon_with_limit(self):
         from pypaimon.daft import read_paimon
 
