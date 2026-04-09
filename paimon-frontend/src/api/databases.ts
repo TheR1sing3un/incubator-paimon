@@ -25,8 +25,30 @@ import type {
 } from './types';
 
 export async function listDatabases(): Promise<string[]> {
-  const resp = await apiClient.get(`/${getCurrentPrefix()}/databases`);
-  return resp.data.databases ?? [];
+  const results: string[] = [];
+  let pageToken: string | undefined;
+  do {
+    const params: Record<string, string> = {};
+    if (pageToken) params.pageToken = pageToken;
+    const resp = await apiClient.get(`/${getCurrentPrefix()}/databases`, { params });
+    results.push(...(resp.data.databases ?? []));
+    pageToken = resp.data.nextPageToken;
+  } while (pageToken);
+  return results;
+}
+
+export async function listDatabasesPaged(
+  pageToken?: string,
+  databaseNamePattern?: string
+): Promise<{ databases: string[]; nextPageToken?: string }> {
+  const params: Record<string, string> = {};
+  if (pageToken) params.pageToken = pageToken;
+  if (databaseNamePattern) params.databaseNamePattern = databaseNamePattern;
+  const resp = await apiClient.get(`/${getCurrentPrefix()}/databases`, { params });
+  return {
+    databases: resp.data.databases ?? [],
+    nextPageToken: resp.data.nextPageToken,
+  };
 }
 
 export async function getDatabase(database: string): Promise<DatabaseInfo> {

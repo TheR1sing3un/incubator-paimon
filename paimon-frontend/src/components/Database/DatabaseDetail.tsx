@@ -16,16 +16,17 @@
  * limitations under the License.
  */
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Table, Typography, Descriptions, Card, Spin, Alert, Button, Space,
   Popconfirm, Modal, Form, Input, Select, message, Drawer, Checkbox,
 } from 'antd';
-import { TableOutlined, PlusOutlined, DeleteOutlined, EditOutlined, MinusCircleOutlined, SearchOutlined } from '@ant-design/icons';
+import { TableOutlined, PlusOutlined, DeleteOutlined, EditOutlined, MinusCircleOutlined, SearchOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getDatabase, dropDatabase, alterDatabase } from '../../api/databases';
-import { listTables, createTable, dropTable, renameTable } from '../../api/tables';
+import { listTablesPaged, createTable, dropTable, renameTable } from '../../api/tables';
+import { usePagedData } from '../../hooks/usePagedData';
 
 const { Title } = Typography;
 
@@ -39,13 +40,23 @@ export default function DatabaseDetail() {
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState('');
   const [tableQuery, setTableQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
 
   useEffect(() => {
     setTableQuery('');
+    setDebouncedQuery('');
   }, [db]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(tableQuery), 300);
+    return () => clearTimeout(timer);
+  }, [tableQuery]);
+
   const [propsForm] = Form.useForm();
   const [tableForm] = Form.useForm();
   const [renameForm] = Form.useForm();
+
+  const tableNamePattern = debouncedQuery.trim() ? `%${debouncedQuery.trim()}%` : undefined;
 
   const { data: dbInfo, isLoading: dbLoading, error: dbError } = useQuery({
     queryKey: ['database', db],
@@ -53,17 +64,16 @@ export default function DatabaseDetail() {
     enabled: !!db,
   });
 
-  const { data: tables = [], isLoading: tablesLoading } = useQuery({
-    queryKey: ['tables', db],
-    queryFn: () => listTables(db!),
-    enabled: !!db,
-  });
-
-  const filteredTables = useMemo(() => {
-    const q = tableQuery.trim().toLowerCase();
-    if (!q) return tables;
-    return tables.filter((t) => t.toLowerCase().includes(q));
-  }, [tables, tableQuery]);
+  const { data: tables, isLoading: tablesLoading, hasNext, hasPrev, pageIndex, goNext, goPrev, refetch: refetchTables } =
+    usePagedData<string>({
+      queryKey: ['tables', db!, tableNamePattern ?? ''],
+      fetcher: (pageToken) =>
+        listTablesPaged(db!, pageToken, tableNamePattern).then((r) => ({
+          data: r.tables,
+          nextPageToken: r.nextPageToken,
+        })),
+      enabled: !!db,
+    });
 
   const dropDbMutation = useMutation({
     mutationFn: () => dropDatabase(db!),
@@ -90,7 +100,8 @@ export default function DatabaseDetail() {
     mutationFn: createTable,
     onSuccess: () => {
       message.success('Table created');
-      queryClient.invalidateQueries({ queryKey: ['tables', db] });
+      refetchTables();
+      queryClient.invalidateQueries({ queryKey: ['databases'] });
       setCreateTableOpen(false);
       tableForm.resetFields();
     },
@@ -101,7 +112,7 @@ export default function DatabaseDetail() {
     mutationFn: (tableName: string) => dropTable(db!, tableName),
     onSuccess: () => {
       message.success('Table deleted');
-      queryClient.invalidateQueries({ queryKey: ['tables', db] });
+      refetchTables();
       queryClient.invalidateQueries({ queryKey: ['databases'] });
     },
     onError: (err: Error) => message.error(err.message || 'Failed to delete table'),
@@ -111,7 +122,7 @@ export default function DatabaseDetail() {
     mutationFn: renameTable,
     onSuccess: () => {
       message.success('Table renamed');
-      queryClient.invalidateQueries({ queryKey: ['tables'] });
+      refetchTables();
       queryClient.invalidateQueries({ queryKey: ['databases'] });
       setRenameOpen(false);
       renameForm.resetFields();
@@ -254,7 +265,7 @@ export default function DatabaseDetail() {
       </div>
       <Table
         loading={tablesLoading}
-        dataSource={filteredTables.map((t) => ({ name: t }))}
+        dataSource={tables.map((t) => ({ name: t }))}
         rowKey="name"
         columns={[
           {
@@ -288,6 +299,15 @@ export default function DatabaseDetail() {
         ]}
         pagination={false}
       />
+      <Space style={{ marginTop: 12 }}>
+        <Button icon={<LeftOutlined />} disabled={!hasPrev} onClick={goPrev}>
+          Prev
+        </Button>
+        <span>Page {pageIndex + 1}</span>
+        <Button icon={<RightOutlined />} disabled={!hasNext} onClick={goNext}>
+          Next
+        </Button>
+      </Space>
 
       {/* Edit Properties Modal */}
       <Modal

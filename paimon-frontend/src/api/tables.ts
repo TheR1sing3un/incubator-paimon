@@ -30,8 +30,37 @@ export function encodeBranchTable(table: string, branch?: string): string {
 }
 
 export async function listTables(database: string): Promise<string[]> {
-  const resp = await apiClient.get(`/${getCurrentPrefix()}/databases/${database}/tables`);
-  return resp.data.tables ?? [];
+  const results: string[] = [];
+  let pageToken: string | undefined;
+  do {
+    const params: Record<string, string> = {};
+    if (pageToken) params.pageToken = pageToken;
+    const resp = await apiClient.get(
+      `/${getCurrentPrefix()}/databases/${database}/tables`,
+      { params }
+    );
+    results.push(...(resp.data.tables ?? []));
+    pageToken = resp.data.nextPageToken;
+  } while (pageToken);
+  return results;
+}
+
+export async function listTablesPaged(
+  database: string,
+  pageToken?: string,
+  tableNamePattern?: string
+): Promise<{ tables: string[]; nextPageToken?: string }> {
+  const params: Record<string, string> = {};
+  if (pageToken) params.pageToken = pageToken;
+  if (tableNamePattern) params.tableNamePattern = tableNamePattern;
+  const resp = await apiClient.get(
+    `/${getCurrentPrefix()}/databases/${database}/tables`,
+    { params }
+  );
+  return {
+    tables: resp.data.tables ?? [],
+    nextPageToken: resp.data.nextPageToken,
+  };
 }
 
 export async function getTable(database: string, table: string, branch?: string): Promise<TableInfo> {

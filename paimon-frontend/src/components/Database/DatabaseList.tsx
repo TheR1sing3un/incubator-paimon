@@ -16,45 +16,53 @@
  * limitations under the License.
  */
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, List, Typography, Empty, Button, Modal, Form, Input, Space, message } from 'antd';
-import { DatabaseOutlined, PlusOutlined, MinusCircleOutlined, SearchOutlined } from '@ant-design/icons';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { DatabaseOutlined, PlusOutlined, MinusCircleOutlined, SearchOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons';
+import { useMutation } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { listDatabases, createDatabase } from '../../api/databases';
+import { listDatabasesPaged, createDatabase } from '../../api/databases';
 import { useCatalog } from '../../store/catalogStore';
+import { usePagedData } from '../../hooks/usePagedData';
 
 const { Title } = Typography;
 
 export default function DatabaseList() {
   const navigate = useNavigate();
   const { active } = useCatalog();
-  const queryClient = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
   const [form] = Form.useForm();
   const [dbQuery, setDbQuery] = useState('');
-
-  const { data: databases = [], isLoading } = useQuery({
-    queryKey: ['databases', active?.name],
-    queryFn: listDatabases,
-    enabled: !!active,
-  });
+  const [debouncedQuery, setDebouncedQuery] = useState('');
 
   useEffect(() => {
     setDbQuery('');
+    setDebouncedQuery('');
   }, [active?.name]);
 
-  const filteredDatabases = useMemo(() => {
-    const q = dbQuery.trim().toLowerCase();
-    if (!q) return databases;
-    return databases.filter((d) => d.toLowerCase().includes(q));
-  }, [databases, dbQuery]);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(dbQuery), 300);
+    return () => clearTimeout(timer);
+  }, [dbQuery]);
+
+  const databaseNamePattern = debouncedQuery.trim() ? `%${debouncedQuery.trim()}%` : undefined;
+
+  const { data: databases, isLoading, hasNext, hasPrev, pageIndex, goNext, goPrev, refetch: refetchDatabases } =
+    usePagedData<string>({
+      queryKey: ['databases', active?.name ?? '', databaseNamePattern ?? ''],
+      fetcher: (pageToken) =>
+        listDatabasesPaged(pageToken, databaseNamePattern).then((r) => ({
+          data: r.databases,
+          nextPageToken: r.nextPageToken,
+        })),
+      enabled: !!active,
+    });
 
   const createMutation = useMutation({
     mutationFn: createDatabase,
     onSuccess: () => {
       message.success('Database created successfully');
-      queryClient.invalidateQueries({ queryKey: ['databases'] });
+      refetchDatabases();
       setCreateOpen(false);
       form.resetFields();
     },
@@ -109,7 +117,7 @@ export default function DatabaseList() {
       <List
         grid={{ gutter: 16, xs: 1, sm: 2, md: 3, lg: 4, xl: 4 }}
         loading={isLoading}
-        dataSource={filteredDatabases}
+        dataSource={databases}
         renderItem={(db) => (
           <List.Item>
             <Card
@@ -123,6 +131,15 @@ export default function DatabaseList() {
           </List.Item>
         )}
       />
+      <Space style={{ marginTop: 12 }}>
+        <Button icon={<LeftOutlined />} disabled={!hasPrev} onClick={goPrev}>
+          Prev
+        </Button>
+        <span>Page {pageIndex + 1}</span>
+        <Button icon={<RightOutlined />} disabled={!hasNext} onClick={goNext}>
+          Next
+        </Button>
+      </Space>
 
       <Modal
         title="Create Database"
