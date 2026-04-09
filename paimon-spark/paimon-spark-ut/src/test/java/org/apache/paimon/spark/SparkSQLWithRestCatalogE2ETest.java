@@ -25,6 +25,7 @@ import org.apache.paimon.options.CatalogOptions;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.rest.server.RESTCatalogServer;
 import org.apache.paimon.rest.server.RESTCatalogServerOptions;
+import org.apache.paimon.rest.server.utils.PerfUtil;
 
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
@@ -72,6 +73,7 @@ public class SparkSQLWithRestCatalogE2ETest {
 
     @BeforeEach
     void setUp() throws Exception {
+        PerfUtil.setEnabled(false);
         Options options = new Options();
         options.setString(CatalogOptions.WAREHOUSE.key(), tempDir.toString());
         options.setString(RESTCatalogServerOptions.HOST.key(), "127.0.0.1");
@@ -123,6 +125,7 @@ public class SparkSQLWithRestCatalogE2ETest {
         if (restCatalogServer != null) {
             restCatalogServer.shutdown();
         }
+        PerfUtil.setEnabled(true);
     }
 
     // ------------------------------------------------------------------

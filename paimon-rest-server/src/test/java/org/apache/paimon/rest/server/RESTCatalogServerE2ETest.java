@@ -26,6 +26,7 @@ import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.fs.local.LocalFileIO;
 import org.apache.paimon.options.CatalogOptions;
 import org.apache.paimon.options.Options;
+import org.apache.paimon.rest.server.utils.PerfUtil;
 import org.apache.paimon.table.Table;
 import org.apache.paimon.table.sink.BatchTableCommit;
 import org.apache.paimon.table.sink.BatchTableWrite;
@@ -90,6 +91,7 @@ class RESTCatalogServerE2ETest {
 
     @BeforeAll
     static void setUp() throws Exception {
+        PerfUtil.setEnabled(false);
         // --- 1. Initialize H2 with production MySQL DDL ---
         jdbcUrl = "jdbc:h2:mem:e2e_test;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE";
 
@@ -189,6 +191,7 @@ class RESTCatalogServerE2ETest {
         if (metadataDs != null && !metadataDs.isClosed()) {
             metadataDs.close();
         }
+        PerfUtil.setEnabled(true);
     }
 
     // ====================================================================

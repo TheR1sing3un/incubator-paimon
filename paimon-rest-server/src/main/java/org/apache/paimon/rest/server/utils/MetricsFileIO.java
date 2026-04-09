@@ -92,7 +92,7 @@ public class MetricsFileIO implements FileIO {
             return new MetricsInputStream(stream);
         } catch (IOException e) {
             long duration = System.currentTimeMillis() - start;
-            reportError("open_input", duration);
+            reportError("open_input", duration, e);
             throw e;
         }
     }
@@ -107,7 +107,7 @@ public class MetricsFileIO implements FileIO {
             return new MetricsOutputStream(stream);
         } catch (IOException e) {
             long duration = System.currentTimeMillis() - start;
-            reportError("open_output", duration);
+            reportError("open_output", duration, e);
             throw e;
         }
     }
@@ -158,7 +158,7 @@ public class MetricsFileIO implements FileIO {
             return result;
         } catch (IOException e) {
             long duration = System.currentTimeMillis() - start;
-            reportError(opName, duration);
+            reportError(opName, duration, e);
             throw e;
         }
     }
@@ -174,16 +174,11 @@ public class MetricsFileIO implements FileIO {
         }
     }
 
-    private void reportError(String opName, long duration) {
-        safePerf(() -> PerfUtil.perfCount(opName, "", "hdfs_op_total"));
+    private void reportError(String opName, long duration, IOException e) {
+        reportSuccess(opName, duration);
         safePerf(() -> PerfUtil.perfCount(opName, "", "hdfs_op_error"));
-        safePerf(() -> PerfUtil.perfValue(opName, "hdfs_op_latency", duration));
-        if (duration >= SLOW_THRESHOLD_1S) {
-            safePerf(() -> PerfUtil.perfCount(opName, "", "hdfs_op_slow_1s"));
-        }
-        if (duration >= SLOW_THRESHOLD_5S) {
-            safePerf(() -> PerfUtil.perfCount(opName, "", "hdfs_op_slow_5s"));
-        }
+        String exceptionName = e.getClass().getSimpleName();
+        safePerf(() -> PerfUtil.perfCount(exceptionName, opName, "hdfs_op_exception"));
     }
 
     // --- stream wrappers ---

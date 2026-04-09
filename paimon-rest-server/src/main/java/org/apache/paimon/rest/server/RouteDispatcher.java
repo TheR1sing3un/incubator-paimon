@@ -21,6 +21,7 @@ package org.apache.paimon.rest.server;
 import org.apache.paimon.catalog.AbstractCatalog;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.DelegateCatalog;
+import org.apache.paimon.rest.responses.ErrorResponse;
 import org.apache.paimon.rest.server.auth.AuthContext;
 import org.apache.paimon.rest.server.handlers.BranchHandler;
 import org.apache.paimon.rest.server.handlers.ConfigHandler;
@@ -70,6 +71,7 @@ public class RouteDispatcher {
 
     private final Router router;
     @Nullable private final MetadataStore metadataStore;
+    private final ExceptionMapper exceptionMapper;
 
     /** Maps (HTTP method, pattern suffix) to operation type for audit logging. */
     private static final Map<String, String> OPERATION_TYPE_MAP = buildOperationTypeMap();
@@ -85,6 +87,7 @@ public class RouteDispatcher {
             @Nullable MetadataStore metadataStore) {
         this.router = new Router();
         this.metadataStore = metadataStore;
+        this.exceptionMapper = ExceptionMapper.buildDefault();
 
         List<RouteRegistrar> registrars = new ArrayList<>();
 
@@ -113,44 +116,62 @@ public class RouteDispatcher {
         }
     }
 
-    public RouteResult dispatch(AuthContext authContext, FullHttpRequest request) throws Exception {
+    public RouteResult dispatch(AuthContext authContext, FullHttpRequest request) {
         QueryStringDecoder decoder = new QueryStringDecoder(request.uri());
         String path = decoder.path();
         Map<String, String> params = flattenParams(decoder.parameters());
         String body = request.content().toString(StandardCharsets.UTF_8);
         String method = request.method().name();
+        String userId = authContext.userId();
+        long startTime = System.currentTimeMillis();
 
         Router.RouteMatch match = router.findMatch(method, path);
         if (match == null) {
+            long duration = System.currentTimeMillis() - startTime;
             LOG.warn("REST route not found: {} {} params={}", method, path, params);
-            safePerf(() -> PerfUtil.perfCount(path, "", "request_not_found"));
+            reportRequestMetrics(
+                    "NOT_FOUND", method, path, duration, 404, userId, body.length(), "unknown");
             return new RouteResult(404, null);
         }
 
         LOG.info("REST request: {} {} params={}", method, path, params);
-        long startTime = System.currentTimeMillis();
 
         boolean shouldAudit = metadataStore != null && isMutatingMethod(method);
 
         String routePattern = match.matchedPattern();
+        String targetId = buildTargetId(match.pathVariables(), body);
 
         RouteResult result;
         try {
             result = match.handler().handle(authContext, match.pathVariables(), params, body);
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - startTime;
+            int statusCode = resolveStatusCode(e);
             LOG.warn(
-                    "REST error: {} {} exception={} message={} duration={}ms",
+                    "REST error: {} {} status={} exception={} message={} duration={}ms",
                     method,
                     path,
+                    statusCode,
                     e.getClass().getSimpleName(),
                     e.getMessage(),
                     duration);
-            reportRequestMetrics(routePattern, method, path, duration, true);
+            reportRequestMetrics(
+                    routePattern,
+                    method,
+                    path,
+                    duration,
+                    statusCode,
+                    userId,
+                    body.length(),
+                    targetId);
+            String exceptionName = unwrapException(e).getClass().getSimpleName();
+            String routeKey = method + ":" + routePattern;
+            String exceptionExtra = userId + "@" + routeKey;
+            safePerf(() -> PerfUtil.perfCount(exceptionName, exceptionExtra, "request_exception"));
             if (shouldAudit) {
                 auditLog(authContext, match, body, "FAILED", truncateMessage(e.getMessage()));
             }
-            throw e;
+            return buildErrorResult(e, statusCode);
         }
 
         long duration = System.currentTimeMillis() - startTime;
@@ -160,7 +181,15 @@ public class RouteDispatcher {
                 path,
                 result.status(),
                 duration);
-        reportRequestMetrics(routePattern, method, path, duration, result.status() >= 400);
+        reportRequestMetrics(
+                routePattern,
+                method,
+                path,
+                duration,
+                result.status(),
+                userId,
+                body.length(),
+                targetId);
 
         if (shouldAudit) {
             if (result.status() < 400) {
@@ -174,20 +203,61 @@ public class RouteDispatcher {
     }
 
     private static void reportRequestMetrics(
-            String routePattern, String method, String path, long durationMs, boolean isError) {
+            String routePattern,
+            String method,
+            String path,
+            long durationMs,
+            int statusCode,
+            String userId,
+            int bodyLength,
+            String targetId) {
         String subtag = method + ":" + routePattern;
-        safePerf(() -> PerfUtil.perfCount(subtag, "", "request_total"));
-        safePerf(() -> PerfUtil.perfValue(subtag, "request_latency", durationMs));
-        if (isError) {
-            safePerf(() -> PerfUtil.perfCount(subtag, "", "request_error"));
-            safePerf(() -> PerfUtil.perfCount(path, "", "request_error_detail"));
+        safePerf(() -> PerfUtil.perfValue(subtag, userId, "request_latency", durationMs));
+        safePerf(() -> PerfUtil.perfValue(subtag, userId, "request_body_size", bodyLength));
+        String statusKey = "request_" + statusCode;
+        safePerf(() -> PerfUtil.perfCount(subtag, userId, statusKey));
+        if (statusCode >= 400) {
+            String errorExtra = userId + "@" + targetId;
+            safePerf(() -> PerfUtil.perfCount(path, errorExtra, "request_error_detail"));
         }
         if (durationMs > 1000) {
-            safePerf(() -> PerfUtil.perfCount(subtag, "", "request_slow_1s"));
+            safePerf(() -> PerfUtil.perfCount(subtag, userId, "request_slow_1s"));
         }
         if (durationMs > 5000) {
-            safePerf(() -> PerfUtil.perfCount(subtag, "", "request_slow_5s"));
+            safePerf(() -> PerfUtil.perfCount(subtag, userId, "request_slow_5s"));
         }
+    }
+
+    private int resolveStatusCode(Exception e) {
+        ExceptionMapper.ErrorInfo info = mapException(e);
+        return info != null ? info.statusCode : 500;
+    }
+
+    private RouteResult buildErrorResult(Exception e, int statusCode) {
+        Throwable actual = unwrapException(e);
+        ExceptionMapper.ErrorInfo info = mapException(e);
+        String resourceType = info != null ? info.resourceType : null;
+        String resourceName = info != null ? info.resourceName : null;
+        return new RouteResult(
+                statusCode,
+                new ErrorResponse(resourceType, resourceName, actual.getMessage(), statusCode));
+    }
+
+    @Nullable
+    private ExceptionMapper.ErrorInfo mapException(Exception e) {
+        Throwable actual = unwrapException(e);
+        if (actual instanceof Exception) {
+            return exceptionMapper.map((Exception) actual);
+        }
+        return null;
+    }
+
+    private static Throwable unwrapException(Exception e) {
+        if (!(e instanceof IllegalArgumentException)
+                && e.getCause() instanceof IllegalArgumentException) {
+            return e.getCause();
+        }
+        return e;
     }
 
     private static boolean isMutatingMethod(String method) {

@@ -24,32 +24,15 @@ import org.apache.paimon.shade.netty4.io.netty.channel.ChannelHandler;
 import org.apache.paimon.shade.netty4.io.netty.channel.ChannelHandlerContext;
 import org.apache.paimon.shade.netty4.io.netty.channel.ChannelInboundHandlerAdapter;
 
-import java.util.concurrent.atomic.AtomicLong;
-
 import static org.apache.paimon.rest.server.utils.MetricsHelper.safePerf;
 
-/** Tracks active Netty connections and reports metrics via PerfUtil. */
+/** Tracks Netty connection events and reports metrics via PerfUtil. */
 @ChannelHandler.Sharable
 public class ConnectionMetricsHandler extends ChannelInboundHandlerAdapter {
 
-    private final AtomicLong activeConnections = new AtomicLong(0);
-
     @Override
     public void channelActive(ChannelHandlerContext ctx) throws Exception {
-        long current = activeConnections.incrementAndGet();
         safePerf(() -> PerfUtil.perfCount("netty_connection_total"));
-        safePerf(() -> PerfUtil.perfValue("netty_connection_active", current));
         super.channelActive(ctx);
-    }
-
-    @Override
-    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
-        long current = activeConnections.decrementAndGet();
-        safePerf(() -> PerfUtil.perfValue("netty_connection_active", current));
-        super.channelInactive(ctx);
-    }
-
-    public long getActiveConnections() {
-        return activeConnections.get();
     }
 }

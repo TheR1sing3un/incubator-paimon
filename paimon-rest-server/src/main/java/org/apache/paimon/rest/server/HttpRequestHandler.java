@@ -22,7 +22,6 @@ import org.apache.paimon.rest.RESTResponse;
 import org.apache.paimon.rest.responses.ErrorResponse;
 import org.apache.paimon.rest.server.auth.AuthChannelHandler;
 import org.apache.paimon.rest.server.auth.AuthContext;
-import org.apache.paimon.rest.server.utils.PerfUtil;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
 import org.apache.paimon.shade.netty4.io.netty.buffer.Unpooled;
@@ -45,8 +44,6 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
-
-import static org.apache.paimon.rest.server.utils.MetricsHelper.safePerf;
 
 /** Netty handler that processes HTTP requests and routes them to the appropriate handler. */
 @ChannelHandler.Sharable
@@ -74,7 +71,6 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
     }
 
     private final RouteDispatcher dispatcher;
-    private final ExceptionMapper exceptionMapper;
     private final boolean frontendEnabled;
 
     public HttpRequestHandler(RouteDispatcher dispatcher) {
@@ -83,7 +79,6 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
 
     public HttpRequestHandler(RouteDispatcher dispatcher, boolean frontendEnabled) {
         this.dispatcher = dispatcher;
-        this.exceptionMapper = ExceptionMapper.buildDefault();
         this.frontendEnabled = frontendEnabled;
     }
 
@@ -106,28 +101,13 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
         handleApiRequest(ctx, request);
     }
 
-    private static final int MAX_ERROR_BODY_LENGTH = 2048;
-
     private void handleApiRequest(ChannelHandlerContext ctx, FullHttpRequest request) {
-        String path = request.uri().split("\\?")[0];
-        String body = request.content().toString(StandardCharsets.UTF_8);
-        safePerf(() -> PerfUtil.perfValue("request_body_size", body.length()));
-        try {
-            AuthContext authContext = ctx.channel().attr(AuthChannelHandler.AUTH_CONTEXT_KEY).get();
-            if (authContext == null) {
-                authContext = AuthContext.ANONYMOUS;
-            }
-            RouteResult result = dispatcher.dispatch(authContext, request);
-            sendResponse(ctx, result.status(), result.response());
-        } catch (Exception e) {
-            safePerf(() -> PerfUtil.perfCount(path, "", "request_error_detail"));
-            String truncatedBody =
-                    body.length() > MAX_ERROR_BODY_LENGTH
-                            ? body.substring(0, MAX_ERROR_BODY_LENGTH) + "..."
-                            : body;
-            LOG.error("Request failed: path={}, body={}", path, truncatedBody, e);
-            handleException(ctx, e);
+        AuthContext authContext = ctx.channel().attr(AuthChannelHandler.AUTH_CONTEXT_KEY).get();
+        if (authContext == null) {
+            authContext = AuthContext.ANONYMOUS;
         }
+        RouteResult result = dispatcher.dispatch(authContext, request);
+        sendResponse(ctx, result.status(), result.response());
     }
 
     private void handleStaticRequest(ChannelHandlerContext ctx, String uri) {
@@ -217,30 +197,6 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
             }
         }
         return "application/octet-stream";
-    }
-
-    private void handleException(ChannelHandlerContext ctx, Exception e) {
-        // Unwrap wrapped IllegalArgumentException
-        Throwable actual = e;
-        if (!(e instanceof IllegalArgumentException)
-                && e.getCause() instanceof IllegalArgumentException) {
-            actual = e.getCause();
-        }
-
-        ExceptionMapper.ErrorInfo info =
-                actual instanceof Exception ? exceptionMapper.map((Exception) actual) : null;
-
-        if (info != null) {
-            sendError(
-                    ctx,
-                    info.statusCode,
-                    info.resourceType,
-                    info.resourceName,
-                    actual.getMessage());
-        } else {
-            LOG.error("Unexpected error processing request", e);
-            sendError(ctx, 500, null, null, e.getMessage());
-        }
     }
 
     @Override

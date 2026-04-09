@@ -26,6 +26,7 @@ import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.fs.local.LocalFileIO;
 import org.apache.paimon.options.CatalogOptions;
 import org.apache.paimon.options.Options;
+import org.apache.paimon.rest.server.utils.PerfUtil;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.table.Table;
 import org.apache.paimon.table.sink.BatchTableCommit;
@@ -73,6 +74,7 @@ class RESTCatalogServerWithMetadataIT {
 
     @BeforeAll
     static void setUp() throws Exception {
+        PerfUtil.setEnabled(false);
         // Create metadata tables in H2
         HikariConfig hikariConfig = new HikariConfig();
         hikariConfig.setJdbcUrl(JDBC_URL);
@@ -131,6 +133,7 @@ class RESTCatalogServerWithMetadataIT {
         if (metadataDs != null && !metadataDs.isClosed()) {
             metadataDs.close();
         }
+        PerfUtil.setEnabled(true);
     }
 
     @Test

@@ -65,19 +65,12 @@ public class MetricsHelper {
      */
     public static void wrapCatalogOpVoid(String opName, RunnableWithException runnable)
             throws Exception {
-        long start = System.currentTimeMillis();
-        try {
-            runnable.run();
-            long duration = System.currentTimeMillis() - start;
-            safePerf(() -> PerfUtil.perfCount(opName, "", "catalog_op_total"));
-            safePerf(() -> PerfUtil.perfValue(opName, "catalog_op_latency", duration));
-        } catch (Exception e) {
-            long duration = System.currentTimeMillis() - start;
-            safePerf(() -> PerfUtil.perfCount(opName, "", "catalog_op_total"));
-            safePerf(() -> PerfUtil.perfCount(opName, "", "catalog_op_error"));
-            safePerf(() -> PerfUtil.perfValue(opName, "catalog_op_latency", duration));
-            throw e;
-        }
+        wrapCatalogOp(
+                opName,
+                () -> {
+                    runnable.run();
+                    return null;
+                });
     }
 
     /** Functional interface for void operations that may throw checked exceptions. */

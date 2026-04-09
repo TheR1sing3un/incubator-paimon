@@ -30,25 +30,57 @@ public class PerfUtil implements Serializable {
 
     protected static final String NAME_SPACE = "paimon.rest.catalog";
 
+    private static volatile boolean enabled = true;
+
     public PerfUtil() {}
 
+    public static void setEnabled(boolean enabled) {
+        PerfUtil.enabled = enabled;
+    }
+
+    public static boolean isEnabled() {
+        return enabled;
+    }
+
     public static void perfCount(String key, long value) {
+        if (!enabled) {
+            return;
+        }
         PerfUtils.perf(NAME_SPACE, key).count(value).logstash();
     }
 
     public static void perfCount(String subtag, String table, String key) {
+        if (!enabled) {
+            return;
+        }
         PerfUtils.perf(NAME_SPACE, subtag, table, key).logstash();
     }
 
     public static void perfCount(String key) {
+        if (!enabled) {
+            return;
+        }
         PerfUtils.perf(NAME_SPACE, key).logstash();
     }
 
     public static void perfValue(String key, long value) {
+        if (!enabled) {
+            return;
+        }
         PerfUtils.perf(NAME_SPACE, key).value(value).logstash();
     }
 
     public static void perfValue(String subtag, String key, long value) {
+        if (!enabled) {
+            return;
+        }
         PerfUtils.perf(NAME_SPACE, subtag, key).value(value).logstash();
+    }
+
+    public static void perfValue(String subtag, String table, String key, long value) {
+        if (!enabled) {
+            return;
+        }
+        PerfUtils.perf(NAME_SPACE, subtag, table, key).value(value).logstash();
     }
 }

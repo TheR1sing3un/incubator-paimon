@@ -81,14 +81,12 @@ public class AuthChannelHandler extends SimpleChannelInboundHandler<FullHttpRequ
         try {
             AuthContext authContext = authenticator.authenticate(token);
             long authDuration = System.currentTimeMillis() - authStart;
-            safePerf(() -> PerfUtil.perfCount("auth_total"));
             safePerf(() -> PerfUtil.perfCount("auth_success"));
             safePerf(() -> PerfUtil.perfValue("auth_latency", authDuration));
             ctx.channel().attr(AUTH_CONTEXT_KEY).set(authContext);
             ctx.fireChannelRead(request);
         } catch (AuthenticationException e) {
             long authDuration = System.currentTimeMillis() - authStart;
-            safePerf(() -> PerfUtil.perfCount("auth_total"));
             safePerf(() -> PerfUtil.perfCount("auth_failure"));
             safePerf(() -> PerfUtil.perfCount(uri, "", "auth_failure_detail"));
             safePerf(() -> PerfUtil.perfValue("auth_latency", authDuration));

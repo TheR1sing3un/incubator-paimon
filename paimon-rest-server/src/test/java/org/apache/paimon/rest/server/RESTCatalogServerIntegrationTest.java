@@ -34,6 +34,7 @@ import org.apache.paimon.rest.responses.ListFunctionsResponse;
 import org.apache.paimon.rest.responses.ListPartitionsResponse;
 import org.apache.paimon.rest.responses.ListTablesResponse;
 import org.apache.paimon.rest.server.metadata.handlers.SchemaHandler;
+import org.apache.paimon.rest.server.utils.PerfUtil;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.table.Table;
 import org.apache.paimon.table.sink.BatchTableCommit;
@@ -73,6 +74,7 @@ class RESTCatalogServerIntegrationTest {
 
     @BeforeAll
     static void setUp() throws Exception {
+        PerfUtil.setEnabled(false);
         Options options = new Options();
         options.setString(CatalogOptions.WAREHOUSE.key(), tempDir.toString());
         options.setString(RESTCatalogServerOptions.HOST.key(), "127.0.0.1");
@@ -94,6 +96,7 @@ class RESTCatalogServerIntegrationTest {
         if (server != null) {
             server.shutdown();
         }
+        PerfUtil.setEnabled(true);
     }
 
     @Test
