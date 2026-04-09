@@ -353,14 +353,6 @@ under the License.
             <version>8.0.28</version>
         </dependency>
 
-        <!-- Frontend UI -->
-        <dependency>
-            <groupId>org.apache.paimon</groupId>
-            <artifactId>paimon-frontend</artifactId>
-            <version>${project.version}</version>
-            <scope>provided</scope>
-        </dependency>
-
         <!-- Test dependencies -->
         <dependency>
             <groupId>com.h2database</groupId>

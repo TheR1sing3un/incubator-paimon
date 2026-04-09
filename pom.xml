@@ -87,7 +87,6 @@ under the License.
         <module>tools/ci/paimon-ci-tools</module>
         <module>paimon-api</module>
         <module>paimon-rest-server</module>
-        <module>paimon-frontend</module>
         <module>paimon-lumina</module>
         <module>paimon-lucene</module>
     </modules>
@@ -312,6 +311,12 @@ under the License.
     </dependencyManagement>
 
     <profiles>
+        <profile>
+            <id>build-frontend</id>
+            <modules>
+                <module>paimon-frontend</module>
+            </modules>
+        </profile>
         <!--
           We're reusing the apache-release build profile defined in the Apache Parent POM,
           with one exclusion: do not run the source-release-assembly execution goal.

@@ -113,7 +113,7 @@ public class RESTCatalogServerOptions {
     public static final ConfigOption<Boolean> FRONTEND_ENABLED =
             ConfigOptions.key("rest-server.frontend.enabled")
                     .booleanType()
-                    .defaultValue(true)
+                    .defaultValue(false)
                     .withDescription(
                             "Whether to serve the frontend Web UI from classpath static resources.");
 
