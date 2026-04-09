@@ -148,6 +148,14 @@ under the License.
             <version>${slf4j.version}</version>
             <scope>test</scope>
         </dependency>
+
+      <!-- Dataset catalog module -->
+      <dependency>
+        <groupId>org.apache.paimon</groupId>
+        <artifactId>paimon-spark-dataset_${scala.binary.version}</artifactId>
+        <version>${project.version}</version>
+        <scope>test</scope>
+      </dependency>
     </dependencies>
 
     <build>

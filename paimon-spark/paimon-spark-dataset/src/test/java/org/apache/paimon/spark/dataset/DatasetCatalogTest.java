@@ -1,0 +1,371 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.paimon.spark.dataset;
+
+import org.apache.paimon.CoreOptions;
+import org.apache.paimon.catalog.Catalog;
+import org.apache.paimon.spark.SparkTable;
+import org.apache.paimon.spark.dataset.model.DatasetInfo;
+import org.apache.paimon.spark.dataset.model.NamespaceInfo;
+import org.apache.paimon.table.Table;
+import org.apache.paimon.types.DataTypes;
+import org.apache.paimon.types.RowType;
+
+import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.catalyst.analysis.NoSuchNamespaceException;
+import org.apache.spark.sql.catalyst.analysis.NoSuchTableException;
+import org.apache.spark.sql.connector.catalog.Identifier;
+import org.apache.spark.sql.connector.expressions.Transform;
+import org.apache.spark.sql.types.StructType;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Map;
+import java.util.Optional;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+/**
+ * Tests for {@link DatasetCatalog}.
+ *
+ * <p>Uses Mockito to mock the Paimon Catalog and DatasetRestClient, with a minimal SparkSession for
+ * SQLConf support.
+ */
+class DatasetCatalogTest {
+
+    private static SparkSession spark;
+
+    private Catalog mockPaimonCatalog;
+    private DatasetRestClient mockRestClient;
+    private DatasetCatalog catalog;
+
+    @BeforeAll
+    static void startSpark() {
+        spark = SparkSession.builder().master("local[2]").getOrCreate();
+    }
+
+    @AfterAll
+    static void stopSpark() {
+        if (spark != null) {
+            spark.stop();
+            spark = null;
+        }
+    }
+
+    @BeforeEach
+    void setUp() {
+        mockPaimonCatalog = mock(Catalog.class);
+        mockRestClient = mock(DatasetRestClient.class);
+        catalog = new DatasetCatalog("", mockPaimonCatalog, mockRestClient, "default");
+    }
+
+    // ======================== loadTable — basic read ========================
+
+    @Test
+    void loadTableResolvesLogicalNameToPhysicalTable() throws Exception {
+        // dataset-catalog returns: my_dataset → paimon_db.physical_table
+        when(mockRestClient.getDatasetByName("ns", "my_dataset"))
+                .thenReturn(new DatasetInfo("my_dataset", "paimon_db", "physical_table"));
+
+        Table mockTable = createMockTable();
+        org.apache.paimon.catalog.Identifier expectedId =
+                org.apache.paimon.catalog.Identifier.create("paimon_db", "physical_table");
+        when(mockPaimonCatalog.getTable(expectedId)).thenReturn(mockTable);
+
+        org.apache.spark.sql.connector.catalog.Table result =
+                catalog.loadTable(Identifier.of(new String[] {"ns"}, "my_dataset"));
+
+        assertThat(result).isInstanceOf(SparkTable.class);
+        verify(mockPaimonCatalog).getTable(expectedId);
+    }
+
+    @Test
+    void loadTableNotFoundThrowsNoSuchTableException() throws Exception {
+        when(mockRestClient.getDatasetByName("ns", "missing"))
+                .thenReturn(new DatasetInfo("missing", "db", "not_exist"));
+
+        when(mockPaimonCatalog.getTable(any()))
+                .thenThrow(
+                        new Catalog.TableNotExistException(
+                                org.apache.paimon.catalog.Identifier.create("db", "not_exist")));
+
+        assertThatThrownBy(() -> catalog.loadTable(Identifier.of(new String[] {"ns"}, "missing")))
+                .isInstanceOf(NoSuchTableException.class);
+    }
+
+    @Test
+    void loadTableRestErrorPropagatesAsRuntimeException() throws Exception {
+        when(mockRestClient.getDatasetByName("ns", "ds"))
+                .thenThrow(new RuntimeException("Connection refused"));
+
+        assertThatThrownBy(() -> catalog.loadTable(Identifier.of(new String[] {"ns"}, "ds")))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Connection refused");
+    }
+
+    // ======================== loadTable — suffix ($branch_xxx, $snapshots)
+    // ========================
+
+    @Test
+    void loadTableWithBranchConstructsCorrectPaimonIdentifier() throws Exception {
+        when(mockRestClient.getDatasetByName("ns", "my_dataset"))
+                .thenReturn(new DatasetInfo("my_dataset", "db", "tbl"));
+
+        Table mockTable = createMockTable();
+        // User writes: my_dataset$branch_feature → suffix "branch_feature" passed through as-is
+        org.apache.paimon.catalog.Identifier expectedId =
+                org.apache.paimon.catalog.Identifier.create("db", "tbl$branch_feature");
+        when(mockPaimonCatalog.getTable(expectedId)).thenReturn(mockTable);
+
+        org.apache.spark.sql.connector.catalog.Table result =
+                catalog.loadTable(Identifier.of(new String[] {"ns"}, "my_dataset$branch_feature"));
+
+        assertThat(result).isInstanceOf(SparkTable.class);
+        verify(mockPaimonCatalog).getTable(expectedId);
+    }
+
+    @Test
+    void loadTableWithBranchNotFoundThrows() throws Exception {
+        when(mockRestClient.getDatasetByName("ns", "ds"))
+                .thenReturn(new DatasetInfo("ds", "db", "tbl"));
+
+        when(mockPaimonCatalog.getTable(
+                        org.apache.paimon.catalog.Identifier.create("db", "tbl$branch_nonexist")))
+                .thenThrow(
+                        new Catalog.TableNotExistException(
+                                org.apache.paimon.catalog.Identifier.create(
+                                        "db", "tbl$branch_nonexist")));
+
+        assertThatThrownBy(
+                        () ->
+                                catalog.loadTable(
+                                        Identifier.of(new String[] {"ns"}, "ds$branch_nonexist")))
+                .isInstanceOf(NoSuchTableException.class);
+    }
+
+    // ======================== loadTable — time travel (version) ========================
+
+    @Test
+    void loadTableWithVersionPassesScanOption() throws Exception {
+        when(mockRestClient.getDatasetByName("ns", "ds"))
+                .thenReturn(new DatasetInfo("ds", "db", "tbl"));
+
+        Table mockTable = createMockTable();
+        when(mockPaimonCatalog.getTable(any())).thenReturn(mockTable);
+
+        SparkTable result = catalog.loadTable(Identifier.of(new String[] {"ns"}, "ds"), "42");
+
+        assertThat(result).isNotNull();
+        // Verify that copy was called with version option
+        verify(mockTable).copy(argMapContaining(CoreOptions.SCAN_VERSION.key(), "42"));
+    }
+
+    // ======================== loadTable — time travel (timestamp) ========================
+
+    @Test
+    void loadTableWithTimestampConvertsMicroToMilli() throws Exception {
+        when(mockRestClient.getDatasetByName("ns", "ds"))
+                .thenReturn(new DatasetInfo("ds", "db", "tbl"));
+
+        Table mockTable = createMockTable();
+        when(mockPaimonCatalog.getTable(any())).thenReturn(mockTable);
+
+        // Spark passes microseconds: 1_700_000_000_000_000 μs = 1_700_000_000_000 ms
+        long timestampMicros = 1_700_000_000_000_000L;
+        SparkTable result =
+                catalog.loadTable(Identifier.of(new String[] {"ns"}, "ds"), timestampMicros);
+
+        assertThat(result).isNotNull();
+        // Should be converted to milliseconds
+        verify(mockTable)
+                .copy(
+                        argMapContaining(
+                                CoreOptions.SCAN_TIMESTAMP_MILLIS.key(),
+                                String.valueOf(timestampMicros / 1000)));
+    }
+
+    // ======================== listTables ========================
+
+    @Test
+    void listTablesDelegatesToRestClient() throws Exception {
+        when(mockRestClient.listDatasets("ns"))
+                .thenReturn(
+                        Arrays.asList(
+                                new DatasetInfo("ds1", "db", "t1"),
+                                new DatasetInfo("ds2", "db", "t2")));
+
+        Identifier[] result = catalog.listTables(new String[] {"ns"});
+
+        assertThat(result).hasSize(2);
+        assertThat(result[0].name()).isEqualTo("ds1");
+        assertThat(result[1].name()).isEqualTo("ds2");
+        assertThat(result[0].namespace()).isEqualTo(new String[] {"ns"});
+    }
+
+    @Test
+    void listTablesEmptyNamespaceThrows() {
+        assertThatThrownBy(() -> catalog.listTables(new String[] {}))
+                .isInstanceOf(NoSuchNamespaceException.class);
+    }
+
+    // ======================== namespace operations ========================
+
+    @Test
+    void listNamespaces() {
+        when(mockRestClient.listNamespaces())
+                .thenReturn(Arrays.asList(new NamespaceInfo("ns1"), new NamespaceInfo("ns2")));
+
+        String[][] result = catalog.listNamespaces();
+
+        assertThat(result.length).isEqualTo(2);
+        assertThat(result[0]).isEqualTo(new String[] {"ns1"});
+        assertThat(result[1]).isEqualTo(new String[] {"ns2"});
+    }
+
+    @Test
+    void namespaceExistsDelegatesToClient() {
+        when(mockRestClient.namespaceExists("ns")).thenReturn(true);
+        when(mockRestClient.namespaceExists("missing")).thenReturn(false);
+
+        assertThat(catalog.namespaceExists(new String[] {"ns"})).isTrue();
+        assertThat(catalog.namespaceExists(new String[] {"missing"})).isFalse();
+        assertThat(catalog.namespaceExists(new String[] {})).isFalse();
+        assertThat(catalog.namespaceExists(null)).isFalse();
+    }
+
+    @Test
+    void tableExistsDelegatesToClient() {
+        when(mockRestClient.datasetExists("ns", "ds")).thenReturn(true);
+        when(mockRestClient.datasetExists("ns", "missing")).thenReturn(false);
+
+        assertThat(catalog.tableExists(Identifier.of(new String[] {"ns"}, "ds"))).isTrue();
+        assertThat(catalog.tableExists(Identifier.of(new String[] {"ns"}, "missing"))).isFalse();
+    }
+
+    @Test
+    void defaultNamespace() {
+        assertThat(catalog.defaultNamespace()).isEqualTo(new String[] {"default"});
+    }
+
+    // ======================== read-only operations ========================
+
+    @Test
+    void createTableThrowsUnsupported() {
+        assertThatThrownBy(
+                        () ->
+                                catalog.createTable(
+                                        Identifier.of(new String[] {"ns"}, "t"),
+                                        new StructType(),
+                                        new Transform[] {},
+                                        Collections.emptyMap()))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void dropTableThrowsUnsupported() {
+        assertThatThrownBy(() -> catalog.dropTable(Identifier.of(new String[] {"ns"}, "t")))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void alterTableThrowsUnsupported() {
+        assertThatThrownBy(() -> catalog.alterTable(Identifier.of(new String[] {"ns"}, "t")))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void renameTableThrowsUnsupported() {
+        assertThatThrownBy(
+                        () ->
+                                catalog.renameTable(
+                                        Identifier.of(new String[] {"ns"}, "a"),
+                                        Identifier.of(new String[] {"ns"}, "b")))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void createNamespaceThrowsUnsupported() {
+        assertThatThrownBy(
+                        () -> catalog.createNamespace(new String[] {"ns"}, Collections.emptyMap()))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void alterNamespaceThrowsUnsupported() {
+        assertThatThrownBy(() -> catalog.alterNamespace(new String[] {"ns"}))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void dropNamespaceThrowsUnsupported() {
+        assertThatThrownBy(() -> catalog.dropNamespace(new String[] {"ns"}))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    // ======================== catalog metadata ========================
+
+    @Test
+    void nameReturnsCatalogName() {
+        assertThat(catalog.name()).isEqualTo("");
+    }
+
+    @Test
+    void paimonCatalogReturnsDelegatedCatalog() {
+        assertThat(catalog.paimonCatalog()).isSameAs(mockPaimonCatalog);
+    }
+
+    // ======================== Helpers ========================
+
+    private Table createMockTable() {
+        Table table = mock(Table.class);
+        when(table.name()).thenReturn("test_table");
+        when(table.fullName()).thenReturn("db.test_table");
+        when(table.rowType())
+                .thenReturn(
+                        RowType.builder()
+                                .field("id", DataTypes.INT())
+                                .field("name", DataTypes.STRING())
+                                .build());
+        when(table.partitionKeys()).thenReturn(Collections.emptyList());
+        when(table.primaryKeys()).thenReturn(Collections.emptyList());
+        when(table.options()).thenReturn(Collections.emptyMap());
+        when(table.comment()).thenReturn(Optional.empty());
+        when(table.copy(any())).thenReturn(table);
+        return table;
+    }
+
+    /**
+     * Custom Mockito argument matcher: verifies the Map contains the expected key-value pair. Uses
+     * Mockito.argThat indirectly via this helper to keep test code readable.
+     */
+    @SuppressWarnings("unchecked")
+    private static Map<String, String> argMapContaining(String key, String value) {
+        return org.mockito.ArgumentMatchers.argThat(
+                map -> map != null && value.equals(((Map<String, String>) map).get(key)));
+    }
+}
