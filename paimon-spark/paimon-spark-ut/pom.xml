@@ -120,6 +120,34 @@ under the License.
         <version>${paimon.shade.netty.version}-${paimon.shade.version}</version>
         <scope>test</scope>
       </dependency>
+
+        <dependency>
+            <groupId>org.apache.paimon</groupId>
+            <artifactId>paimon-lumina</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.paimon</groupId>
+            <artifactId>paimon-lucene</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Force SLF4J 1.x to avoid conflict with Spark 3.5.8's transitive SLF4J 2.x deps -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>jul-to-slf4j</artifactId>
+            <version>${slf4j.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>jcl-over-slf4j</artifactId>
+            <version>${slf4j.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -139,4 +167,11 @@ under the License.
             </plugin>
         </plugins>
     </build>
+
+    <repositories>
+        <repository>
+            <id>lumina</id>
+            <url>https://lumina-binary.oss-cn-shanghai.aliyuncs.com/mvn-repo/</url>
+        </repository>
+    </repositories>
 </project>

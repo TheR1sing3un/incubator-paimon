@@ -282,7 +282,9 @@ public class FlinkOrphanFilesClean extends OrphanFilesClean {
                                         Path dirPath = new Path(dir);
                                         List<FileStatus> files = tryBestListingDirs(dirPath);
                                         for (FileStatus file : files) {
-                                            if (oldEnough(file)) {
+                                            if (oldEnough(file)
+                                                    && !OrphanFilesClean.isAccelerateIndexFile(
+                                                            file.getPath().getName())) {
                                                 out.collect(
                                                         Tuple2.of(
                                                                 file.getPath().toString(),

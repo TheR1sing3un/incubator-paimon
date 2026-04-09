@@ -18,6 +18,7 @@
 
 package org.apache.paimon.table.source;
 
+import org.apache.paimon.accelerateindex.AccelerateIndexSearch;
 import org.apache.paimon.annotation.Public;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.partition.PartitionPredicate;
@@ -174,6 +175,15 @@ public interface ReadBuilder extends Serializable {
      * @param vectorSearch
      */
     ReadBuilder withVectorSearch(VectorSearch vectorSearch);
+
+    /**
+     * Push accelerate index search (vector or text) to the reader.
+     *
+     * <p>When set, {@link #newScan()} will return search-aware splits that contain only matched
+     * rows with scores. Use {@link org.apache.paimon.reader.ScoreRecordIterator#returnedScore()} to
+     * access per-row scores from the reader.
+     */
+    ReadBuilder withAccelerateIndexSearch(AccelerateIndexSearch search);
 
     /** Delete stats in scan plan result. */
     ReadBuilder dropStats();

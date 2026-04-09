@@ -20,11 +20,14 @@ package org.apache.paimon.table.source.snapshot;
 
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.Snapshot;
+import org.apache.paimon.accelerateindex.AccelerateIndexSearchSplitUtils;
+import org.apache.paimon.accelerateindex.AccelerateIndexSearchSplitUtils.SearchUnit;
 import org.apache.paimon.codegen.CodeGenUtils;
 import org.apache.paimon.codegen.RecordComparator;
 import org.apache.paimon.consumer.ConsumerManager;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.deletionvectors.DeletionVectorsIndexFile;
+import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.index.DeletionVectorMeta;
 import org.apache.paimon.index.IndexFileHandler;
@@ -459,6 +462,69 @@ public class SnapshotReaderImpl implements SnapshotReader {
     @Override
     public Iterator<ManifestEntry> readFileIterator() {
         return scan.readFileIterator();
+    }
+
+    @Override
+    public List<SearchUnit> readForAccelerateIndex(
+            int columnId, String algorithm, boolean emitUncoveredSplits) throws Exception {
+        FileStoreScan.Plan plan = scan.plan();
+        @Nullable Snapshot snapshot = plan.snapshot();
+
+        Map<BinaryRow, Map<Integer, List<ManifestEntry>>> grouped =
+                groupByPartFiles(plan.files(FileKind.ADD));
+
+        return generateIndexAwareSplits(
+                snapshot, grouped, columnId, algorithm, emitUncoveredSplits);
+    }
+
+    private List<SearchUnit> generateIndexAwareSplits(
+            @Nullable Snapshot snapshot,
+            Map<BinaryRow, Map<Integer, List<ManifestEntry>>> entries,
+            int columnId,
+            String algorithm,
+            boolean emitUncoveredSplits)
+            throws Exception {
+
+        // Read deletion indexes at once to reduce file IO (same as generateSplits)
+        Map<Pair<BinaryRow, Integer>, Map<String, DeletionFile>> deletionFilesMap =
+                deletionVectors && snapshot != null
+                        ? scanDvIndex(snapshot, toPartBuckets(entries))
+                        : Collections.emptyMap();
+
+        long snapshotId = snapshot == null ? FIRST_SNAPSHOT_ID - 1 : snapshot.id();
+        FileIO fileIO = snapshotManager.fileIO();
+        List<SearchUnit> result = new ArrayList<>();
+
+        for (Map.Entry<BinaryRow, Map<Integer, List<ManifestEntry>>> partEntry :
+                entries.entrySet()) {
+            BinaryRow partition = partEntry.getKey();
+            for (Map.Entry<Integer, List<ManifestEntry>> bucketEntry :
+                    partEntry.getValue().entrySet()) {
+                int bucket = bucketEntry.getKey();
+                List<DataFileMeta> bucketFiles =
+                        bucketEntry.getValue().stream()
+                                .map(ManifestEntry::file)
+                                .collect(Collectors.toList());
+                String bucketPath = pathFactory.bucketPath(partition, bucket).toString();
+                Map<String, DeletionFile> dvMap =
+                        deletionFilesMap.getOrDefault(
+                                Pair.of(partition, bucket), Collections.emptyMap());
+
+                result.addAll(
+                        AccelerateIndexSearchSplitUtils.buildSearchUnitsForBucket(
+                                snapshotId,
+                                partition,
+                                bucket,
+                                bucketPath,
+                                bucketFiles,
+                                dvMap,
+                                fileIO,
+                                columnId,
+                                algorithm,
+                                emitUncoveredSplits));
+            }
+        }
+        return result;
     }
 
     @Override

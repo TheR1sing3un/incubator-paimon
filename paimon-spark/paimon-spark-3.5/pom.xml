@@ -49,13 +49,13 @@ under the License.
 
         <dependency>
             <groupId>org.apache.paimon</groupId>
-            <artifactId>paimon-faiss-index</artifactId>
+            <artifactId>paimon-lumina</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <dependency>
             <groupId>org.apache.paimon</groupId>
-            <artifactId>paimon-faiss-jni</artifactId>
+            <artifactId>paimon-lucene</artifactId>
             <version>${project.version}</version>
         </dependency>
 
@@ -156,8 +156,10 @@ under the License.
                             <artifactSet>
                                 <includes combine.children="append">
                                      <include>org.apache.paimon:paimon-spark3-common_${scala.binary.version}</include>
-                                     <include>org.apache.paimon:paimon-faiss-index</include>
-                                     <include>org.apache.paimon:paimon-faiss-jni</include>
+                                     <include>org.apache.paimon:paimon-lumina</include>
+                                     <include>org.aliyun.lumina:lumina-jni</include>
+                                     <include>org.apache.paimon:paimon-lucene</include>
+                                     <include>org.apache.lucene:*</include>
                                      <include>org.apache.paimon:paimon-hive-connector-common</include>
                                 </includes>
                             </artifactSet>

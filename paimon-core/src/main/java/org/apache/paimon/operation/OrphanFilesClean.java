@@ -19,6 +19,7 @@
 package org.apache.paimon.operation;
 
 import org.apache.paimon.Snapshot;
+import org.apache.paimon.accelerateindex.AccelerateIndexConstants;
 import org.apache.paimon.data.Timestamp;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.FileStatus;
@@ -469,6 +470,13 @@ public abstract class OrphanFilesClean implements Serializable {
 
             return parsedTimestampData.getMillisecond();
         }
+    }
+
+    /** Check if a file name belongs to accelerate index sidecar files. */
+    public static boolean isAccelerateIndexFile(String fileName) {
+        return AccelerateIndexConstants.META_FILE_NAME.equals(fileName)
+                || fileName.endsWith(AccelerateIndexConstants.INDEX_FILE_SUFFIX)
+                || fileName.contains(AccelerateIndexConstants.INDEX_TEMP_SUFFIX);
     }
 
     /** Try to clean empty data directories. */

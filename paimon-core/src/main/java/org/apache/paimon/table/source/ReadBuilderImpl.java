@@ -19,6 +19,9 @@
 package org.apache.paimon.table.source;
 
 import org.apache.paimon.CoreOptions;
+import org.apache.paimon.accelerateindex.AccelerateIndexBatchScan;
+import org.apache.paimon.accelerateindex.AccelerateIndexSearch;
+import org.apache.paimon.accelerateindex.AccelerateIndexTableRead;
 import org.apache.paimon.partition.PartitionPredicate;
 import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.predicate.PredicateBuilder;
@@ -65,6 +68,7 @@ public class ReadBuilderImpl implements ReadBuilder {
     private @Nullable RowType readType;
     private @Nullable RowRangeIndex rowRangeIndex;
     private @Nullable VectorSearch vectorSearch;
+    private @Nullable AccelerateIndexSearch accelerateIndexSearch;
 
     private boolean dropStats = false;
 
@@ -168,6 +172,12 @@ public class ReadBuilderImpl implements ReadBuilder {
     }
 
     @Override
+    public ReadBuilder withAccelerateIndexSearch(AccelerateIndexSearch search) {
+        this.accelerateIndexSearch = search;
+        return this;
+    }
+
+    @Override
     public ReadBuilder withBucket(int bucket) {
         this.specifiedBucket = bucket;
         return this;
@@ -193,6 +203,17 @@ public class ReadBuilderImpl implements ReadBuilder {
         }
         if (topN != null) {
             tableScan.withTopN(topN);
+        }
+        if (accelerateIndexSearch != null && tableScan instanceof DataTableScan) {
+            tableScan =
+                    new AccelerateIndexBatchScan(
+                            (org.apache.paimon.table.FileStoreTable) table,
+                            (DataTableScan) tableScan,
+                            accelerateIndexSearch,
+                            filter,
+                            partitionFilter,
+                            specifiedBucket,
+                            bucketFilter);
         }
         return tableScan;
     }
@@ -248,6 +269,11 @@ public class ReadBuilderImpl implements ReadBuilder {
         }
         if (limit != null) {
             read.withLimit(limit);
+        }
+        if (accelerateIndexSearch != null
+                && table instanceof org.apache.paimon.table.FileStoreTable) {
+            return new AccelerateIndexTableRead(
+                    read, (org.apache.paimon.table.FileStoreTable) table);
         }
         return read;
     }

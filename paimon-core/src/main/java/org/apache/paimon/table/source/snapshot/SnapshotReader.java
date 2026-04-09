@@ -19,6 +19,7 @@
 package org.apache.paimon.table.source.snapshot;
 
 import org.apache.paimon.Snapshot;
+import org.apache.paimon.accelerateindex.AccelerateIndexSearchSplitUtils.SearchUnit;
 import org.apache.paimon.consumer.ConsumerManager;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.manifest.BucketEntry;
@@ -137,6 +138,21 @@ public interface SnapshotReader {
     List<BucketEntry> bucketEntries();
 
     Iterator<ManifestEntry> readFileIterator();
+
+    /**
+     * Read L1+ splits grouped by accelerate index entries. Skips the normal SplitGenerator
+     * bin-packing and instead aligns split boundaries to index entries.
+     *
+     * @param columnId target column ID for the accelerate index
+     * @param algorithm index algorithm (e.g. "lumina", "lucene")
+     * @param emitUncoveredSplits if true, emit SearchUnit(split, null) for files not covered by any
+     *     index entry; if false, uncovered files are skipped
+     */
+    default List<SearchUnit> readForAccelerateIndex(
+            int columnId, String algorithm, boolean emitUncoveredSplits) throws Exception {
+        throw new UnsupportedOperationException(
+                "readForAccelerateIndex is not supported by this SnapshotReader implementation");
+    }
 
     /** Result plan of this scan. */
     interface Plan extends TableScan.Plan {

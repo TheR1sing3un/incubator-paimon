@@ -88,6 +88,8 @@ under the License.
         <module>paimon-api</module>
         <module>paimon-rest-server</module>
         <module>paimon-frontend</module>
+        <module>paimon-lumina</module>
+        <module>paimon-lucene</module>
     </modules>
 
     <properties>
@@ -521,16 +523,6 @@ under the License.
             <id>paimon-iceberg</id>
             <modules>
                 <module>paimon-iceberg</module>
-            </modules>
-            <activation>
-                <jdk>11</jdk>
-            </activation>
-        </profile>
-
-        <profile>
-            <id>paimon-lucene</id>
-            <modules>
-                <module>paimon-lucene</module>
             </modules>
             <activation>
                 <jdk>11</jdk>

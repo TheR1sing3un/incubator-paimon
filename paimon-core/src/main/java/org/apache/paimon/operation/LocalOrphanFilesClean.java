@@ -259,6 +259,10 @@ public class LocalOrphanFilesClean extends OrphanFilesClean {
 
             return files.stream()
                     .filter(this::oldEnough)
+                    .filter(
+                            status ->
+                                    !OrphanFilesClean.isAccelerateIndexFile(
+                                            status.getPath().getName()))
                     .map(status -> Pair.of(status.getPath(), status.getLen()))
                     .collect(Collectors.toList());
         };

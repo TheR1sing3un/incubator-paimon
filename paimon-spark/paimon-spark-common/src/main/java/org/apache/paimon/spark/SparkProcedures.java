@@ -20,6 +20,7 @@ package org.apache.paimon.spark;
 
 import org.apache.paimon.spark.procedure.AlterFunctionProcedure;
 import org.apache.paimon.spark.procedure.AlterViewDialectProcedure;
+import org.apache.paimon.spark.procedure.BuildAccelerateIndexProcedure;
 import org.apache.paimon.spark.procedure.ClearConsumersProcedure;
 import org.apache.paimon.spark.procedure.CompactDatabaseProcedure;
 import org.apache.paimon.spark.procedure.CompactManifestProcedure;
@@ -32,6 +33,7 @@ import org.apache.paimon.spark.procedure.CreateTagFromTimestampProcedure;
 import org.apache.paimon.spark.procedure.CreateTagProcedure;
 import org.apache.paimon.spark.procedure.DeleteBranchProcedure;
 import org.apache.paimon.spark.procedure.DeleteTagProcedure;
+import org.apache.paimon.spark.procedure.DropAccelerateIndexProcedure;
 import org.apache.paimon.spark.procedure.DropFunctionProcedure;
 import org.apache.paimon.spark.procedure.DropGlobalIndexProcedure;
 import org.apache.paimon.spark.procedure.ExpirePartitionsProcedure;
@@ -44,6 +46,7 @@ import org.apache.paimon.spark.procedure.MigrateTableProcedure;
 import org.apache.paimon.spark.procedure.Procedure;
 import org.apache.paimon.spark.procedure.ProcedureBuilder;
 import org.apache.paimon.spark.procedure.PurgeFilesProcedure;
+import org.apache.paimon.spark.procedure.ReconcileAccelerateIndexProcedure;
 import org.apache.paimon.spark.procedure.RemoveOrphanFilesProcedure;
 import org.apache.paimon.spark.procedure.RemoveUnexistingFilesProcedure;
 import org.apache.paimon.spark.procedure.RenameTagProcedure;
@@ -55,6 +58,9 @@ import org.apache.paimon.spark.procedure.RewriteFileIndexProcedure;
 import org.apache.paimon.spark.procedure.RollbackProcedure;
 import org.apache.paimon.spark.procedure.RollbackToTimestampProcedure;
 import org.apache.paimon.spark.procedure.RollbackToWatermarkProcedure;
+import org.apache.paimon.spark.procedure.SearchAccelerateIndexProcedure;
+import org.apache.paimon.spark.procedure.SearchTextIndexProcedure;
+import org.apache.paimon.spark.procedure.ShowAccelerateIndexStatusProcedure;
 import org.apache.paimon.spark.procedure.TriggerTagAutomaticCreationProcedure;
 
 import org.apache.paimon.shade.guava30.com.google.common.collect.ImmutableMap;
@@ -121,6 +127,14 @@ public class SparkProcedures {
                 "trigger_tag_automatic_creation", TriggerTagAutomaticCreationProcedure::builder);
         procedureBuilders.put("rewrite_file_index", RewriteFileIndexProcedure::builder);
         procedureBuilders.put("copy", CopyFilesProcedure::builder);
+        procedureBuilders.put("build_accelerate_index", BuildAccelerateIndexProcedure::builder);
+        procedureBuilders.put("search_accelerate_index", SearchAccelerateIndexProcedure::builder);
+        procedureBuilders.put("search_text_index", SearchTextIndexProcedure::builder);
+        procedureBuilders.put(
+                "show_accelerate_index_status", ShowAccelerateIndexStatusProcedure::builder);
+        procedureBuilders.put(
+                "reconcile_accelerate_index", ReconcileAccelerateIndexProcedure::builder);
+        procedureBuilders.put("drop_accelerate_index", DropAccelerateIndexProcedure::builder);
         return procedureBuilders.build();
     }
 }

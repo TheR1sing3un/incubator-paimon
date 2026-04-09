@@ -257,6 +257,13 @@ public class FormatReadBuilder implements ReadBuilder {
     }
 
     @Override
+    public ReadBuilder withAccelerateIndexSearch(
+            org.apache.paimon.accelerateindex.AccelerateIndexSearch search) {
+        throw new UnsupportedOperationException(
+                "Format Table does not support accelerate index search.");
+    }
+
+    @Override
     public StreamTableScan newStreamScan() {
         throw new UnsupportedOperationException("Format Table does not support stream scan.");
     }

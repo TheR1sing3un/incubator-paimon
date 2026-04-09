@@ -18,203 +18,424 @@
 
 package org.apache.paimon.flink;
 
-import org.apache.flink.api.java.hadoop.mapred.utils.HadoopUtils;
+import org.apache.flink.api.common.functions.RichMapFunction;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.EnvironmentSettings;
+import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.StatementSet;
-import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.TableResult;
-import org.apache.hadoop.fs.FSDataInputStream;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
+import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
+import org.apache.flink.types.Row;
 
-import java.io.BufferedReader;
 import java.io.File;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.net.URLDecoder;
-import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
-import java.util.List;
-import java.util.stream.Collectors;
+import java.io.Serializable;
+import java.util.Random;
 
-/** PaimonSqlStreamer. */
+/**
+ * PaimonSqlStreamer - generates test data for AccelerateIndex (Lumina + Lucene) verification.
+ *
+ * <p>Creates a PK table with clustered vectors, random high-dim vectors, and nested text documents.
+ * Each phase runs as a separate Flink job via the {@code --phase} parameter:
+ *
+ * <ul>
+ *   <li>{@code --phase 1}: Create table + write initial data (pk 0 ~ rows-1)
+ *   <li>{@code --phase 1c}: Compact to produce Snapshot S1
+ *   <li>{@code --phase 2}: Partial update via same-PK INSERT to create DV (Snapshot S2)
+ *   <li>{@code --phase 3}: Compact to merge DV (Snapshot S3)
+ * </ul>
+ */
 public class PaimonSqlStreamer {
 
-    // 分隔符：SQL 语句以分号分隔（需避免 SQL 注释中包含分号）
-    private static final String SQL_DELIMITER = ";";
-
     public static void main(String[] args) throws Exception {
-        // 1. 解析命令行参数（获取输入的 Flink SQL）
-        // print args (null-safe)
-        System.out.println(
-                "PaimonSqlStreamer - input args :"
-                        + (args == null ? "null" : Arrays.toString(args)));
-        String flinkSql = parseArgs(args);
-        if (flinkSql == null || flinkSql.trim().isEmpty()) {
-            throw new IllegalArgumentException("请传入有效的 Flink SQL（--sqlFile 或 --sql 参数）");
-        }
-
-        // 2. 初始化 Flink Stream 执行环境
+        GenParams params = parseGenerateParams(args);
+        boolean isBatchPhase = "1c".equals(params.phase) || "3".equals(params.phase);
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        // 配置 Checkpoint（Paimon 依赖 Checkpoint 提交数据）
-        //        env.enableCheckpointing(30000); // 30秒一次 Checkpoint
-        //        env.getCheckpointConfig().setCheckpointingMode(CheckpointingMode.EXACTLY_ONCE); //
-        // 精确一次语义
-        //        env.getCheckpointConfig().setMinPauseBetweenCheckpoints(10000); // 两次 Checkpoint
-        // 最小间隔10秒
-        // 目前线上flink不支持SQL内设置：
-        //      env.setRestartStrategy(RestartStrategies.fixedDelayRestart(3, 5000)); //
-        // 重启策略：失败3次，每次间隔5秒
-
-        // 3. 初始化 TableEnvironment（Stream 模式）
+        env.setParallelism(params.parallelism);
+        EnvironmentSettings.Builder settingsBuilder = EnvironmentSettings.newInstance();
+        if (isBatchPhase) {
+            settingsBuilder.inBatchMode();
+        } else {
+            settingsBuilder.inStreamingMode();
+        }
         EnvironmentSettings tableEnvSettings =
-                EnvironmentSettings.newInstance()
-                        .inStreamingMode()
-                        .withConfiguration(
-                                (org.apache.flink.configuration.Configuration)
-                                        env.getConfiguration())
-                        .build();
-        TableEnvironment tableEnv = TableEnvironment.create(tableEnvSettings);
+                settingsBuilder.withConfiguration((Configuration) env.getConfiguration()).build();
+        StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env, tableEnvSettings);
 
-        // 4. （可选）配置 Paimon/Hadoop 环境（如 HDFS 路径、权限等）
-        // (optional) get Flink TableEnvironment configuration if needed later.
-        // Configuration config = tableEnv.getConfig().getConfiguration();
+        // Create Paimon catalog with Hive metastore
+        tableEnv.executeSql(
+                        "CREATE CATALOG my_catalog WITH (\n"
+                                + "    'type' = 'paimon',\n"
+                                + "    'metastore' = 'hive',\n"
+                                + "    'hive-conf-dir' = 'viewfs://hadoop-lt-cluster/home/hdp/tmp/tmp/lt-ol-hive-config/',\n"
+                                + "    'hadoop-conf-dir' = 'viewfs://hadoop-lt-cluster/home/hdp/tmp/tmp/lt-ol-hadoop-config/'\n"
+                                + ");")
+                .await();
+        tableEnv.executeSql("USE CATALOG my_catalog;").await();
+        tableEnv.executeSql("USE " + params.database + ";").await();
 
-        // 5. 拆分 SQL 语句（支持多句 SQL，以分号分隔）
-        List<String> sqlStatements = splitSql(flinkSql);
+        // Enable sync DML for compact
+        tableEnv.getConfig().getConfiguration().setString("table.dml-sync", "true");
+        // Set default parallelism for compact procedures
+        tableEnv.getConfig()
+                .getConfiguration()
+                .setString("parallelism.default", String.valueOf(params.parallelism));
 
-        // 6. 执行 SQL 语句
-        StatementSet statementSet = tableEnv.createStatementSet();
-        boolean isEmpty = true;
+        String phase = params.phase;
+        System.out.println("=== Running phase: " + phase + " ===");
 
-        for (String sql : sqlStatements) {
-            String trimmedSql = sql.trim();
-            if (trimmedSql.isEmpty()) {
-                continue;
-            }
-            System.out.printf("执行 SQL：%s%n", trimmedSql);
-            // 区分 DDL（CREATE TABLE）和 DML（INSERT）
-            if (trimmedSql.toLowerCase().startsWith("insert")) {
-                statementSet.addInsertSql(trimmedSql);
-                isEmpty = false;
-            } else {
-                TableResult result = tableEnv.executeSql(trimmedSql);
-                result.await(); // 等待 DDL 执行完成
-            }
+        switch (phase) {
+            case "1":
+                tableEnv.executeSql("DROP TABLE IF EXISTS " + params.table).await();
+                createTable(tableEnv, params);
+                System.out.println(
+                        "=== Phase 1: Writing initial data (pk 0 ~ " + (params.rows - 1) + ") ===");
+                writeData(env, tableEnv, params, 0, params.rows, params.pt, false);
+                System.out.println("=== Phase 1 complete: data written ===");
+                break;
+            case "1c":
+                System.out.println("=== Phase 1c: Compacting ===");
+                compact(tableEnv, params, params.pt);
+                System.out.println("=== Phase 1c complete: Snapshot S1 ready ===");
+                break;
+            case "2":
+                System.out.println(
+                        "=== Phase 2: Updating pk ["
+                                + params.updateStart
+                                + ", "
+                                + params.updateEnd
+                                + ") ===");
+                writeData(
+                        env,
+                        tableEnv,
+                        params,
+                        params.updateStart,
+                        params.updateEnd,
+                        params.pt,
+                        true);
+                System.out.println(
+                        "=== Phase 2 complete: Snapshot S2 ready (DV created, not compacted) ===");
+                break;
+            case "3":
+                System.out.println("=== Phase 3: Compacting (merge DV) ===");
+                compact(tableEnv, params, params.pt);
+                System.out.println("=== Phase 3 complete: Snapshot S3 ready ===");
+                break;
+            default:
+                throw new IllegalArgumentException(
+                        "Unknown --phase: '" + phase + "'. Valid values: 1, 1c, 2, 3");
         }
 
-        // 7. 提交作业（DML 执行）
-        if (!isEmpty) {
-            TableResult executeResult = statementSet.execute();
-            executeResult.await(); // 阻塞等待作业完成（Stream 模式下会一直运行）
-        }
-
-        System.out.println("Flink 作业执行成功！");
+        System.out.println("Phase " + phase + " complete. Table: " + params.table);
     }
 
-    /** 解析命令行参数 支持 --sqlFile /path/to/job.sql 或 --sql "CREATE TABLE ...; INSERT ...;" . */
-    private static String parseArgs(String[] args) throws IOException {
-        if (args == null || args.length == 0) {
-            printUsage();
-            return null;
+    private static void createTable(StreamTableEnvironment tableEnv, GenParams params)
+            throws Exception {
+        String ddl =
+                String.format(
+                        "CREATE TABLE IF NOT EXISTS %s (\n"
+                                + "  pt INT,\n"
+                                + "  pk INT,\n"
+                                + "  tag INT,\n"
+                                + "  category STRING,\n"
+                                + "  vec ARRAY<FLOAT>,\n"
+                                + "  vec_perf ARRAY<FLOAT>,\n"
+                                + "  docs ARRAY<ROW<content STRING, label STRING, score INT>>,\n"
+                                + "  PRIMARY KEY (pt, pk) NOT ENFORCED\n"
+                                + ") PARTITIONED BY (pt) WITH (\n"
+                                + "  'bucket' = '%d',\n"
+                                + "  'deletion-vectors.enabled' = 'true',\n"
+                                + "  'file.format' = 'parquet',\n"
+                                + "  'compaction.min.file-num' = '999',\n"
+                                + "  'compaction.max.file-num' = '999',\n"
+                                + "  'num-sorted-runs.compaction-trigger' = '999'\n"
+                                + ")",
+                        params.table, params.bucket);
+        System.out.println("Executing DDL:\n" + ddl);
+        tableEnv.executeSql(ddl).await();
+    }
+
+    private static void writeData(
+            StreamExecutionEnvironment env,
+            StreamTableEnvironment tableEnv,
+            GenParams params,
+            long startPk,
+            long endPk,
+            int pt,
+            boolean isUpdate)
+            throws Exception {
+        long count = endPk - startPk;
+        if (count <= 0) {
+            System.out.println("No data to write (startPk=" + startPk + ", endPk=" + endPk + ")");
+            return;
         }
 
-        String sqlValue = null;
-        String sqlFileValue = null;
+        final int dim = params.dim;
+        final int dimPerf = params.dimPerf;
+        final int tagMax = params.tagMax;
+        final int clusterSize = params.clusterSize;
+
+        DataStream<Row> ds =
+                env.fromSequence(startPk, endPk - 1)
+                        .setParallelism(params.parallelism)
+                        .map(
+                                new DataGeneratorFunction(
+                                        pt, dim, dimPerf, tagMax, clusterSize, isUpdate))
+                        .setParallelism(params.parallelism)
+                        .returns(
+                                Types.ROW_NAMED(
+                                        new String[] {
+                                            "pt", "pk", "tag", "category", "vec", "vec_perf", "docs"
+                                        },
+                                        new TypeInformation[] {
+                                            Types.INT,
+                                            Types.INT,
+                                            Types.INT,
+                                            Types.STRING,
+                                            Types.OBJECT_ARRAY(Types.FLOAT),
+                                            Types.OBJECT_ARRAY(Types.FLOAT),
+                                            Types.OBJECT_ARRAY(
+                                                    Types.ROW_NAMED(
+                                                            new String[] {
+                                                                "content", "label", "score"
+                                                            },
+                                                            Types.STRING,
+                                                            Types.STRING,
+                                                            Types.INT))
+                                        }));
+
+        Schema schema =
+                Schema.newBuilder()
+                        .column("pt", DataTypes.INT())
+                        .column("pk", DataTypes.INT())
+                        .column("tag", DataTypes.INT())
+                        .column("category", DataTypes.STRING())
+                        .column("vec", DataTypes.ARRAY(DataTypes.FLOAT()))
+                        .column("vec_perf", DataTypes.ARRAY(DataTypes.FLOAT()))
+                        .column(
+                                "docs",
+                                DataTypes.ARRAY(
+                                        DataTypes.ROW(
+                                                DataTypes.FIELD("content", DataTypes.STRING()),
+                                                DataTypes.FIELD("label", DataTypes.STRING()),
+                                                DataTypes.FIELD("score", DataTypes.INT()))))
+                        .build();
+
+        String viewName = isUpdate ? "_update_view_" : "_init_view_";
+        Table table = tableEnv.fromDataStream(ds, schema);
+        tableEnv.createTemporaryView(viewName, table);
+
+        String insertSql =
+                String.format(
+                        "INSERT INTO %s /*+ OPTIONS('write-only'='true') */ SELECT pt, pk, tag, category, vec, vec_perf, docs FROM %s",
+                        params.table, viewName);
+        System.out.println(
+                "Executing: " + insertSql + " (rows=" + count + ", isUpdate=" + isUpdate + ")");
+
+        StatementSet ss = tableEnv.createStatementSet();
+        ss.addInsertSql(insertSql);
+        TableResult result = ss.execute();
+        result.await();
+
+        tableEnv.executeSql("DROP TEMPORARY VIEW IF EXISTS " + viewName);
+        System.out.println("Write complete: " + count + " rows.");
+    }
+
+    private static void compact(StreamTableEnvironment tableEnv, GenParams params, int pt)
+            throws Exception {
+        // Flink 1.18 uses positional args for compact procedure
+        String compactSql =
+                String.format(
+                        "CALL sys.compact('%s.%s', 'pt=%d', '', '', 'sink.parallelism=%d', '', '', 'full')",
+                        params.database, params.table, pt, params.parallelism);
+        System.out.println("Executing: " + compactSql);
+        tableEnv.executeSql(compactSql).await();
+        System.out.println("Compact complete for pt=" + pt);
+    }
+
+    // ========== Data Generation ==========
+
+    /** RichMapFunction that generates each row from a sequential pk index. */
+    static class DataGeneratorFunction extends RichMapFunction<Long, Row> {
+        private static final long serialVersionUID = 1L;
+
+        private static final double[][] CLUSTER_CENTERS = {
+            {10.0, 0.0}, {-10.0, 0.0}, {0.0, 10.0}, {0.0, -10.0}, {10.0, 10.0}
+        };
+        private static final double CLUSTER_RADIUS = 0.05;
+
+        private final int pt;
+        private final int dim;
+        private final int dimPerf;
+        private final int tagMax;
+        private final int clusterSize;
+        private final boolean isUpdate;
+
+        DataGeneratorFunction(
+                int pt, int dim, int dimPerf, int tagMax, int clusterSize, boolean isUpdate) {
+            this.pt = pt;
+            this.dim = dim;
+            this.dimPerf = dimPerf;
+            this.tagMax = tagMax;
+            this.clusterSize = clusterSize;
+            this.isUpdate = isUpdate;
+        }
+
+        @Override
+        public Row map(Long idx) {
+            int pk = idx.intValue();
+            int tag = pk % tagMax;
+            String category = "cat_" + (pk % 5);
+
+            if (isUpdate) {
+                tag += 100;
+            }
+
+            boolean isNull = (pk % 500 == 499);
+
+            Float[] vec = isNull ? null : generateClusteredVec(pk);
+            Float[] vecPerf = isNull ? null : generateRandomVec(pk, dimPerf);
+            Row[] docs = isNull ? null : generateDocs(pk, tag, category);
+
+            return Row.of(pt, pk, tag, category, vec, vecPerf, docs);
+        }
+
+        private Float[] generateClusteredVec(int pk) {
+            int clusterIdx = (pk / clusterSize) % CLUSTER_CENTERS.length;
+            double[] center = CLUSTER_CENTERS[clusterIdx];
+            int offset = pk % clusterSize;
+            double angle = 2.0 * Math.PI * offset / clusterSize;
+
+            Float[] vec = new Float[dim];
+            for (int i = 0; i < dim; i++) {
+                vec[i] = 0.0f;
+            }
+            // First two dimensions: cluster center + small offset
+            vec[0] = (float) (center[0] + CLUSTER_RADIUS * Math.cos(angle));
+            vec[1] = (float) (center[1] + CLUSTER_RADIUS * Math.sin(angle));
+            return vec;
+        }
+
+        private Float[] generateRandomVec(int pk, int d) {
+            Float[] vec = new Float[d];
+            Random r = new Random(pk);
+            for (int i = 0; i < d; i++) {
+                vec[i] = -1.0f + r.nextFloat() * 2.0f;
+            }
+            return vec;
+        }
+
+        private Row[] generateDocs(int pk, int tag, String category) {
+            String prefix = isUpdate ? "updated_" : "";
+            int batch = pk / 100;
+            int scoreBase = isUpdate ? (pk % 100) + 200 : pk % 100;
+
+            // doc[0]: always present
+            String content0 = prefix + "product " + pk + " review quality batch_" + batch;
+            String label0 = "tag_" + tag;
+            int score0 = scoreBase;
+            Row doc0 = Row.of(content0, label0, score0);
+
+            // doc[1]: only when pk % 3 != 0
+            if (pk % 3 != 0) {
+                String content1 = prefix + "item " + pk + " description performance batch_" + batch;
+                String label1 = "cat_" + category;
+                int score1 = scoreBase + 50;
+                Row doc1 = Row.of(content1, label1, score1);
+                return new Row[] {doc0, doc1};
+            } else {
+                return new Row[] {doc0};
+            }
+        }
+    }
+
+    // ========== CLI Argument Parsing ==========
+
+    private static GenParams parseGenerateParams(String[] args) {
+        GenParams p = new GenParams();
 
         for (int i = 0; i < args.length; i++) {
             String a = args[i];
             if (a == null) {
                 continue;
             }
-            // support --key=value
-            if (a.startsWith("--sql=")) {
-                sqlValue = a.substring("--sql=".length());
-            } else if (a.startsWith("--sqlFile=")) {
-                sqlFileValue = a.substring("--sqlFile=".length());
-            } else if ("--sql".equals(a)) {
-                // support --key value
-                if (i + 1 < args.length) {
-                    sqlValue = args[i + 1];
-                    i++; // skip value
-                } else {
-                    System.out.println("Missing value for --sql");
-                }
-            } else if ("--sqlFile".equals(a)) {
-                if (i + 1 < args.length) {
-                    sqlFileValue = args[i + 1];
-                    i++; // skip value
-                } else {
-                    System.out.println("Missing value for --sqlFile");
+            String val = null;
+            // Support both --key=value and --key value
+            int eq = a.indexOf('=');
+            String key;
+            if (eq > 0) {
+                key = a.substring(0, eq);
+                val = a.substring(eq + 1);
+            } else {
+                key = a;
+                if (i + 1 < args.length && !args[i + 1].startsWith("--")) {
+                    val = args[++i];
                 }
             }
-        }
-
-        // Prefer direct --sql over --sqlFile if both provided.
-        if (sqlValue != null && !sqlValue.trim().isEmpty()) {
-            // URL decode using UTF-8
-            return URLDecoder.decode(sqlValue, StandardCharsets.UTF_8.name());
-        }
-
-        if (sqlFileValue != null && !sqlFileValue.trim().isEmpty()) {
-            return readSqlFromFile(sqlFileValue);
-        }
-
-        printUsage();
-        return null;
-    }
-
-    /** 从文件读取 SQL 内容. */
-    private static String readSqlFromFile(String filePath) throws IOException {
-        StringBuilder sqlBuilder = new StringBuilder();
-        Path readPath = new Path(filePath);
-        FileSystem fs = readPath.getFileSystem(getHadoopConf());
-        if (fs.exists(readPath)) {
-            try (FSDataInputStream in = fs.open(readPath);
-                    BufferedReader br = new BufferedReader(new InputStreamReader(in))) {
-                String line;
-                while ((line = br.readLine()) != null) {
-                    // 跳过注释行（-- 开头）和空行。
-                    String trimmedLine = line.trim();
-                    if (!trimmedLine.isEmpty() && !trimmedLine.startsWith("--")) {
-                        sqlBuilder.append(line).append("\n");
-                    }
-                }
+            if (val == null) {
+                continue;
             }
-        } else {
-            System.out.println("Flink 作业缺少输入 SQL 文件！");
-            throw new IOException("Flink 作业缺少输入 SQL 文件！");
+
+            switch (key) {
+                case "--rows":
+                    p.rows = Long.parseLong(val);
+                    break;
+                case "--dim":
+                    p.dim = Integer.parseInt(val);
+                    break;
+                case "--dimPerf":
+                    p.dimPerf = Integer.parseInt(val);
+                    break;
+                case "--tagMax":
+                    p.tagMax = Integer.parseInt(val);
+                    break;
+                case "--clusterSize":
+                    p.clusterSize = Integer.parseInt(val);
+                    break;
+                case "--bucket":
+                    p.bucket = Integer.parseInt(val);
+                    break;
+                case "--pt":
+                    p.pt = Integer.parseInt(val);
+                    break;
+                case "--table":
+                    p.table = val;
+                    break;
+                case "--database":
+                    p.database = val;
+                    break;
+                case "--phase":
+                    p.phase = val;
+                    break;
+                case "--parallelism":
+                    p.parallelism = Integer.parseInt(val);
+                    break;
+                case "--updateStart":
+                    p.updateStart = Long.parseLong(val);
+                    break;
+                case "--updateEnd":
+                    p.updateEnd = Long.parseLong(val);
+                    break;
+                default:
+                    System.out.println("Unknown parameter: " + key);
+            }
         }
-        return sqlBuilder.toString();
+        return p;
     }
 
-    /** 拆分 SQL 语句（以分号分隔，避免拆分注释中的分号）. */
-    private static List<String> splitSql(String sql) {
-        // 简单拆分：若 SQL 中包含注释内的分号，需优化正则（示例为基础版）
-        String[] split = sql.split(SQL_DELIMITER);
-        return Arrays.stream(split)
-                .map(String::trim)
-                .filter(s -> !s.isEmpty())
-                .collect(Collectors.toList());
-    }
-
-    /** 打印使用说明. */
-    private static void printUsage() {
-        System.out.println("使用方式：");
-        System.out.println(
-                "1. 从 SQL 文件执行：java -jar FlinkKafkaToPaimon.jar --sqlFile /path/to/job.sql");
-        System.out.println(
-                "2. 直接执行 SQL 语句(需要urlencode编码)：java -jar FlinkKafkaToPaimon.jar --sql \"CREATE TABLE kafka_source (...) WITH (...); INSERT INTO paimon_sink SELECT * FROM kafka_source;\"");
-        System.out.println("支持 --sql=... 和 --sqlFile=... 形式，且位置不限。");
-    }
+    // ========== Hadoop Configuration Helpers ==========
 
     public static org.apache.hadoop.conf.Configuration getHadoopConf() {
-        // create hadoop configuration with hadoop conf directory configured.
         org.apache.hadoop.conf.Configuration hadoopConf = null;
         Configuration fConf = new Configuration();
-        for (String possibleHadoopConfPath : HadoopUtils.possibleHadoopConfPaths(fConf)) {
+        for (String possibleHadoopConfPath :
+                org.apache.flink.api.java.hadoop.mapred.utils.HadoopUtils.possibleHadoopConfPaths(
+                        fConf)) {
             hadoopConf = getHadoopConfiguration(possibleHadoopConfPath);
             if (hadoopConf != null) {
                 break;
@@ -226,27 +447,13 @@ public class PaimonSqlStreamer {
         }
 
         if (fConf.getBoolean("flink.config.to.hadoop.config.hudi.util.enable", true)) {
-            hadoopConf.addResource(HadoopUtils.getHadoopConfiguration(fConf));
+            hadoopConf.addResource(
+                    org.apache.flink.api.java.hadoop.mapred.utils.HadoopUtils
+                            .getHadoopConfiguration(fConf));
         }
-
-        System.out.println("get hadoop conf with key = value");
-        hadoopConf.forEach(
-                (kv) -> {
-                    System.out.println(
-                            (kv.getKey() == null ? "null" : kv.getKey())
-                                    + " = "
-                                    + (kv.getValue() == null ? "null" : kv.getValue()));
-                });
-
         return hadoopConf;
     }
 
-    /**
-     * Returns a new Hadoop Configuration object using the path to the hadoop conf configured.
-     *
-     * @param hadoopConfDir Hadoop conf directory path.
-     * @return A Hadoop configuration instance.
-     */
     private static org.apache.hadoop.conf.Configuration getHadoopConfiguration(
             String hadoopConfDir) {
         if (new File(hadoopConfDir).exists()) {
@@ -254,23 +461,44 @@ public class PaimonSqlStreamer {
                     new org.apache.hadoop.conf.Configuration();
             File coreSite = new File(hadoopConfDir, "core-site.xml");
             if (coreSite.exists()) {
-                hadoopConfiguration.addResource(new Path(coreSite.getAbsolutePath()));
+                hadoopConfiguration.addResource(
+                        new org.apache.hadoop.fs.Path(coreSite.getAbsolutePath()));
             }
             File hdfsSite = new File(hadoopConfDir, "hdfs-site.xml");
             if (hdfsSite.exists()) {
-                hadoopConfiguration.addResource(new Path(hdfsSite.getAbsolutePath()));
+                hadoopConfiguration.addResource(
+                        new org.apache.hadoop.fs.Path(hdfsSite.getAbsolutePath()));
             }
             File yarnSite = new File(hadoopConfDir, "yarn-site.xml");
             if (yarnSite.exists()) {
-                hadoopConfiguration.addResource(new Path(yarnSite.getAbsolutePath()));
+                hadoopConfiguration.addResource(
+                        new org.apache.hadoop.fs.Path(yarnSite.getAbsolutePath()));
             }
-            // Add mapred-site.xml. We need to read configurations like compression codec.
             File mapredSite = new File(hadoopConfDir, "mapred-site.xml");
             if (mapredSite.exists()) {
-                hadoopConfiguration.addResource(new Path(mapredSite.getAbsolutePath()));
+                hadoopConfiguration.addResource(
+                        new org.apache.hadoop.fs.Path(mapredSite.getAbsolutePath()));
             }
             return hadoopConfiguration;
         }
         return null;
+    }
+
+    /** CLI parameters for data generation. */
+    private static class GenParams implements Serializable {
+        private static final long serialVersionUID = 1L;
+        String table = "test_accel_idx";
+        String database = "ks_hdp";
+        String phase = "1";
+        long rows = 1000;
+        int dim = 8;
+        int dimPerf = 2048;
+        int tagMax = 5;
+        int clusterSize = 200;
+        int bucket = 1;
+        int pt = 1;
+        int parallelism = 1;
+        long updateStart = 0;
+        long updateEnd = 300;
     }
 }
