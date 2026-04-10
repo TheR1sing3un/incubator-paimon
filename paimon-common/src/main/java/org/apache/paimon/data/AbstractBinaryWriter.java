@@ -94,8 +94,13 @@ abstract class AbstractBinaryWriter implements BinaryWriter {
 
     @Override
     public void writeVector(int pos, InternalVector input, InternalVectorSerializer serializer) {
-        BinaryVector binary = serializer.toBinaryVector(input);
-        writeVectorToVarLenPart(pos, binary);
+        if (input instanceof VectorRef) {
+            byte[] descBytes = ((VectorRef) input).toDescriptorBytes();
+            writeBinary(pos, descBytes, 0, descBytes.length);
+        } else {
+            BinaryVector binary = serializer.toBinaryVector(input);
+            writeVectorToVarLenPart(pos, binary);
+        }
     }
 
     @Override

@@ -432,7 +432,8 @@ public abstract class MergeTreeTestBase {
                         null,
                         null,
                         false,
-                        VersionedMergeMode.UPSERT);
+                        VersionedMergeMode.UPSERT,
+                        null);
         writer.setMemoryPool(
                 new HeapMemorySegmentPool(options.writeBufferSize(), options.pageSize()));
         return writer;

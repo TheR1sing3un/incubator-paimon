@@ -394,4 +394,232 @@ class SchemaValidationTest {
                 .hasMessage(
                         "Data evolution config must enabled for table with vector-store file format.");
     }
+
+    // ===== Vector column family validation tests =====
+
+    private void validateVectorColumnFamilySchema(
+            Map<String, String> options,
+            List<DataField> fields,
+            List<String> partitionKeys,
+            List<String> primaryKeys) {
+        options.putIfAbsent(BUCKET.key(), String.valueOf(-1));
+        validateTableSchema(
+                new TableSchema(1, fields, 10, partitionKeys, primaryKeys, options, ""));
+    }
+
+    @Test
+    public void testVectorCfRequiresPrimaryKey() {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.VECTOR_COLUMN_FAMILY_ENABLED.key(), "true");
+        List<DataField> fields =
+                Arrays.asList(
+                        new DataField(0, "f0", DataTypes.INT()),
+                        new DataField(
+                                1,
+                                "f1",
+                                new org.apache.paimon.types.VectorType(
+                                        128, org.apache.paimon.types.DataTypes.FLOAT())));
+        assertThatThrownBy(
+                        () ->
+                                validateVectorColumnFamilySchema(
+                                        options, fields, emptyList(), emptyList()))
+                .hasMessageContaining("only supported for PK tables");
+    }
+
+    @Test
+    public void testVectorCfRequiresVectorColumns() {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.VECTOR_COLUMN_FAMILY_ENABLED.key(), "true");
+        options.put(CoreOptions.MERGE_ENGINE.key(), "deduplicate");
+        List<DataField> fields =
+                Arrays.asList(
+                        new DataField(0, "f0", DataTypes.INT()),
+                        new DataField(1, "f1", DataTypes.STRING()));
+        assertThatThrownBy(
+                        () ->
+                                validateVectorColumnFamilySchema(
+                                        options, fields, emptyList(), singletonList("f0")))
+                .hasMessageContaining("no vector columns found");
+    }
+
+    @Test
+    public void testVectorCfColumnNotInSchema() {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.VECTOR_COLUMN_FAMILY_ENABLED.key(), "true");
+        options.put(CoreOptions.VECTOR_COLUMN_FAMILY_COLUMNS.key(), "nonexistent");
+        options.put(CoreOptions.MERGE_ENGINE.key(), "deduplicate");
+        List<DataField> fields =
+                Arrays.asList(
+                        new DataField(0, "f0", DataTypes.INT()),
+                        new DataField(1, "f1", DataTypes.STRING()));
+        assertThatThrownBy(
+                        () ->
+                                validateVectorColumnFamilySchema(
+                                        options, fields, emptyList(), singletonList("f0")))
+                .hasMessageContaining("not found in the table schema");
+    }
+
+    @Test
+    public void testVectorCfColumnCannotBePrimaryKey() {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.VECTOR_COLUMN_FAMILY_ENABLED.key(), "true");
+        options.put(CoreOptions.VECTOR_COLUMN_FAMILY_COLUMNS.key(), "f0");
+        options.put(CoreOptions.MERGE_ENGINE.key(), "deduplicate");
+        List<DataField> fields =
+                Arrays.asList(
+                        new DataField(0, "f0", DataTypes.INT()),
+                        new DataField(1, "f1", DataTypes.STRING()));
+        assertThatThrownBy(
+                        () ->
+                                validateVectorColumnFamilySchema(
+                                        options, fields, emptyList(), singletonList("f0")))
+                .hasMessageContaining("cannot be a primary key column");
+    }
+
+    @Test
+    public void testVectorCfColumnCannotBePartitionKey() {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.VECTOR_COLUMN_FAMILY_ENABLED.key(), "true");
+        options.put(CoreOptions.VECTOR_COLUMN_FAMILY_COLUMNS.key(), "f0");
+        options.put(CoreOptions.MERGE_ENGINE.key(), "deduplicate");
+        List<DataField> fields =
+                Arrays.asList(
+                        new DataField(0, "f0", DataTypes.INT()),
+                        new DataField(1, "f1", DataTypes.INT()),
+                        new DataField(2, "f2", DataTypes.STRING()));
+        assertThatThrownBy(
+                        () ->
+                                validateVectorColumnFamilySchema(
+                                        options, fields, singletonList("f0"), singletonList("f1")))
+                .hasMessageContaining("cannot be a partition key column");
+    }
+
+    @Test
+    public void testVectorCfColumnMustBeNullable() {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.VECTOR_COLUMN_FAMILY_ENABLED.key(), "true");
+        options.put(CoreOptions.MERGE_ENGINE.key(), "deduplicate");
+        List<DataField> fields =
+                Arrays.asList(
+                        new DataField(0, "f0", DataTypes.INT()),
+                        new DataField(
+                                1,
+                                "embedding",
+                                new org.apache.paimon.types.VectorType(
+                                                128, org.apache.paimon.types.DataTypes.FLOAT())
+                                        .notNull()));
+        assertThatThrownBy(
+                        () ->
+                                validateVectorColumnFamilySchema(
+                                        options, fields, emptyList(), singletonList("f0")))
+                .hasMessageContaining("must be nullable");
+    }
+
+    @Test
+    public void testVectorCfColumnMustBeVectorType() {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.VECTOR_COLUMN_FAMILY_ENABLED.key(), "true");
+        options.put(CoreOptions.MERGE_ENGINE.key(), "deduplicate");
+        options.put("vector-column-family.columns", "f1");
+        List<DataField> fields =
+                Arrays.asList(
+                        new DataField(0, "f0", DataTypes.INT()),
+                        new DataField(1, "f1", DataTypes.STRING()));
+        assertThatThrownBy(
+                        () ->
+                                validateVectorColumnFamilySchema(
+                                        options, fields, emptyList(), singletonList("f0")))
+                .hasMessageContaining("must be of VectorType");
+    }
+
+    @Test
+    public void testVectorCfValidConfiguration() {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.VECTOR_COLUMN_FAMILY_ENABLED.key(), "true");
+        options.put(CoreOptions.MERGE_ENGINE.key(), "partial-update");
+        List<DataField> fields =
+                Arrays.asList(
+                        new DataField(0, "f0", DataTypes.INT()),
+                        new DataField(1, "f1", DataTypes.STRING()),
+                        new DataField(
+                                2,
+                                "embedding",
+                                new org.apache.paimon.types.VectorType(
+                                        128, org.apache.paimon.types.DataTypes.FLOAT())));
+        assertThatCode(
+                        () ->
+                                validateVectorColumnFamilySchema(
+                                        options, fields, emptyList(), singletonList("f0")))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    public void testVectorCfOnlySingleVectorColumn() {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.VECTOR_COLUMN_FAMILY_ENABLED.key(), "true");
+        options.put(CoreOptions.MERGE_ENGINE.key(), "partial-update");
+        List<DataField> fields =
+                Arrays.asList(
+                        new DataField(0, "f0", DataTypes.INT()),
+                        new DataField(
+                                1,
+                                "emb1",
+                                new org.apache.paimon.types.VectorType(
+                                        true, 128, org.apache.paimon.types.DataTypes.FLOAT())),
+                        new DataField(
+                                2,
+                                "emb2",
+                                new org.apache.paimon.types.VectorType(
+                                        true, 64, org.apache.paimon.types.DataTypes.FLOAT())));
+        assertThatThrownBy(
+                        () ->
+                                validateVectorColumnFamilySchema(
+                                        options, fields, emptyList(), singletonList("f0")))
+                .hasMessageContaining("only one vector column");
+    }
+
+    @Test
+    public void testVectorCfRejectsExternalPaths() {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.VECTOR_COLUMN_FAMILY_ENABLED.key(), "true");
+        options.put(CoreOptions.MERGE_ENGINE.key(), "partial-update");
+        options.put(CoreOptions.DATA_FILE_EXTERNAL_PATHS.key(), "s3://bucket/path");
+        List<DataField> fields =
+                Arrays.asList(
+                        new DataField(0, "f0", DataTypes.INT()),
+                        new DataField(
+                                1,
+                                "embedding",
+                                new org.apache.paimon.types.VectorType(
+                                        true, 128, org.apache.paimon.types.DataTypes.FLOAT())));
+        assertThatThrownBy(
+                        () ->
+                                validateVectorColumnFamilySchema(
+                                        options, fields, emptyList(), singletonList("f0")))
+                .hasMessageContaining("does not support external paths");
+    }
+
+    @Test
+    public void testVectorCfWithParquetMainFormat() {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.VECTOR_COLUMN_FAMILY_ENABLED.key(), "true");
+        options.put(CoreOptions.MERGE_ENGINE.key(), "partial-update");
+        options.put(CoreOptions.FILE_FORMAT.key(), "parquet");
+        List<DataField> fields =
+                Arrays.asList(
+                        new DataField(0, "f0", DataTypes.INT()),
+                        new DataField(1, "f1", DataTypes.STRING()),
+                        new DataField(
+                                2,
+                                "embedding",
+                                new org.apache.paimon.types.VectorType(
+                                        128, org.apache.paimon.types.DataTypes.FLOAT())));
+        // Vector column family columns are excluded from normal file validation,
+        // so parquet (which doesn't support VectorType) should work fine
+        assertThatCode(
+                        () ->
+                                validateVectorColumnFamilySchema(
+                                        options, fields, emptyList(), singletonList("f0")))
+                .doesNotThrowAnyException();
+    }
 }

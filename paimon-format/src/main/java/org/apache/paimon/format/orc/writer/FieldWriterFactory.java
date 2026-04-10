@@ -312,7 +312,14 @@ public class FieldWriterFactory implements DataTypeVisitor<FieldWriter> {
 
     @Override
     public FieldWriter visit(VectorType vectorType) {
-        throw new UnsupportedOperationException("Unsupported type: " + vectorType);
+        // Physical representation is bytes (VectorDescriptor serialized by
+        // VectorColumnFamilyFlushHelper).
+        return (rowId, column, getters, columnId) -> {
+            BytesColumnVector vector = (BytesColumnVector) column;
+            byte[] bytes = getters.getBinary(columnId);
+            vector.setVal(rowId, bytes, 0, bytes.length);
+            return bytes.length;
+        };
     }
 
     @Override

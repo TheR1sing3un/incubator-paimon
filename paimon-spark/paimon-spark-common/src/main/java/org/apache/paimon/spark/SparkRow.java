@@ -37,6 +37,7 @@ import org.apache.paimon.types.DateType;
 import org.apache.paimon.types.MapType;
 import org.apache.paimon.types.RowKind;
 import org.apache.paimon.types.RowType;
+import org.apache.paimon.types.VectorType;
 import org.apache.paimon.utils.DateTimeUtils;
 import org.apache.paimon.utils.UriReader;
 import org.apache.paimon.utils.UriReaderFactory;
@@ -179,7 +180,8 @@ public class SparkRow implements InternalRow, Serializable {
 
     @Override
     public InternalVector getVector(int pos) {
-        throw new UnsupportedOperationException("Not support VectorType yet.");
+        return new SparkVectorWrapper(
+                ((VectorType) type.getTypeAt(pos)).getElementType(), row.getList(pos));
     }
 
     @Override
@@ -356,7 +358,12 @@ public class SparkRow implements InternalRow, Serializable {
 
         @Override
         public InternalVector getVector(int pos) {
-            throw new UnsupportedOperationException("Not support VectorType yet.");
+            Object o = getAs(pos);
+            List<Object> array =
+                    o instanceof scala.collection.Seq
+                            ? JavaConverters.seqAsJavaList((scala.collection.Seq<Object>) o)
+                            : (List<Object>) o;
+            return new SparkVectorWrapper(((VectorType) elementType).getElementType(), array);
         }
 
         @Override
@@ -435,6 +442,12 @@ public class SparkRow implements InternalRow, Serializable {
                 res[i] = getDouble(i);
             }
             return res;
+        }
+    }
+
+    private static class SparkVectorWrapper extends PaimonArray implements InternalVector {
+        private SparkVectorWrapper(DataType elementType, List<Object> list) {
+            super(elementType, list);
         }
     }
 }

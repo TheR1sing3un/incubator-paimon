@@ -44,6 +44,7 @@ import org.apache.paimon.types.TinyIntType;
 import org.apache.paimon.types.VarBinaryType;
 import org.apache.paimon.types.VarCharType;
 import org.apache.paimon.types.VariantType;
+import org.apache.paimon.types.VectorType;
 
 import org.apache.spark.sql.paimon.shims.SparkShimLoader;
 import org.apache.spark.sql.types.DataType;
@@ -127,6 +128,13 @@ public class SparkTypeUtils {
         } else if (sparkDataType instanceof org.apache.spark.sql.types.ArrayType) {
             org.apache.spark.sql.types.ArrayType s =
                     (org.apache.spark.sql.types.ArrayType) sparkDataType;
+            if (paimonDataType instanceof VectorType) {
+                VectorType v = (VectorType) paimonDataType;
+                return new VectorType(
+                        v.isNullable(),
+                        v.getLength(),
+                        prunePaimonType(s.elementType(), v.getElementType()));
+            }
             ArrayType r = (ArrayType) paimonDataType;
             return r.newElementType(prunePaimonType(s.elementType(), r.getElementType()));
         } else {
@@ -234,6 +242,12 @@ public class SparkTypeUtils {
         @Override
         public DataType visit(VariantType variantType) {
             return SparkShimLoader.shim().SparkVariantType();
+        }
+
+        @Override
+        public DataType visit(VectorType vectorType) {
+            return DataTypes.createArrayType(
+                    vectorType.getElementType().accept(this), false);
         }
 
         @Override

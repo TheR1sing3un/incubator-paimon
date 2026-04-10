@@ -40,6 +40,7 @@ import org.apache.paimon.types.MapType;
 import org.apache.paimon.types.MultisetType;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.types.TimestampType;
+import org.apache.paimon.types.VectorType;
 import org.apache.paimon.utils.Preconditions;
 import org.apache.paimon.utils.SetUtils;
 import org.apache.paimon.utils.StringUtils;
@@ -171,8 +172,10 @@ public class SchemaValidation {
         List<DataField> fieldsInNormalFile = new ArrayList<>();
         Set<String> fieldsInDedicatedFile =
                 SetUtils.union(
-                        fieldNamesInBlobFile(tableRowType, blobDescriptorFields),
-                        fieldNamesInVectorFile(tableRowType, options.withVectorFormat()));
+                        SetUtils.union(
+                                fieldNamesInBlobFile(tableRowType, blobDescriptorFields),
+                                fieldNamesInVectorFile(tableRowType, options.withVectorFormat())),
+                        vectorColumnFamilyFieldNames(tableRowType, options));
         for (DataField field : tableRowType.getFields()) {
             if (!fieldsInDedicatedFile.contains(field.name())) {
                 fieldsInNormalFile.add(field);
@@ -307,6 +310,8 @@ public class SchemaValidation {
         validateMergeFunctionFactory(schema);
 
         validateRowTracking(schema, options);
+
+        validateVectorColumnFamily(schema, options);
 
         validateIncrementalClustering(schema, options);
 
@@ -648,6 +653,83 @@ public class SchemaValidation {
                         aggFuncName);
             }
         }
+    }
+
+    private static void validateVectorColumnFamily(TableSchema schema, CoreOptions options) {
+        if (!options.vectorColumnFamilyEnabled()) {
+            return;
+        }
+
+        checkArgument(
+                !schema.primaryKeys().isEmpty(),
+                "Vector column family (vector-column-family.enabled) is only supported for PK tables.");
+
+        RowType rowType = schema.logicalRowType();
+        Set<String> configuredColumns = options.vectorColumnFamilyColumns();
+        Set<String> vectorColumns;
+
+        if (configuredColumns.isEmpty()) {
+            // Auto-detect VectorType columns
+            vectorColumns = VectorType.fieldNamesInVectorFile(rowType, true);
+        } else {
+            vectorColumns = configuredColumns;
+        }
+
+        checkArgument(
+                !vectorColumns.isEmpty(),
+                "vector-column-family.enabled is set but no vector columns found. "
+                        + "Either add VectorType columns or configure 'vector-column-family.columns'.");
+
+        checkArgument(
+                vectorColumns.size() == 1,
+                "Vector column family currently supports only one vector column, but found %s.",
+                vectorColumns.size());
+
+        checkArgument(
+                options.dataFileExternalPaths() == null,
+                "Vector column family does not support external paths (data-file.external-paths).");
+
+        List<String> fieldNames = rowType.getFieldNames();
+        for (String col : vectorColumns) {
+            checkArgument(
+                    fieldNames.contains(col),
+                    "Vector column family column '%s' is not found in the table schema.",
+                    col);
+            checkArgument(
+                    !schema.primaryKeys().contains(col),
+                    "Vector column family column '%s' cannot be a primary key column.",
+                    col);
+            checkArgument(
+                    !schema.partitionKeys().contains(col),
+                    "Vector column family column '%s' cannot be a partition key column.",
+                    col);
+            DataField field = rowType.getField(col);
+            checkArgument(
+                    field.type().isNullable(),
+                    "Vector column family column '%s' must be nullable.",
+                    col);
+            checkArgument(
+                    field.type() instanceof VectorType,
+                    "Vector column family column '%s' must be of VectorType, but found %s.",
+                    col,
+                    field.type());
+        }
+    }
+
+    /**
+     * Returns the set of field names that will be stored in vector column family files. Used to
+     * exclude these fields from the normal file format validation.
+     */
+    private static Set<String> vectorColumnFamilyFieldNames(RowType rowType, CoreOptions options) {
+        if (!options.vectorColumnFamilyEnabled()) {
+            return Collections.emptySet();
+        }
+        Set<String> configuredColumns = options.vectorColumnFamilyColumns();
+        if (!configuredColumns.isEmpty()) {
+            return configuredColumns;
+        }
+        // Auto-detect: all VectorType columns
+        return fieldNamesInVectorFile(rowType, true);
     }
 
     private static void validateRowTracking(TableSchema schema, CoreOptions options) {

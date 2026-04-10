@@ -148,7 +148,7 @@ public class KeyValueFileReaderFactory implements FileReaderFactory<KeyValue> {
                         schema.logicalRowType(),
                         formatReaderMapping.getReaderFactory(),
                         orcPoolSize == null
-                                ? new FormatReaderContext(fileIO, filePath, fileSize)
+                                ? new FormatReaderContext(fileIO, filePath, fileSize, null)
                                 : new OrcFormatReaderContext(
                                         fileIO, filePath, fileSize, orcPoolSize),
                         ignoreCorruptFiles,
@@ -284,6 +284,9 @@ public class KeyValueFileReaderFactory implements FileReaderFactory<KeyValue> {
                 boolean projectKeys,
                 @Nullable List<Predicate> filters) {
             FormatReaderMapping.Builder builder = formatReaderMappingBuilder(projectKeys, filters);
+            DataFilePathFactory dataFilePathFactory =
+                    pathFactory.createDataFilePathFactory(partition, bucket);
+
             return new KeyValueFileReaderFactory(
                     fileIO,
                     schemaManager,
@@ -291,7 +294,7 @@ public class KeyValueFileReaderFactory implements FileReaderFactory<KeyValue> {
                     projectKeys ? this.readKeyType : keyType,
                     readValueType,
                     builder,
-                    pathFactory.createDataFilePathFactory(partition, bucket),
+                    dataFilePathFactory,
                     partition,
                     dvFactory,
                     options);

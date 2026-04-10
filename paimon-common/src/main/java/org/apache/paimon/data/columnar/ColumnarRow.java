@@ -28,6 +28,8 @@ import org.apache.paimon.data.InternalMap;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.data.InternalVector;
 import org.apache.paimon.data.Timestamp;
+import org.apache.paimon.data.VectorDescriptor;
+import org.apache.paimon.data.VectorRef;
 import org.apache.paimon.data.variant.Variant;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.types.RowKind;
@@ -184,7 +186,20 @@ public final class ColumnarRow implements InternalRow, DataSetters, Serializable
 
     @Override
     public InternalVector getVector(int pos) {
-        return vectorizedColumnBatch.getVector(rowId, pos);
+        ColumnVector column = vectorizedColumnBatch.columns[pos];
+        if (column instanceof VecColumnVector) {
+            return ((VecColumnVector) column).getVector(rowId);
+        }
+        // Vector column family mode: descriptor stored as bytes
+        byte[] bytes = getBinary(pos);
+        if (bytes == null) {
+            return null;
+        }
+        if (fileIO == null) {
+            throw new IllegalStateException("FileIO is null, cannot read vector data from file!");
+        }
+        VectorDescriptor descriptor = VectorDescriptor.deserialize(bytes);
+        return VectorRef.fromDescriptor(fileIO, descriptor);
     }
 
     @Override

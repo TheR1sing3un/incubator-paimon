@@ -25,7 +25,9 @@ import org.apache.paimon.data.BlobDescriptor;
 import org.apache.paimon.data.InternalArray;
 import org.apache.paimon.data.InternalMap;
 import org.apache.paimon.data.InternalRow;
+import org.apache.paimon.data.InternalVector;
 import org.apache.paimon.data.Timestamp;
+import org.apache.paimon.data.VectorRef;
 import org.apache.paimon.data.variant.GenericVariant;
 import org.apache.paimon.data.variant.PaimonShreddingUtils;
 import org.apache.paimon.data.variant.Variant;
@@ -109,6 +111,8 @@ public class ParquetRowDataWriter {
                     return new BinaryWriter();
                 case BLOB:
                     return new BlobDescriptorWriter();
+                case VECTOR:
+                    return new VectorDescriptorWriter();
                 case DECIMAL:
                     DecimalType decimalType = (DecimalType) t;
                     return createDecimalWriter(decimalType.getPrecision(), decimalType.getScale());
@@ -341,6 +345,33 @@ public class ParquetRowDataWriter {
                                 + "serialized BlobDescriptor (magic 'BLOBDESC').",
                         t);
             }
+        }
+    }
+
+    /**
+     * Writes VECTOR as serialized VectorDescriptor bytes for vector-cf descriptor-stored fields.
+     * Analogous to {@link BlobDescriptorWriter}: calls {@code getVector()} to get a {@link
+     * VectorRef}, then serializes its descriptor.
+     */
+    private class VectorDescriptorWriter implements FieldWriter {
+
+        @Override
+        public void write(InternalRow row, int ordinal) {
+            InternalVector vec = row.getVector(ordinal);
+            if (vec instanceof VectorRef) {
+                recordConsumer.addBinary(
+                        Binary.fromReusedByteArray(((VectorRef) vec).toDescriptorBytes()));
+            } else {
+                throw new IllegalArgumentException(
+                        "vector-column-family requires vector field to be a VectorRef, "
+                                + "but found: "
+                                + (vec == null ? "null" : vec.getClass().getName()));
+            }
+        }
+
+        @Override
+        public void write(InternalArray arrayData, int ordinal) {
+            throw new UnsupportedOperationException("VECTOR in array is not supported.");
         }
     }
 

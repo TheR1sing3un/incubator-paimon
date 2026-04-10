@@ -62,6 +62,7 @@ import org.apache.paimon.spark.procedure.SearchAccelerateIndexProcedure;
 import org.apache.paimon.spark.procedure.SearchTextIndexProcedure;
 import org.apache.paimon.spark.procedure.ShowAccelerateIndexStatusProcedure;
 import org.apache.paimon.spark.procedure.TriggerTagAutomaticCreationProcedure;
+import org.apache.paimon.spark.procedure.VectorColumnFamilyGcProcedure;
 
 import org.apache.paimon.shade.guava30.com.google.common.collect.ImmutableMap;
 
@@ -135,6 +136,7 @@ public class SparkProcedures {
         procedureBuilders.put(
                 "reconcile_accelerate_index", ReconcileAccelerateIndexProcedure::builder);
         procedureBuilders.put("drop_accelerate_index", DropAccelerateIndexProcedure::builder);
+        procedureBuilders.put("vector_column_family_gc", VectorColumnFamilyGcProcedure::builder);
         return procedureBuilders.build();
     }
 }

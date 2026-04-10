@@ -2420,6 +2420,31 @@ public class CoreOptions implements Serializable {
                                                     + " Default is 10 * TARGET_FILE_SIZE.")
                                     .build());
 
+    public static final ConfigOption<Boolean> VECTOR_COLUMN_FAMILY_ENABLED =
+            key("vector-column-family.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether to enable vector column family separation for PK tables. "
+                                    + "When enabled, vector columns are stored in separate append-only files, "
+                                    + "and the main scalar file stores a lightweight descriptor pointer "
+                                    + "instead of the actual vector data. This eliminates compaction read/write "
+                                    + "amplification caused by large vector columns.");
+
+    public static final ConfigOption<String> VECTOR_COLUMN_FAMILY_COLUMNS =
+            key("vector-column-family.columns")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Comma-separated column names to be separated into the vector column family. "
+                                    + "If not configured, all VectorType columns are automatically separated.");
+
+    public static final ConfigOption<MemorySize> VECTOR_COLUMN_FAMILY_TARGET_FILE_SIZE =
+            key("vector-column-family.target-file-size")
+                    .memoryType()
+                    .defaultValue(MemorySize.ofMebiBytes(128))
+                    .withDescription("Target size of a vector column family file.");
+
     private final Options options;
 
     public CoreOptions(Map<String, String> options) {
@@ -3780,6 +3805,24 @@ public class CoreOptions implements Serializable {
         return options.getOptional(VECTOR_TARGET_FILE_SIZE)
                 .map(MemorySize::getBytes)
                 .orElse(10 * targetFileSize(false));
+    }
+
+    public boolean vectorColumnFamilyEnabled() {
+        return options.get(VECTOR_COLUMN_FAMILY_ENABLED);
+    }
+
+    public Set<String> vectorColumnFamilyColumns() {
+        String columns = options.get(VECTOR_COLUMN_FAMILY_COLUMNS);
+        if (columns == null || columns.trim().isEmpty()) {
+            return Collections.emptySet();
+        }
+        return Arrays.stream(columns.trim().split(","))
+                .map(String::trim)
+                .collect(Collectors.toSet());
+    }
+
+    public long vectorColumnFamilyTargetFileSize() {
+        return options.get(VECTOR_COLUMN_FAMILY_TARGET_FILE_SIZE).getBytes();
     }
 
     /** Specifies the merge engine for table with primary key. */

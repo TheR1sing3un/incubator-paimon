@@ -264,7 +264,13 @@ public class SparkInternalRowWrapper implements InternalRow, Serializable {
 
     @Override
     public InternalVector getVector(int pos) {
-        throw new UnsupportedOperationException("Not support VectorType yet.");
+        int actualPos = getActualFieldPosition(pos);
+        if (actualPos == -1 || internalRow.isNullAt(actualPos)) {
+            return null;
+        }
+        return new SparkInternalVectorWrapper(
+                internalRow.getArray(actualPos),
+                ((ArrayType) (tableSchema.fields()[pos].dataType())).elementType());
     }
 
     @Override
@@ -434,7 +440,8 @@ public class SparkInternalRowWrapper implements InternalRow, Serializable {
 
         @Override
         public InternalVector getVector(int pos) {
-            throw new UnsupportedOperationException("Not support VectorType yet.");
+            return new SparkInternalVectorWrapper(
+                    arrayData.getArray(pos), ((ArrayType) elementType).elementType());
         }
 
         @Override
@@ -477,6 +484,14 @@ public class SparkInternalRowWrapper implements InternalRow, Serializable {
         @Override
         public InternalArray valueArray() {
             return new SparkInternalArray(mapData.valueArray(), valueType);
+        }
+    }
+
+    /** Wraps a Spark {@link ArrayData} as a Paimon {@link InternalVector}. */
+    private static class SparkInternalVectorWrapper extends SparkInternalArray
+            implements InternalVector {
+        private SparkInternalVectorWrapper(ArrayData arrayData, DataType elementType) {
+            super(arrayData, elementType);
         }
     }
 }

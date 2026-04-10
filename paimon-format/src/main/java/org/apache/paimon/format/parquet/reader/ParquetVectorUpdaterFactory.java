@@ -237,7 +237,15 @@ public class ParquetVectorUpdaterFactory {
 
         @Override
         public UpdaterFactory visit(VectorType vectorType) {
-            throw new RuntimeException("Vector type is not supported");
+            // Physical representation is bytes (same as VARBINARY); higher-level Row#getVector()
+            // interprets serialized VectorDescriptor when needed.
+            return c -> {
+                if (c.getPrimitiveType().getPrimitiveTypeName()
+                        == PrimitiveType.PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY) {
+                    return new FixedLenByteArrayUpdater(c.getPrimitiveType().getTypeLength());
+                }
+                return new BinaryUpdater();
+            };
         }
 
         @Override

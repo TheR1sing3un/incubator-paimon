@@ -96,6 +96,8 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
      */
     private final VersionedMergeMode mergeMode;
 
+    @Nullable private final VectorColumnFamilyFlushHelper.Factory vectorColumnFamilyHelperFactory;
+
     public MergeTreeWriter(
             boolean writeBufferSpillable,
             MemorySize maxDiskSize,
@@ -112,7 +114,8 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
             @Nullable CommitIncrement increment,
             @Nullable FieldsComparator userDefinedSeqComparator,
             boolean snapshotSequenceOrdering,
-            VersionedMergeMode mergeMode) {
+            VersionedMergeMode mergeMode,
+            @Nullable VectorColumnFamilyFlushHelper.Factory vectorColumnFamilyHelperFactory) {
         this.writeBufferSpillable = writeBufferSpillable;
         this.maxDiskSize = maxDiskSize;
         this.sortMaxFan = sortMaxFan;
@@ -131,6 +134,7 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
         this.mergeMode = mergeMode;
 
         this.snapshotSequenceOrdering = snapshotSequenceOrdering;
+        this.vectorColumnFamilyHelperFactory = vectorColumnFamilyHelperFactory;
 
         this.newFiles = new LinkedHashSet<>();
         this.deletedFiles = new LinkedHashSet<>();
@@ -235,19 +239,34 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
                             : null;
             final RollingFileWriter<KeyValue, DataFileMeta> dataWriter =
                     writerFactory.createRollingMergeTreeFileWriter(0, FileSource.APPEND);
+            final VectorColumnFamilyFlushHelper vectorHelper =
+                    vectorColumnFamilyHelperFactory != null
+                            ? vectorColumnFamilyHelperFactory.create()
+                            : null;
 
             try {
-                writeBuffer.forEach(
-                        keyComparator,
-                        mergeFunction,
-                        changelogWriter == null ? null : changelogWriter::write,
-                        dataWriter::write);
+                if (vectorHelper != null) {
+                    writeBuffer.forEach(
+                            keyComparator,
+                            mergeFunction,
+                            changelogWriter == null ? null : changelogWriter::write,
+                            kv -> dataWriter.write(vectorHelper.processAndReplace(kv)));
+                } else {
+                    writeBuffer.forEach(
+                            keyComparator,
+                            mergeFunction,
+                            changelogWriter == null ? null : changelogWriter::write,
+                            dataWriter::write);
+                }
             } finally {
                 writeBuffer.clear();
                 if (changelogWriter != null) {
                     changelogWriter.close();
                 }
                 dataWriter.close();
+                if (vectorHelper != null) {
+                    vectorHelper.close();
+                }
             }
 
             if (changelogWriter != null) {

@@ -32,6 +32,7 @@ import org.apache.paimon.types.IntType;
 import org.apache.paimon.types.MapType;
 import org.apache.paimon.types.MultisetType;
 import org.apache.paimon.types.RowType;
+import org.apache.paimon.types.VectorType;
 
 import org.apache.spark.sql.catalyst.util.ArrayBasedMapData;
 import org.apache.spark.sql.catalyst.util.ArrayData;
@@ -58,6 +59,8 @@ public class DataConverter {
                 return fromPaimon((org.apache.paimon.data.Decimal) o);
             case ARRAY:
                 return fromPaimon((InternalArray) o, (ArrayType) type);
+            case VECTOR:
+                return fromPaimon((InternalArray) o, (VectorType) type);
             case MAP:
             case MULTISET:
                 return fromPaimon((InternalMap) o, type);
@@ -91,6 +94,10 @@ public class DataConverter {
 
     public static ArrayData fromPaimon(InternalArray array, ArrayType arrayType) {
         return fromPaimonArrayElementType(array, arrayType.getElementType());
+    }
+
+    public static ArrayData fromPaimon(InternalArray array, VectorType vectorType) {
+        return fromPaimonArrayElementType(array, vectorType.getElementType());
     }
 
     private static ArrayData fromPaimonArrayElementType(InternalArray array, DataType elementType) {

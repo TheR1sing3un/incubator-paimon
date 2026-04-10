@@ -32,10 +32,13 @@ import org.apache.paimon.format.FileFormatDiscover;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.index.DynamicBucketIndexMaintainer;
 import org.apache.paimon.io.DataFileMeta;
+import org.apache.paimon.io.DataFilePathFactory;
 import org.apache.paimon.io.KeyValueFileReaderFactory;
 import org.apache.paimon.io.KeyValueFileWriterFactory;
 import org.apache.paimon.io.RecordLevelExpire;
+import org.apache.paimon.mergetree.DefaultVectorFileWriter;
 import org.apache.paimon.mergetree.MergeTreeWriter;
+import org.apache.paimon.mergetree.VectorColumnFamilyFlushHelper;
 import org.apache.paimon.mergetree.compact.KvCompactionManagerFactory;
 import org.apache.paimon.mergetree.compact.LookupMergeFunction;
 import org.apache.paimon.mergetree.compact.MergeFunctionFactory;
@@ -43,7 +46,9 @@ import org.apache.paimon.metrics.MetricRegistry;
 import org.apache.paimon.schema.KeyValueFieldsExtractor;
 import org.apache.paimon.schema.SchemaManager;
 import org.apache.paimon.schema.TableSchema;
+import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.RowType;
+import org.apache.paimon.types.VectorType;
 import org.apache.paimon.utils.CommitIncrement;
 import org.apache.paimon.utils.FieldsComparator;
 import org.apache.paimon.utils.FileStorePathFactory;
@@ -55,8 +60,10 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.function.BiFunction;
 import java.util.function.Function;
@@ -76,6 +83,8 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
     private final MergeFunctionFactory<KeyValue> mfFactory;
     private final CoreOptions options;
     private final RowType valueType;
+    private final TableSchema schema;
+    private final long schemaId;
     private final String commitUser;
     private final KvCompactionManagerFactory compactManagerFactory;
 
@@ -109,6 +118,8 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
                 dvMaintainerFactory,
                 tableName);
         this.valueType = valueType;
+        this.schema = schema;
+        this.schemaId = schema.id();
         this.commitUser = commitUser;
 
         KeyValueFileReaderFactory.Builder readerFactoryBuilder =
@@ -216,6 +227,40 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
                             + "changelog-producer=lookup, or force-lookup=true.");
         }
 
+        VectorColumnFamilyFlushHelper.Factory vectorColumnFamilyFactory = null;
+        if (options.vectorColumnFamilyEnabled()) {
+            Set<String> vectorCols = options.vectorColumnFamilyColumns();
+            if (vectorCols.isEmpty()) {
+                vectorCols = VectorType.fieldNamesInVectorFile(valueType, true);
+            }
+            final Set<String> finalVectorCols = vectorCols;
+            final FileIO fio = writerFactory.getFileIO();
+            final RowType vt = valueType;
+            final DataFilePathFactory pf = writerFactory.pathFactory(0);
+            final long vTargetSize = options.vectorColumnFamilyTargetFileSize();
+
+            // Collect vector DataFields in schema order — one writer per column
+            final List<DataField> vectorFields = new ArrayList<>();
+            for (DataField field : vt.getFields()) {
+                if (finalVectorCols.contains(field.name())) {
+                    vectorFields.add(field);
+                }
+            }
+
+            vectorColumnFamilyFactory =
+                    () -> {
+                        VectorColumnFamilyFlushHelper.VectorFileWriter[] writers =
+                                new VectorColumnFamilyFlushHelper.VectorFileWriter
+                                        [vectorFields.size()];
+                        for (int i = 0; i < vectorFields.size(); i++) {
+                            writers[i] =
+                                    new DefaultVectorFileWriter(
+                                            fio, vectorFields.get(i), pf, vTargetSize);
+                        }
+                        return new VectorColumnFamilyFlushHelper(vt, finalVectorCols, writers);
+                    };
+        }
+
         return new MergeTreeWriter(
                 options.writeBufferSpillable(),
                 options.writeBufferSpillDiskSize(),
@@ -232,7 +277,8 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
                 restoreIncrement,
                 UserDefinedSeqComparator.create(valueType, options),
                 options.snapshotSequenceOrdering(),
-                mergeMode);
+                mergeMode,
+                vectorColumnFamilyFactory);
     }
 
     @Override

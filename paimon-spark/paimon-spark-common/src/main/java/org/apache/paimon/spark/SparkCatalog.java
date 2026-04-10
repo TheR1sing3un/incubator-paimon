@@ -44,6 +44,7 @@ import org.apache.paimon.table.object.ObjectTable;
 import org.apache.paimon.types.BlobType;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataType;
+import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.utils.ExceptionUtils;
 
 import org.apache.spark.sql.PaimonSparkSession$;
@@ -83,6 +84,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.apache.paimon.CoreOptions.FILE_FORMAT;
@@ -457,6 +459,7 @@ public class SparkCatalog extends SparkBaseCatalog
             StructType schema, Transform[] partitions, Map<String, String> properties) {
         Map<String, String> normalizedProperties = new HashMap<>(properties);
         List<String> blobFields = CoreOptions.blobField(properties);
+        Set<String> vectorFields = CoreOptions.vectorField(properties);
         String provider = properties.get(TableCatalog.PROP_PROVIDER);
         if (!usePaimon(provider)) {
             if (isFormatTable(provider)) {
@@ -495,6 +498,23 @@ public class SparkCatalog extends SparkBaseCatalog
                         field.dataType() instanceof org.apache.spark.sql.types.BinaryType,
                         "The type of blob field must be binary");
                 type = new BlobType();
+            } else if (vectorFields.contains(name)) {
+                checkArgument(
+                        field.dataType() instanceof org.apache.spark.sql.types.ArrayType,
+                        "The type of vector field must be array");
+                String dimKey = "field." + name + ".vector-dim";
+                String dimStr = properties.get(dimKey);
+                checkArgument(
+                        dimStr != null && !dimStr.trim().isEmpty(),
+                        "Vector field '%s' requires '%s' in TBLPROPERTIES",
+                        name,
+                        dimKey);
+                int dim = Integer.parseInt(dimStr.trim());
+                org.apache.paimon.types.DataType elementType =
+                        toPaimonType(
+                                ((org.apache.spark.sql.types.ArrayType) field.dataType())
+                                        .elementType());
+                type = DataTypes.VECTOR(dim, elementType);
             } else {
                 type = toPaimonType(field.dataType()).copy(field.nullable());
             }
