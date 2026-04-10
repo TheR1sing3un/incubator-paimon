@@ -3001,11 +3001,15 @@ public class LuminaAccelerateIndexE2ETest {
                         snapshotS2);
         ReadBuilder readBuilderS2 = table.newReadBuilder().withAccelerateIndexSearch(searchAtS2);
         List<Split> splitsAtS2 = readBuilderS2.newScan().plan().splits();
-        // S2's L1 files are different (merged), so index entry won't match any file set
-        // The scan should return empty splits (no matching index entries)
-        assertThat(splitsAtS2)
-                .as("Search at S2 should have no matching index (files changed after compact)")
-                .isEmpty();
+        // S2's L1 files are different (merged), so no index entry matches.
+        // With brute force fallback enabled for vector search, uncovered splits ARE emitted
+        // (they will be handled by BruteForceVectorRecordReader at read time).
+        for (Split s : splitsAtS2) {
+            assertThat(s).isInstanceOf(AccelerateIndexSplit.class);
+            assertThat(((AccelerateIndexSplit) s).isUncovered())
+                    .as("S2 splits should be uncovered (no matching index)")
+                    .isTrue();
+        }
     }
 
     private FileStoreTable createVectorTable() throws Exception {

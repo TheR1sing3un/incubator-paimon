@@ -126,9 +126,11 @@ public class AccelerateIndexBatchScan implements DataTableScan {
             reader.withBucketFilter(bucketFilter);
         }
 
-        // 3. Get search units (V1: skip uncovered files)
+        // 3. Get search units. For vector search (queryVector != null), emit uncovered
+        // splits for brute force fallback. For text search, skip uncovered files.
+        boolean emitUncovered = search.queryVector() != null;
         List<AccelerateIndexSearchSplitUtils.SearchUnit> searchUnits =
-                reader.readForAccelerateIndex(columnId, search.algorithm(), false);
+                reader.readForAccelerateIndex(columnId, search.algorithm(), emitUncovered);
 
         if (searchUnits.isEmpty()) {
             return () -> Collections.emptyList();
@@ -151,9 +153,6 @@ public class AccelerateIndexBatchScan implements DataTableScan {
         // 5. Pair each SearchUnit with index info + stats filtering → AccelerateIndexSplit
         List<Split> resultSplits = new ArrayList<>();
         for (AccelerateIndexSearchSplitUtils.SearchUnit unit : searchUnits) {
-            if (unit.entry() == null) {
-                continue;
-            }
             DataSplit dataSplit = unit.split();
 
             // Compute statsPassingFiles: null if no filter, otherwise set of passing file names
@@ -168,6 +167,7 @@ public class AccelerateIndexBatchScan implements DataTableScan {
                 }
             }
 
+            // Uncovered splits (entry == null) are included for brute force at read time
             resultSplits.add(
                     new AccelerateIndexSplit(
                             dataSplit, unit.entry(), search, columnId, statsPassingFiles));

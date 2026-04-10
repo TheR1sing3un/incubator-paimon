@@ -25,6 +25,7 @@ import org.apache.paimon.accelerateindex.AccelerateIndexScanner;
 import org.apache.paimon.accelerateindex.AccelerateIndexScannerContext;
 import org.apache.paimon.accelerateindex.AccelerateIndexSearchSplitUtils;
 import org.apache.paimon.accelerateindex.AccelerateIndexSearchSplitUtils.SearchUnit;
+import org.apache.paimon.accelerateindex.VectorDistanceUtils;
 import org.apache.paimon.data.InternalArray;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
@@ -571,51 +572,15 @@ public class SearchAccelerateIndexProcedure extends BaseProcedure {
             return null;
         }
         InternalArray arr = row.getArray(vectorPos);
-        float[] vec = new float[dim];
-        for (int i = 0; i < dim; i++) {
-            vec[i] = arr.getFloat(i);
-        }
-        return vec;
+        return VectorDistanceUtils.extractVector(arr, dim);
     }
 
     private static float computeDistance(float[] a, float[] b, String metric) {
-        float sum = 0;
-        switch (metric) {
-            case "l2":
-                for (int i = 0; i < a.length; i++) {
-                    float d = a[i] - b[i];
-                    sum += d * d;
-                }
-                return sum;
-            case "cosine":
-                float dot = 0, normA = 0, normB = 0;
-                for (int i = 0; i < a.length; i++) {
-                    dot += a[i] * b[i];
-                    normA += a[i] * a[i];
-                    normB += b[i] * b[i];
-                }
-                return 1.0f - (float) (dot / (Math.sqrt(normA) * Math.sqrt(normB)));
-            case "ip":
-                for (int i = 0; i < a.length; i++) {
-                    sum += a[i] * b[i];
-                }
-                return -sum;
-            default:
-                throw new IllegalArgumentException("Unknown metric: " + metric);
-        }
+        return VectorDistanceUtils.computeDistance(a, b, metric);
     }
 
     private static float convertDistanceToScore(float distance, String metric) {
-        switch (metric) {
-            case "l2":
-                return 1.0f / (1.0f + distance);
-            case "cosine":
-                return 1.0f - distance;
-            case "ip":
-                return -distance;
-            default:
-                return 0;
-        }
+        return VectorDistanceUtils.convertDistanceToScore(distance, metric);
     }
 
     // ---- Result row helpers ----

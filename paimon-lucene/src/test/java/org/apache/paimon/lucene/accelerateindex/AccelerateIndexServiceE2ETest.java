@@ -36,7 +36,9 @@ import org.apache.paimon.accelerateindex.AccelerateIndexReconciler;
 import org.apache.paimon.accelerateindex.AccelerateIndexReconciler.ReconcileResult;
 import org.apache.paimon.accelerateindex.AccelerateIndexScanResult;
 import org.apache.paimon.accelerateindex.AccelerateIndexScannerContext;
+import org.apache.paimon.accelerateindex.AccelerateIndexSearch;
 import org.apache.paimon.accelerateindex.AccelerateIndexSnapshotListener;
+import org.apache.paimon.accelerateindex.AccelerateIndexSplit;
 import org.apache.paimon.accelerateindex.AccelerateIndexState;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogContext;
@@ -47,16 +49,22 @@ import org.apache.paimon.data.BinaryRowWriter;
 import org.apache.paimon.data.BinaryString;
 import org.apache.paimon.data.GenericArray;
 import org.apache.paimon.data.GenericRow;
+import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.disk.IOManager;
 import org.apache.paimon.disk.IOManagerImpl;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
+import org.apache.paimon.reader.RecordReader;
+import org.apache.paimon.reader.ScoreRecordIterator;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.sink.BatchTableCommit;
 import org.apache.paimon.table.sink.BatchTableWrite;
 import org.apache.paimon.table.sink.BatchWriteBuilder;
 import org.apache.paimon.table.source.DataSplit;
+import org.apache.paimon.table.source.ReadBuilder;
+import org.apache.paimon.table.source.Split;
+import org.apache.paimon.table.source.TableRead;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataTypes;
 
@@ -77,6 +85,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * End-to-end integration tests for Phase 12 service components: {@link
@@ -1271,6 +1280,108 @@ public class AccelerateIndexServiceE2ETest {
         Path metaPath = new Path(split.bucketPath(), AccelerateIndexConstants.META_FILE_NAME);
         AccelerateIndexMeta meta = AccelerateIndexMetaIO.read(table.fileIO(), metaPath);
         assertThat(meta.entries()).isNotEmpty();
+    }
+
+    // ========== Group 9: Brute Force Vector Search Fallback ==========
+
+    @Test
+    public void testReadBuilderBruteForceForUncoveredSplits() throws Exception {
+        FileStoreTable table = createVectorTable("bf_uncovered");
+        writeVectorBatch(table, 0, 10);
+        table = compactVector(table, "bf_uncovered");
+
+        float[] query = {0, 1, 2};
+        AccelerateIndexSearch search =
+                new AccelerateIndexSearch(
+                        "vec", query, 3, "lumina", "l2", 3, Collections.emptyMap());
+
+        ReadBuilder readBuilder = table.newReadBuilder().withAccelerateIndexSearch(search);
+        List<Split> splits = readBuilder.newScan().plan().splits();
+
+        assertThat(splits).isNotEmpty();
+        for (Split s : splits) {
+            assertThat(s).isInstanceOf(AccelerateIndexSplit.class);
+            assertThat(((AccelerateIndexSplit) s).isUncovered()).isTrue();
+        }
+
+        TableRead read = readBuilder.newRead();
+        List<float[]> results = new ArrayList<>();
+        for (Split s : splits) {
+            try (RecordReader<InternalRow> reader = read.createReader(s)) {
+                RecordReader.RecordIterator<InternalRow> batch;
+                while ((batch = reader.readBatch()) != null) {
+                    assertThat(batch).isInstanceOf(ScoreRecordIterator.class);
+                    InternalRow row;
+                    while ((row = batch.next()) != null) {
+                        float score = ((ScoreRecordIterator<?>) batch).returnedScore();
+                        results.add(new float[] {score, row.getInt(1)});
+                    }
+                    batch.releaseBatch();
+                }
+            }
+        }
+
+        assertThat(results).hasSize(3);
+        assertThat(results.get(0)[0]).isGreaterThan(results.get(1)[0]);
+        assertThat(results.get(0)[1]).isCloseTo(0f, within(0.01f));
+    }
+
+    @Test
+    public void testReadBuilderLuceneSkipsUncovered() throws Exception {
+        FileStoreTable table = createTable("bf_lucene_skip");
+        writeInsertBatch(table, 0, 10);
+        table = compact(table, "bf_lucene_skip");
+
+        Map<String, String> searchOpts = new HashMap<>();
+        searchOpts.put("lucene.query", "{\"must\":[{\"match\":{\"contextEn\":\"Word\"}}]}");
+        searchOpts.put("lucene.nested.column_name", "captions");
+        AccelerateIndexSearch search =
+                new AccelerateIndexSearch("captions", null, 5, "lucene", "", 0, searchOpts);
+
+        ReadBuilder readBuilder = table.newReadBuilder().withAccelerateIndexSearch(search);
+        List<Split> splits = readBuilder.newScan().plan().splits();
+        assertThat(splits).isEmpty();
+    }
+
+    // ---- Vector table helpers ----
+
+    private FileStoreTable createVectorTable(String tableName) throws Exception {
+        Identifier id = Identifier.create("default", tableName);
+        Schema.Builder builder =
+                Schema.newBuilder()
+                        .column("pt", DataTypes.INT())
+                        .column("pk", DataTypes.INT())
+                        .column("vec", DataTypes.ARRAY(DataTypes.FLOAT()))
+                        .partitionKeys("pt")
+                        .primaryKey("pt", "pk")
+                        .option(CoreOptions.BUCKET.key(), "1")
+                        .option(CoreOptions.FILE_FORMAT.key(), "parquet");
+        catalog.createTable(id, builder.build(), false);
+        return (FileStoreTable) catalog.getTable(id);
+    }
+
+    private void writeVectorBatch(FileStoreTable table, int startPk, int count) throws Exception {
+        BatchWriteBuilder wb = table.newBatchWriteBuilder();
+        try (BatchTableWrite write = wb.newWrite().withIOManager(ioManager);
+                BatchTableCommit commit = wb.newCommit()) {
+            for (int i = 0; i < count; i++) {
+                int pk = startPk + i;
+                Float[] vec = new Float[] {(float) pk, (float) (pk + 1), (float) (pk + 2)};
+                write.write(GenericRow.of(1, pk, new GenericArray(vec)));
+            }
+            commit.commit(write.prepareCommit());
+        }
+    }
+
+    private FileStoreTable compactVector(FileStoreTable table, String tableName) throws Exception {
+        BinaryRow partition = binaryRow(1);
+        BatchWriteBuilder wb = table.newBatchWriteBuilder();
+        try (BatchTableWrite write = wb.newWrite().withIOManager(ioManager);
+                BatchTableCommit commit = wb.newCommit()) {
+            write.compact(partition, 0, true);
+            commit.commit(write.prepareCommit());
+        }
+        return (FileStoreTable) catalog.getTable(Identifier.create("default", tableName));
     }
 
     private FileStoreTable createTable(String tableName) throws Exception {

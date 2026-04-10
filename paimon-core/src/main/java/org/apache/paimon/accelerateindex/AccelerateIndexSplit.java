@@ -39,14 +39,14 @@ public class AccelerateIndexSplit implements Split {
     private static final long serialVersionUID = 3L;
 
     private final DataSplit dataSplit;
-    private final AccelerateIndexEntry indexEntry;
+    @Nullable private final AccelerateIndexEntry indexEntry;
     private final AccelerateIndexSearch search;
     private final int columnId;
     @Nullable private final Set<String> statsPassingFiles;
 
     public AccelerateIndexSplit(
             DataSplit dataSplit,
-            AccelerateIndexEntry indexEntry,
+            @Nullable AccelerateIndexEntry indexEntry,
             AccelerateIndexSearch search,
             int columnId,
             @Nullable Set<String> statsPassingFiles) {
@@ -61,9 +61,18 @@ public class AccelerateIndexSplit implements Split {
         return dataSplit;
     }
 
-    /** The READY index entry for this bucket, used by executor to load and search the index. */
+    /**
+     * The READY index entry for this bucket. Null for uncovered splits that require brute force
+     * search.
+     */
+    @Nullable
     public AccelerateIndexEntry indexEntry() {
         return indexEntry;
+    }
+
+    /** Returns true if this split has no index coverage and requires brute force search. */
+    public boolean isUncovered() {
+        return indexEntry == null;
     }
 
     /** Search parameters (queryVector, topK, algorithm, metric, dim, options). */
