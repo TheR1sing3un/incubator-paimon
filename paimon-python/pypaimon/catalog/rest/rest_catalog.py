@@ -213,6 +213,33 @@ class RESTCatalog(Catalog):
     def get_table(self, identifier: Union[str, Identifier]):
         if not isinstance(identifier, Identifier):
             identifier = Identifier.from_string(identifier)
+
+        if identifier.is_system_table():
+            base_id = Identifier.create(
+                identifier.get_database_name(),
+                identifier.get_table_name(),
+                branch=identifier.get_branch_name(),
+            )
+            origin = self.load_table(
+                base_id,
+                lambda path: self.file_io_for_data(path, base_id),
+                self.file_io_from_options,
+                self.load_table_metadata,
+            )
+            from pypaimon.table.system.system_table_loader import \
+                SystemTableLoader
+            system_table = SystemTableLoader.load(
+                identifier.get_system_table_name(), origin, catalog=self
+            )
+            if system_table is None:
+                raise ValueError(
+                    "Unknown system table: {} (supported: {})".format(
+                        identifier.get_system_table_name(),
+                        ", ".join(SystemTableLoader.system_tables()),
+                    )
+                )
+            return system_table
+
         return self.load_table(
             identifier,
             lambda path: self.file_io_for_data(path, identifier),

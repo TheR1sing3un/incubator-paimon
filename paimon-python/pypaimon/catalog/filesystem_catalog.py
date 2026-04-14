@@ -132,6 +132,31 @@ class FileSystemCatalog(Catalog):
             identifier = Identifier.from_string(identifier)
         if self.catalog_options.contains(CoreOptions.SCAN_FALLBACK_BRANCH):
             raise ValueError(f"Unsupported CoreOption {CoreOptions.SCAN_FALLBACK_BRANCH}")
+
+        if identifier.is_system_table():
+            base_id = Identifier.create(
+                identifier.get_database_name(),
+                identifier.get_table_name(),
+                branch=identifier.get_branch_name(),
+            )
+            origin = self._load_data_table(base_id)
+            from pypaimon.table.system.system_table_loader import \
+                SystemTableLoader
+            system_table = SystemTableLoader.load(
+                identifier.get_system_table_name(), origin, catalog=self
+            )
+            if system_table is None:
+                raise ValueError(
+                    "Unknown system table: {} (supported: {})".format(
+                        identifier.get_system_table_name(),
+                        ", ".join(SystemTableLoader.system_tables()),
+                    )
+                )
+            return system_table
+
+        return self._load_data_table(identifier)
+
+    def _load_data_table(self, identifier: Identifier) -> Table:
         table_path = self.get_table_path(identifier)
         table_schema = self.get_table_schema(identifier)
 

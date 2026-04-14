@@ -78,6 +78,37 @@ def read_paimon(
             f"override_num_blocks must be at least 1, got {override_num_blocks}"
         )
 
+    # System tables expose catalog metadata (snapshots / manifests / tags ...).
+    # They always materialize into a small Arrow table, so skip the distributed
+    # datasource entirely and hand Ray a single Arrow block — matching Java
+    # where system tables produce a single Split.
+    from pypaimon.common.identifier import Identifier
+    parsed = (Identifier.from_string(table_identifier)
+              if not isinstance(table_identifier, Identifier)
+              else table_identifier)
+    if parsed.is_system_table():
+        from pypaimon.catalog.catalog_factory import CatalogFactory
+
+        catalog = CatalogFactory.create(catalog_options)
+        system_table = catalog.get_table(parsed)
+        copy_opts = {}
+        if snapshot_id is not None:
+            copy_opts["scan.snapshot-id"] = str(snapshot_id)
+        if tag_name is not None:
+            copy_opts["scan.tag-name"] = tag_name
+        if copy_opts:
+            system_table = system_table.copy(copy_opts)
+
+        rb = system_table.new_read_builder()
+        if filter is not None:
+            rb = rb.with_filter(filter)
+        if projection is not None:
+            rb = rb.with_projection(projection)
+        if limit is not None:
+            rb = rb.with_limit(limit)
+        arrow_table = rb.new_read().to_arrow(rb.new_scan().plan().splits())
+        return ray.data.from_arrow(arrow_table)
+
     datasource = RayDatasource(
         table_identifier,
         catalog_options,
