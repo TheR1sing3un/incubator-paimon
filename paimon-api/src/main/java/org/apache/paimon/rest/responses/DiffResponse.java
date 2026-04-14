@@ -30,16 +30,16 @@ import javax.annotation.Nullable;
 
 import java.util.List;
 
-/** Response for diff between two refs. */
+/** Response for diff between two branch refs, showing commits unique to each side. */
 @JsonIgnoreProperties(ignoreUnknown = true)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class DiffResponse implements RESTResponse {
 
     private static final String FIELD_LEFT_REF = "left_ref";
     private static final String FIELD_RIGHT_REF = "right_ref";
-    private static final String FIELD_LEFT_COMMIT_ID = "left_commit_id";
-    private static final String FIELD_RIGHT_COMMIT_ID = "right_commit_id";
-    private static final String FIELD_CHANGES = "changes";
+    private static final String FIELD_MERGE_BASE = "merge_base";
+    private static final String FIELD_LEFT_ONLY = "left_only";
+    private static final String FIELD_RIGHT_ONLY = "right_only";
 
     @JsonProperty(FIELD_LEFT_REF)
     private final String leftRef;
@@ -48,28 +48,27 @@ public class DiffResponse implements RESTResponse {
     private final String rightRef;
 
     @Nullable
-    @JsonProperty(FIELD_LEFT_COMMIT_ID)
-    private final String leftCommitId;
+    @JsonProperty(FIELD_MERGE_BASE)
+    private final MergeBaseInfo mergeBase;
 
-    @Nullable
-    @JsonProperty(FIELD_RIGHT_COMMIT_ID)
-    private final String rightCommitId;
+    @JsonProperty(FIELD_LEFT_ONLY)
+    private final List<DiffCommitEntry> leftOnly;
 
-    @JsonProperty(FIELD_CHANGES)
-    private final List<DiffChange> changes;
+    @JsonProperty(FIELD_RIGHT_ONLY)
+    private final List<DiffCommitEntry> rightOnly;
 
     @JsonCreator
     public DiffResponse(
             @JsonProperty(FIELD_LEFT_REF) String leftRef,
             @JsonProperty(FIELD_RIGHT_REF) String rightRef,
-            @Nullable @JsonProperty(FIELD_LEFT_COMMIT_ID) String leftCommitId,
-            @Nullable @JsonProperty(FIELD_RIGHT_COMMIT_ID) String rightCommitId,
-            @JsonProperty(FIELD_CHANGES) List<DiffChange> changes) {
+            @Nullable @JsonProperty(FIELD_MERGE_BASE) MergeBaseInfo mergeBase,
+            @JsonProperty(FIELD_LEFT_ONLY) List<DiffCommitEntry> leftOnly,
+            @JsonProperty(FIELD_RIGHT_ONLY) List<DiffCommitEntry> rightOnly) {
         this.leftRef = leftRef;
         this.rightRef = rightRef;
-        this.leftCommitId = leftCommitId;
-        this.rightCommitId = rightCommitId;
-        this.changes = changes;
+        this.mergeBase = mergeBase;
+        this.leftOnly = leftOnly;
+        this.rightOnly = rightOnly;
     }
 
     @JsonGetter(FIELD_LEFT_REF)
@@ -83,80 +82,153 @@ public class DiffResponse implements RESTResponse {
     }
 
     @Nullable
-    @JsonGetter(FIELD_LEFT_COMMIT_ID)
-    public String leftCommitId() {
-        return leftCommitId;
+    @JsonGetter(FIELD_MERGE_BASE)
+    public MergeBaseInfo mergeBase() {
+        return mergeBase;
     }
 
-    @Nullable
-    @JsonGetter(FIELD_RIGHT_COMMIT_ID)
-    public String rightCommitId() {
-        return rightCommitId;
+    @JsonGetter(FIELD_LEFT_ONLY)
+    public List<DiffCommitEntry> leftOnly() {
+        return leftOnly;
     }
 
-    @JsonGetter(FIELD_CHANGES)
-    public List<DiffChange> changes() {
-        return changes;
+    @JsonGetter(FIELD_RIGHT_ONLY)
+    public List<DiffCommitEntry> rightOnly() {
+        return rightOnly;
     }
 
-    /** A single change entry in a diff result. */
+    /** Information about the merge-base (common ancestor) between two branches. */
     @JsonIgnoreProperties(ignoreUnknown = true)
-    @JsonInclude(JsonInclude.Include.NON_NULL)
-    public static class DiffChange {
+    public static class MergeBaseInfo {
 
-        private static final String FIELD_TYPE = "type";
-        private static final String FIELD_COLUMN_NAME = "column_name";
-        private static final String FIELD_COLUMN_TYPE = "column_type";
-        private static final String FIELD_NULLABLE = "nullable";
+        private static final String FIELD_BRANCH = "branch";
+        private static final String FIELD_SNAPSHOT_ID = "snapshot_id";
 
-        @JsonProperty(FIELD_TYPE)
-        private final String type;
+        @JsonProperty(FIELD_BRANCH)
+        private final String branch;
 
-        @Nullable
-        @JsonProperty(FIELD_COLUMN_NAME)
-        private final String columnName;
-
-        @Nullable
-        @JsonProperty(FIELD_COLUMN_TYPE)
-        private final String columnType;
-
-        @Nullable
-        @JsonProperty(FIELD_NULLABLE)
-        private final Boolean nullable;
+        @JsonProperty(FIELD_SNAPSHOT_ID)
+        private final long snapshotId;
 
         @JsonCreator
-        public DiffChange(
-                @JsonProperty(FIELD_TYPE) String type,
-                @Nullable @JsonProperty(FIELD_COLUMN_NAME) String columnName,
-                @Nullable @JsonProperty(FIELD_COLUMN_TYPE) String columnType,
-                @Nullable @JsonProperty(FIELD_NULLABLE) Boolean nullable) {
-            this.type = type;
-            this.columnName = columnName;
-            this.columnType = columnType;
-            this.nullable = nullable;
+        public MergeBaseInfo(
+                @JsonProperty(FIELD_BRANCH) String branch,
+                @JsonProperty(FIELD_SNAPSHOT_ID) long snapshotId) {
+            this.branch = branch;
+            this.snapshotId = snapshotId;
         }
 
-        @JsonGetter(FIELD_TYPE)
-        public String type() {
-            return type;
+        @JsonGetter(FIELD_BRANCH)
+        public String branch() {
+            return branch;
+        }
+
+        @JsonGetter(FIELD_SNAPSHOT_ID)
+        public long snapshotId() {
+            return snapshotId;
+        }
+    }
+
+    /** A single commit entry in a diff result, derived from a Paimon snapshot. */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class DiffCommitEntry {
+
+        private static final String FIELD_SNAPSHOT_ID = "snapshot_id";
+        private static final String FIELD_SCHEMA_ID = "schema_id";
+        private static final String FIELD_COMMIT_KIND = "commit_kind";
+        private static final String FIELD_COMMIT_USER = "commit_user";
+        private static final String FIELD_COMMIT_UUID = "commit_uuid";
+        private static final String FIELD_TIME_MILLIS = "time_millis";
+        private static final String FIELD_TOTAL_RECORD_COUNT = "total_record_count";
+        private static final String FIELD_DELTA_RECORD_COUNT = "delta_record_count";
+
+        @JsonProperty(FIELD_SNAPSHOT_ID)
+        private final long snapshotId;
+
+        @JsonProperty(FIELD_SCHEMA_ID)
+        private final long schemaId;
+
+        @JsonProperty(FIELD_COMMIT_KIND)
+        private final String commitKind;
+
+        @Nullable
+        @JsonProperty(FIELD_COMMIT_USER)
+        private final String commitUser;
+
+        @Nullable
+        @JsonProperty(FIELD_COMMIT_UUID)
+        private final String commitUuid;
+
+        @JsonProperty(FIELD_TIME_MILLIS)
+        private final long timeMillis;
+
+        @JsonProperty(FIELD_TOTAL_RECORD_COUNT)
+        private final long totalRecordCount;
+
+        @JsonProperty(FIELD_DELTA_RECORD_COUNT)
+        private final long deltaRecordCount;
+
+        @JsonCreator
+        public DiffCommitEntry(
+                @JsonProperty(FIELD_SNAPSHOT_ID) long snapshotId,
+                @JsonProperty(FIELD_SCHEMA_ID) long schemaId,
+                @JsonProperty(FIELD_COMMIT_KIND) String commitKind,
+                @Nullable @JsonProperty(FIELD_COMMIT_USER) String commitUser,
+                @Nullable @JsonProperty(FIELD_COMMIT_UUID) String commitUuid,
+                @JsonProperty(FIELD_TIME_MILLIS) long timeMillis,
+                @JsonProperty(FIELD_TOTAL_RECORD_COUNT) long totalRecordCount,
+                @JsonProperty(FIELD_DELTA_RECORD_COUNT) long deltaRecordCount) {
+            this.snapshotId = snapshotId;
+            this.schemaId = schemaId;
+            this.commitKind = commitKind;
+            this.commitUser = commitUser;
+            this.commitUuid = commitUuid;
+            this.timeMillis = timeMillis;
+            this.totalRecordCount = totalRecordCount;
+            this.deltaRecordCount = deltaRecordCount;
+        }
+
+        @JsonGetter(FIELD_SNAPSHOT_ID)
+        public long snapshotId() {
+            return snapshotId;
+        }
+
+        @JsonGetter(FIELD_SCHEMA_ID)
+        public long schemaId() {
+            return schemaId;
+        }
+
+        @JsonGetter(FIELD_COMMIT_KIND)
+        public String commitKind() {
+            return commitKind;
         }
 
         @Nullable
-        @JsonGetter(FIELD_COLUMN_NAME)
-        public String columnName() {
-            return columnName;
+        @JsonGetter(FIELD_COMMIT_USER)
+        public String commitUser() {
+            return commitUser;
         }
 
         @Nullable
-        @JsonGetter(FIELD_COLUMN_TYPE)
-        public String columnType() {
-            return columnType;
+        @JsonGetter(FIELD_COMMIT_UUID)
+        public String commitUuid() {
+            return commitUuid;
         }
 
-        @Nullable
-        @JsonGetter(FIELD_NULLABLE)
-        public Boolean nullable() {
-            return nullable;
+        @JsonGetter(FIELD_TIME_MILLIS)
+        public long timeMillis() {
+            return timeMillis;
+        }
+
+        @JsonGetter(FIELD_TOTAL_RECORD_COUNT)
+        public long totalRecordCount() {
+            return totalRecordCount;
+        }
+
+        @JsonGetter(FIELD_DELTA_RECORD_COUNT)
+        public long deltaRecordCount() {
+            return deltaRecordCount;
         }
     }
 }

@@ -21,9 +21,14 @@ package org.apache.paimon.rest.server.handlers;
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.Identifier;
+import org.apache.paimon.operation.BranchDiffOperation;
+import org.apache.paimon.operation.BranchDiffOperation.BranchDiffResult;
 import org.apache.paimon.rest.RESTResponse;
 import org.apache.paimon.rest.requests.CreateBranchRequest;
 import org.apache.paimon.rest.requests.MergeBranchRequest;
+import org.apache.paimon.rest.responses.DiffResponse;
+import org.apache.paimon.rest.responses.DiffResponse.DiffCommitEntry;
+import org.apache.paimon.rest.responses.DiffResponse.MergeBaseInfo;
 import org.apache.paimon.rest.responses.GetBranchResponse;
 import org.apache.paimon.rest.responses.ListBranchesResponse;
 import org.apache.paimon.rest.server.RouteRegistrar;
@@ -32,6 +37,7 @@ import org.apache.paimon.rest.server.Router;
 import org.apache.paimon.rest.server.utils.MetricsHelper;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Table;
+import org.apache.paimon.utils.BranchManager;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
 import org.slf4j.Logger;
@@ -41,6 +47,7 @@ import javax.annotation.Nullable;
 
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
 
@@ -166,12 +173,13 @@ public class BranchHandler implements RouteRegistrar {
     }
 
     /**
-     * Diff two refs (branch names or commit IDs) of a table. Phase 2 — not yet implemented.
+     * Diff two branch refs of a table, returning the commits unique to each side.
      *
      * @param identifier table identifier
-     * @param params query params containing "left" and "right" refs
+     * @param params query params containing "left" and "right" branch names
      */
-    public RouteResult diffRefs(Identifier identifier, Map<String, String> params) {
+    public RouteResult diffRefs(Identifier identifier, Map<String, String> params)
+            throws Exception {
         String left = params.get("left");
         String right = params.get("right");
         LOG.info(
@@ -183,9 +191,55 @@ public class BranchHandler implements RouteRegistrar {
             throw new IllegalArgumentException(
                     "Both 'left' and 'right' query parameters are required for diff");
         }
-        // TODO Phase 2: implement diff logic
-        throw new UnsupportedOperationException(
-                "Diff is not yet implemented (Phase 2). Left: " + left + ", Right: " + right);
+
+        String leftBranch = BranchManager.normalizeBranch(left);
+        String rightBranch = BranchManager.normalizeBranch(right);
+
+        Table table = catalog.getTable(identifier);
+        if (!(table instanceof FileStoreTable)) {
+            throw new UnsupportedOperationException(
+                    "Diff is only supported for FileStoreTable, got: "
+                            + table.getClass().getSimpleName());
+        }
+        FileStoreTable fst = (FileStoreTable) table;
+
+        BranchManager branchMgr = fst.branchManager();
+        if (!BranchManager.isMainBranch(leftBranch) && !branchMgr.branchExists(leftBranch)) {
+            throw new Catalog.BranchNotExistException(identifier, leftBranch);
+        }
+        if (!BranchManager.isMainBranch(rightBranch) && !branchMgr.branchExists(rightBranch)) {
+            throw new Catalog.BranchNotExistException(identifier, rightBranch);
+        }
+
+        BranchDiffOperation op = new BranchDiffOperation(fst.store().snapshotManager(), branchMgr);
+        BranchDiffResult result = op.diff(leftBranch, rightBranch);
+
+        MergeBaseInfo mergeBase =
+                new MergeBaseInfo(result.mergeBaseBranch(), result.mergeBaseSnapshotId());
+        List<DiffCommitEntry> leftOnly =
+                result.leftOnly().stream()
+                        .map(BranchHandler::toDiffCommitEntry)
+                        .collect(Collectors.toList());
+        List<DiffCommitEntry> rightOnly =
+                result.rightOnly().stream()
+                        .map(BranchHandler::toDiffCommitEntry)
+                        .collect(Collectors.toList());
+
+        DiffResponse response =
+                new DiffResponse(leftBranch, rightBranch, mergeBase, leftOnly, rightOnly);
+        return new RouteResult(200, response);
+    }
+
+    private static DiffCommitEntry toDiffCommitEntry(Snapshot snapshot) {
+        return new DiffCommitEntry(
+                snapshot.id(),
+                snapshot.schemaId(),
+                snapshot.commitKind().toString(),
+                snapshot.commitUser(),
+                snapshot.commitUuid(),
+                snapshot.timeMillis(),
+                snapshot.totalRecordCount(),
+                snapshot.deltaRecordCount());
     }
 
     public RESTResponse getBranch(Identifier identifier, String branchName) throws Exception {

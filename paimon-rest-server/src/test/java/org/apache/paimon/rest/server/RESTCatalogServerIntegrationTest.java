@@ -613,12 +613,13 @@ class RESTCatalogServerIntegrationTest {
     }
 
     @Test
-    void testDiffNotImplemented() throws Exception {
+    void testDiffBranchNotFound() throws Exception {
         createTestTableWithData("diff_db", "diff_tbl");
         String tablePath = "/v1/test-prefix/databases/diff_db/tables/diff_tbl";
 
+        // Diff with nonexistent branch should return 404
         int status = httpGetStatus(tablePath + "/diff?left=main&right=dev");
-        assertThat(status).isEqualTo(501);
+        assertThat(status).isEqualTo(404);
 
         // Clean up
         httpDelete(tablePath);
