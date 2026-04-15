@@ -228,7 +228,9 @@ class PaimonPerWorkerDatasink(_DatasinkBase):
     * **At-least-once semantics.** A worker can commit and then crash before
       Ray observes success, causing Ray to retry and write the data again. This
       mode is intended for primary-key tables with upsert semantics where
-      duplicate writes are idempotent.
+      duplicate writes are idempotent. Enabling Ray task retries (``max_retries``
+      > 0, which is the default in :func:`pypaimon.ray.write_paimon`) amplifies
+      this risk and should only be used on tables that can absorb duplicates.
     * **Concurrent commits rely on Paimon's optimistic lock.** Many parallel
       workers committing to the same table will compete via
       ``FileStoreCommit._try_commit`` retries. Tens of workers are expected to

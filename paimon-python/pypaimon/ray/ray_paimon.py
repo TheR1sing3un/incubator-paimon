@@ -27,7 +27,7 @@ Usage::
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import ray.data
 
@@ -40,6 +40,47 @@ logger = logging.getLogger(__name__)
 # commit) and amplify small files to O(W * buckets * partitions); a
 # conservative default protects users who don't set concurrency explicitly.
 DEFAULT_PER_WORKER_CONCURRENCY = 4
+
+# Default Ray task retry count for write_paimon / TableWrite.write_ray.
+# Ray write tasks are long-running and frequently run on preemptible nodes, so
+# a small amount of retries materially improves robustness. Two-phase mode is
+# always safe under retry (driver only commits the last successful attempt).
+# Per-worker mode is already documented as at-least-once, so adding retries
+# there is consistent with its existing contract. Pass ``max_retries=0`` to
+# disable.
+DEFAULT_RAY_WRITE_MAX_RETRIES = 2
+
+
+def _merge_ray_remote_args(
+    max_retries: int,
+    retry_exceptions: Optional[Union[bool, List[type]]],
+    ray_remote_args: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Merge explicit retry kwargs into ``ray_remote_args``.
+
+    Explicit keyword arguments win over keys in ``ray_remote_args``; a warning
+    is logged on conflict so the caller can see which value is actually in
+    effect. Returns ``None`` when neither source contributes any args (lets
+    Ray use its own defaults).
+    """
+    merged: Dict[str, Any] = {}
+    if ray_remote_args:
+        merged.update(ray_remote_args)
+
+    explicit = {"max_retries": max_retries}
+    if retry_exceptions is not None:
+        explicit["retry_exceptions"] = retry_exceptions
+
+    for key, value in explicit.items():
+        if key in merged and merged[key] != value:
+            logger.warning(
+                "ray_remote_args[%r]=%r conflicts with explicit %s=%r; "
+                "the explicit keyword argument takes precedence.",
+                key, merged[key], key, value,
+            )
+        merged[key] = value
+
+    return merged or None
 
 
 def read_paimon(
@@ -143,6 +184,8 @@ def write_paimon(
     *,
     overwrite: bool = False,
     concurrency: Optional[int] = None,
+    max_retries: int = DEFAULT_RAY_WRITE_MAX_RETRIES,
+    retry_exceptions: Optional[Union[bool, List[type]]] = None,
     ray_remote_args: Optional[Dict[str, Any]] = None,
     committer: Optional[str] = None,
     message: Optional[str] = None,
@@ -162,7 +205,32 @@ def write_paimon(
             ``DEFAULT_PER_WORKER_CONCURRENCY`` (4) when unset instead of Ray's
             cluster-based default, to bound optimistic-lock conflicts and
             metadata amplification. Pass an explicit value to override.
-        ray_remote_args: Optional kwargs passed to ``ray.remote`` in write tasks.
+        max_retries: Max number of times Ray will retry a failed write task.
+            Defaults to ``2`` (Ray's native default is ``0``; we override to
+            make Ray write robust to transient worker failures). Pass ``0``
+            to disable. Semantics differ by ``commit_mode``:
+
+            * ``"two_phase"``: safe. The driver only commits ``CommitMessage``
+              values returned by the last successful attempt, so retries never
+              produce visible duplicates. Data files written by earlier failed
+              attempts become orphan files and are removed by the normal
+              orphan-file cleanup.
+            * ``"per_worker"``: **at-least-once**. A worker may succeed in
+              committing and then be reported as failed to Ray (e.g. node
+              crash after commit), in which case Ray retries the task and the
+              data is committed again. Only safe for primary-key / upsert
+              tables that absorb duplicates.
+
+            This is independent from Paimon's internal ``commit_max_retries``
+            option, which governs the driver-side retry loop for optimistic
+            snapshot-lock conflicts and does not replace Ray-level retries.
+        retry_exceptions: Forwarded to Ray's ``ray.remote``. When ``None``
+            (default), Ray decides which exceptions are retryable. Pass
+            ``True`` to retry on all application exceptions, or a list of
+            exception types to restrict retries to those types.
+        ray_remote_args: Optional kwargs passed to ``ray.remote`` in write
+            tasks. Explicit ``max_retries`` / ``retry_exceptions`` keyword
+            arguments take precedence over same-named keys here.
         committer: Optional committer name for audit tracking.
         message: Optional commit message for audit tracking.
         min_rows_per_file: Minimum number of rows per write task. Ray will
@@ -215,9 +283,13 @@ def write_paimon(
             DEFAULT_PER_WORKER_CONCURRENCY,
         )
 
+    merged_remote_args = _merge_ray_remote_args(
+        max_retries, retry_exceptions, ray_remote_args,
+    )
+
     write_kwargs = {}
-    if ray_remote_args is not None:
-        write_kwargs["ray_remote_args"] = ray_remote_args
+    if merged_remote_args is not None:
+        write_kwargs["ray_remote_args"] = merged_remote_args
     if concurrency is not None:
         write_kwargs["concurrency"] = concurrency
 

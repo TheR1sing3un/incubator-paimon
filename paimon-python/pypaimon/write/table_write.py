@@ -16,7 +16,7 @@
 # limitations under the License.
 ################################################################################
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import pyarrow as pa
 
@@ -79,6 +79,8 @@ class TableWrite:
         dataset: "Dataset",
         overwrite: bool = False,
         concurrency: Optional[int] = None,
+        max_retries: Optional[int] = None,
+        retry_exceptions: Optional[Union[bool, List[type]]] = None,
         ray_remote_args: Optional[Dict[str, Any]] = None,
         committer: Optional[str] = None,
         message: Optional[str] = None,
@@ -94,8 +96,19 @@ class TableWrite:
             overwrite: Whether to overwrite existing data. Defaults to False.
             concurrency: Optional max number of Ray tasks to run concurrently.
                 By default, dynamically decided based on available resources.
-            ray_remote_args: Optional kwargs passed to :func:`ray.remote` in write tasks.
-                For example, ``{"num_cpus": 2, "max_retries": 3}``.
+            max_retries: Max number of times Ray will retry a failed write
+                task. Defaults to ``DEFAULT_RAY_WRITE_MAX_RETRIES`` (2). Pass
+                ``0`` to disable. Retries are safe under two-phase commit
+                (the default); this sink commits via two-phase semantics so
+                retries never cause visible duplicates — failed attempts only
+                leave orphan data files for orphan-file cleanup to remove.
+            retry_exceptions: Forwarded to :func:`ray.remote`. ``None`` keeps
+                Ray's default; ``True`` retries on any application exception;
+                a list restricts retries to the given exception types.
+            ray_remote_args: Optional kwargs passed to :func:`ray.remote` in
+                write tasks, e.g. ``{"num_cpus": 2}``. Explicit ``max_retries``
+                / ``retry_exceptions`` keyword arguments take precedence over
+                same-named keys here.
             committer: Optional committer name for audit tracking.
             message: Optional commit message for audit tracking.
             min_rows_per_file: Optional minimum number of rows per write task.
@@ -104,7 +117,17 @@ class TableWrite:
             options: Optional dynamic table options to override defaults at write time,
                 e.g. ``{"target-file-size": "256mb"}``.
         """
+        from pypaimon.ray.ray_paimon import (DEFAULT_RAY_WRITE_MAX_RETRIES,
+                                             _merge_ray_remote_args)
         from pypaimon.write.ray_datasink import PaimonDatasink
+
+        effective_max_retries = (
+            DEFAULT_RAY_WRITE_MAX_RETRIES if max_retries is None else max_retries
+        )
+        merged_remote_args = _merge_ray_remote_args(
+            effective_max_retries, retry_exceptions, ray_remote_args,
+        )
+
         datasink = PaimonDatasink(self.table, overwrite=overwrite,
                                   committer=committer, message=message,
                                   min_rows_per_file=min_rows_per_file,
@@ -112,7 +135,7 @@ class TableWrite:
         dataset.write_datasink(
             datasink,
             concurrency=concurrency,
-            ray_remote_args=ray_remote_args,
+            ray_remote_args=merged_remote_args,
         )
 
     def close(self):
