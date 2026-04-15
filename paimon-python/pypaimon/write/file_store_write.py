@@ -58,7 +58,15 @@ class FileStoreWrite:
         writer.write(data)
 
     def _create_data_writer(self, partition: Tuple, bucket: int, options: CoreOptions) -> DataWriter:
+        # When sequence.snapshot-ordering is enabled, merge-read tiebreaks by (commit_snapshot_id,
+        # sequence_number), so per-worker seq only needs to be self-consistent within the current
+        # commit — no need to scan the latest snapshot to find an existing max. Skipping avoids a
+        # catalog + manifest scan per (worker, partition), which dominates Ray cold-start cost.
+        snapshot_ordering = options.snapshot_sequence_ordering()
+
         def max_seq_number():
+            if snapshot_ordering:
+                return 0
             return self._seq_number_stats(partition).get(bucket, 1)
 
         # Check if table has blob columns

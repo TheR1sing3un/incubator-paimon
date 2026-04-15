@@ -159,5 +159,214 @@ class CommitSnapshotIdTest(unittest.TestCase):
                                   "when snapshot ordering is disabled")
 
 
+    def test_writer_skips_seq_number_scan_when_snapshot_ordering(self):
+        """When sequence.snapshot-ordering is enabled, the writer must not scan the latest
+        snapshot to seed SequenceGenerator — this is the whole point of the optimization."""
+        from pypaimon.write.file_store_write import FileStoreWrite
+
+        schema = Schema.from_pyarrow_schema(
+            self.pk_pa_schema,
+            primary_keys=['pt', 'k'],
+            partition_keys=['pt'],
+            options={
+                'bucket': '1',
+                'sequence.snapshot-ordering': 'true',
+            }
+        )
+        self.catalog.create_table('default.test_skip_seq_scan', schema, False)
+        table = self.catalog.get_table('default.test_skip_seq_scan')
+
+        call_count = {'n': 0}
+        original = FileStoreWrite._load_seq_number_stats
+
+        def counting(self, partition):
+            call_count['n'] += 1
+            return original(self, partition)
+
+        FileStoreWrite._load_seq_number_stats = counting
+        try:
+            write_builder = table.new_batch_write_builder()
+            table_write = write_builder.new_write()
+            table_commit = write_builder.new_commit()
+            data = pa.Table.from_pydict(
+                {'pt': [1, 1, 2], 'k': [10, 11, 20], 'v': [100, 110, 200]},
+                schema=self.pk_pa_schema,
+            )
+            table_write.write_arrow(data)
+            table_commit.commit(table_write.prepare_commit())
+            table_write.close()
+            table_commit.close()
+        finally:
+            FileStoreWrite._load_seq_number_stats = original
+
+        self.assertEqual(call_count['n'], 0,
+                         "snapshot-ordering writer must not call _load_seq_number_stats")
+
+        # Write a second commit and verify it still starts fresh (per-commit seq from 0).
+        call_count['n'] = 0
+        FileStoreWrite._load_seq_number_stats = counting
+        try:
+            write_builder = table.new_batch_write_builder()
+            table_write = write_builder.new_write()
+            table_commit = write_builder.new_commit()
+            data2 = pa.Table.from_pydict(
+                {'pt': [1], 'k': [10], 'v': [999]},
+                schema=self.pk_pa_schema,
+            )
+            table_write.write_arrow(data2)
+            table_commit.commit(table_write.prepare_commit())
+            table_write.close()
+            table_commit.close()
+        finally:
+            FileStoreWrite._load_seq_number_stats = original
+
+        self.assertEqual(call_count['n'], 0,
+                         "second commit must also skip the scan")
+
+    def test_writer_scans_when_snapshot_ordering_disabled(self):
+        """Sanity: without the option, the legacy scan path still runs."""
+        from pypaimon.write.file_store_write import FileStoreWrite
+
+        schema = Schema.from_pyarrow_schema(
+            self.pk_pa_schema,
+            primary_keys=['pt', 'k'],
+            partition_keys=['pt'],
+            options={'bucket': '1'},
+        )
+        self.catalog.create_table('default.test_legacy_scan', schema, False)
+        table = self.catalog.get_table('default.test_legacy_scan')
+
+        # Seed one commit so the second commit has something to scan.
+        write_builder = table.new_batch_write_builder()
+        tw = write_builder.new_write()
+        tc = write_builder.new_commit()
+        tw.write_arrow(pa.Table.from_pydict(
+            {'pt': [1], 'k': [1], 'v': [1]}, schema=self.pk_pa_schema))
+        tc.commit(tw.prepare_commit())
+        tw.close()
+        tc.close()
+
+        call_count = {'n': 0}
+        original = FileStoreWrite._load_seq_number_stats
+
+        def counting(self, partition):
+            call_count['n'] += 1
+            return original(self, partition)
+
+        FileStoreWrite._load_seq_number_stats = counting
+        try:
+            write_builder = table.new_batch_write_builder()
+            tw = write_builder.new_write()
+            tc = write_builder.new_commit()
+            tw.write_arrow(pa.Table.from_pydict(
+                {'pt': [1], 'k': [2], 'v': [2]}, schema=self.pk_pa_schema))
+            tc.commit(tw.prepare_commit())
+            tw.close()
+            tc.close()
+        finally:
+            FileStoreWrite._load_seq_number_stats = original
+
+        self.assertGreaterEqual(call_count['n'], 1,
+                                "legacy path must still call _load_seq_number_stats")
+
+    def test_readback_latest_snapshot_wins_with_overlapping_seq(self):
+        """End-to-end: two commits touch the same PK, both start seq from 0 (no scan).
+        Merge-read must return the value from the later snapshot — proves the (snapshot_id,
+        seq) tiebreak in HeapEntry kicks in."""
+        schema = Schema.from_pyarrow_schema(
+            self.pk_pa_schema,
+            primary_keys=['pt', 'k'],
+            partition_keys=['pt'],
+            options={
+                'bucket': '1',
+                'sequence.snapshot-ordering': 'true',
+            }
+        )
+        self.catalog.create_table('default.test_readback_snapshot_order', schema, False)
+        table = self.catalog.get_table('default.test_readback_snapshot_order')
+
+        # Commit 1: pt=1, k=10 -> v=100
+        wb = table.new_batch_write_builder()
+        tw, tc = wb.new_write(), wb.new_commit()
+        tw.write_arrow(pa.Table.from_pydict(
+            {'pt': [1], 'k': [10], 'v': [100]}, schema=self.pk_pa_schema))
+        tc.commit(tw.prepare_commit())
+        tw.close(); tc.close()
+
+        # Commit 2: same PK, new value.
+        table = self.catalog.get_table('default.test_readback_snapshot_order')
+        wb = table.new_batch_write_builder()
+        tw, tc = wb.new_write(), wb.new_commit()
+        tw.write_arrow(pa.Table.from_pydict(
+            {'pt': [1], 'k': [10], 'v': [999]}, schema=self.pk_pa_schema))
+        tc.commit(tw.prepare_commit())
+        tw.close(); tc.close()
+
+        # Read back: the newer snapshot (2) must win, even though both files' per-row seq start at 0.
+        table = self.catalog.get_table('default.test_readback_snapshot_order')
+        rb = table.new_read_builder()
+        scan = rb.new_scan()
+        reader = rb.new_read()
+        splits = scan.plan().splits()
+        result = reader.to_arrow(splits)
+        rows = result.to_pylist()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['v'], 999,
+                         "latest snapshot must win when (snapshot_id, seq) tiebreaks; "
+                         "got {} — comparator may be falling back to seq".format(rows[0]))
+
+
+class HeapEntryComparatorTest(unittest.TestCase):
+    """Unit-test the comparator logic in isolation — no catalog/IO."""
+
+    def _make_entry(self, snapshot_id, seq):
+        from pypaimon.read.reader.sort_merge_reader import HeapEntry
+
+        class _KV:
+            def __init__(self, sid, s):
+                self.commit_snapshot_id = sid
+                self.sequence_number = s
+
+        class _Element:
+            def __init__(self, kv):
+                self.kv = kv
+
+        # Same key on both sides; key_comparator returns 0 so the tiebreak path is exercised.
+        return HeapEntry(key=object(), element=_Element(_KV(snapshot_id, seq)),
+                         key_comparator=lambda a, b: 0)
+
+    def test_higher_snapshot_wins_even_when_seq_is_lower(self):
+        older = self._make_entry(snapshot_id=1, seq=200)
+        newer = self._make_entry(snapshot_id=2, seq=50)
+        # __lt__: older < newer means older is "smaller" in the min-heap → newer wins on pop.
+        self.assertTrue(older < newer)
+        self.assertFalse(newer < older)
+
+    def test_unknown_snapshot_falls_back_to_seq(self):
+        # Both UNKNOWN_SNAPSHOT_ID=-1 → legacy path, pure seq comparison.
+        low = self._make_entry(snapshot_id=-1, seq=10)
+        high = self._make_entry(snapshot_id=-1, seq=20)
+        self.assertTrue(low < high)
+        self.assertFalse(high < low)
+
+    def test_one_side_unknown_loses_to_real_snapshot(self):
+        # Mixed: legacy file predating sequence.snapshot-ordering carries UNKNOWN_SNAPSHOT_ID (-1);
+        # a new commit stamped with snapshot id 5 wins over it regardless of the seq values
+        # (aligning with Java's SortMergeReaderWithMinHeap, which compares snapshotIds
+        # unconditionally when they differ). This is the mid-life-enable case: a user turning the
+        # option on must not silently lose new writes to big-seq legacy rows.
+        legacy = self._make_entry(snapshot_id=-1, seq=500)
+        ordered = self._make_entry(snapshot_id=5, seq=10)
+        # -1 < 5 → legacy is "smaller" in the min-heap, ordered is newer and wins on pop.
+        self.assertTrue(legacy < ordered)
+        self.assertFalse(ordered < legacy)
+
+    def test_same_snapshot_falls_back_to_seq(self):
+        a = self._make_entry(snapshot_id=3, seq=10)
+        b = self._make_entry(snapshot_id=3, seq=20)
+        self.assertTrue(a < b)
+        self.assertFalse(b < a)
+
+
 if __name__ == '__main__':
     unittest.main()

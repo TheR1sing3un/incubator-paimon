@@ -177,6 +177,18 @@ class HeapEntry:
         elif result > 0:
             return False
 
+        # Merge ordering aligns with Java SortMergeReaderWithMinHeap: whenever the two sides carry
+        # different commit_snapshot_id values, snapshot id wins — a later commit's records always
+        # beat earlier ones, even when per-worker sequence_number restarts from 0. Legacy files
+        # predating sequence.snapshot-ordering read back with UNKNOWN_SNAPSHOT_ID (-1) and naturally
+        # lose to any file carrying a real snapshot id, which is what we want when the option is
+        # turned on mid-life. Only when both sides share the same snapshot id (including the
+        # all-legacy case where both are -1) do we fall back to sequence_number.
+        self_sid = self.element.kv.commit_snapshot_id
+        other_sid = other.element.kv.commit_snapshot_id
+        if self_sid != other_sid:
+            return self_sid < other_sid
+
         return self.element.kv.sequence_number < other.element.kv.sequence_number
 
 
