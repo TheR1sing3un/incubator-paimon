@@ -139,6 +139,7 @@ def write_paimon(
     message: Optional[str] = None,
     min_rows_per_file: Optional[int] = None,
     options: Optional[Dict[str, str]] = None,
+    commit_mode: str = "two_phase",
 ) -> None:
     """Write a Ray Dataset to a Paimon table.
 
@@ -156,17 +157,38 @@ def write_paimon(
             at least this many rows, which helps reduce small files.
         options: Optional dynamic table options to override defaults at write time,
             e.g. ``{"target-file-size": "256mb"}``.
+        commit_mode: ``"two_phase"`` (default) uses :class:`PaimonDatasink`,
+            where the driver commits atomically after all workers finish.
+            ``"per_worker"`` uses :class:`PaimonPerWorkerDatasink`, where each
+            worker commits its own data immediately so results become visible
+            incrementally. ``per_worker`` does not support ``overwrite=True``,
+            does not roll back on failure, and is at-least-once — intended for
+            primary-key (upsert) tables.
     """
     from pypaimon.catalog.catalog_factory import CatalogFactory
-    from pypaimon.write.ray_datasink import PaimonDatasink
+    from pypaimon.write.ray_datasink import (PaimonDatasink,
+                                             PaimonPerWorkerDatasink)
 
     catalog = CatalogFactory.create(catalog_options)
     table = catalog.get_table(table_identifier)
 
-    datasink = PaimonDatasink(table, overwrite=overwrite,
-                              committer=committer, message=message,
-                              min_rows_per_file=min_rows_per_file,
-                              options=options)
+    if commit_mode == "two_phase":
+        datasink = PaimonDatasink(table, overwrite=overwrite,
+                                  committer=committer, message=message,
+                                  min_rows_per_file=min_rows_per_file,
+                                  options=options)
+    elif commit_mode == "per_worker":
+        datasink = PaimonPerWorkerDatasink(
+            table, overwrite=overwrite,
+            committer=committer, message=message,
+            min_rows_per_file=min_rows_per_file,
+            options=options,
+        )
+    else:
+        raise ValueError(
+            f"Unknown commit_mode={commit_mode!r}; "
+            "expected 'two_phase' or 'per_worker'."
+        )
 
     write_kwargs = {}
     if ray_remote_args is not None:

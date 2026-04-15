@@ -15,6 +15,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 ################################################################################
+import errno
 import logging
 import os
 import shutil
@@ -210,32 +211,70 @@ class LocalFileIO(FileIO):
     def rename(self, src: str, dst: str) -> bool:
         if self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug(f"Invoking rename for {src} to {dst}")
-        
+
         src_file = self._to_file(src)
         dst_file = self._to_file(dst)
-        
+
         dst_parent = dst_file.parent
         if dst_parent and not dst_parent.exists():
             dst_parent.mkdir(parents=True, exist_ok=True)
-        
+
+        # If dst is an existing directory, fall back to dst/srcFileName for
+        # HadoopFileIO compatibility. Directory path is checked under the
+        # in-process lock just as a hint; the file-level race is handled
+        # below by os.link's atomic create-if-not-exists.
+        with LocalFileIO.RENAME_LOCK:
+            if dst_file.exists() and dst_file.is_dir():
+                dst_file = dst_file / src_file.name
+
+        # POSIX os.link is atomic and fails with FileExistsError if dst
+        # already exists. This gives true cross-process create-if-absent
+        # semantics that os.rename / Path.rename cannot provide
+        # (Path.rename silently overwrites on POSIX).
         try:
-            with LocalFileIO.RENAME_LOCK:
-                if dst_file.exists():
-                    if dst_file.is_file():
-                        return False
-                    # Make it compatible with HadoopFileIO: if dst is an existing directory,
-                    # dst=dst/srcFileName
-                    dst_file = dst_file / src_file.name
-                    if dst_file.exists():
-                        return False
-                
-                # Perform atomic move
-                src_file.rename(dst_file)
-                return True
+            os.link(str(src_file), str(dst_file))
+        except FileExistsError:
+            return False
         except FileNotFoundError:
             return False
-        except (PermissionError, OSError):
+        except OSError as e:
+            # On filesystems where hardlinks are unavailable (cross-device
+            # rename, FAT/exFAT, some FUSE/SMB/CIFS/NFS mounts, link-count
+            # limits) os.link raises OSError with one of these errnos.
+            # Falling back to os.rename keeps the operation working at the
+            # cost of cross-process atomicity (only RENAME_LOCK above
+            # protects within a single process). Surface a warning so users
+            # can diagnose lost cross-process safety in production.
+            link_unavailable = (errno.EXDEV, errno.EPERM,
+                                errno.EOPNOTSUPP, errno.EMLINK)
+            if e.errno in link_unavailable:
+                self.logger.warning(
+                    "os.link unavailable on this filesystem (errno=%s); "
+                    "falling back to os.rename for %s -> %s. "
+                    "Cross-process commit atomicity is not guaranteed on "
+                    "this filesystem.",
+                    e.errno, src_file, dst_file,
+                )
+                with LocalFileIO.RENAME_LOCK:
+                    if dst_file.exists():
+                        return False
+                    try:
+                        os.rename(str(src_file), str(dst_file))
+                    except OSError:
+                        return False
+                return True
             return False
+
+        try:
+            os.unlink(str(src_file))
+        except OSError:
+            # The link succeeded, so dst is committed; failing to clean up
+            # the source is best-effort.
+            self.logger.warning(
+                "Failed to unlink source after atomic link rename: %s",
+                src_file,
+            )
+        return True
     
     def try_to_write_atomic(self, path: str, content: str) -> bool:
         file_path = self._to_file(path)

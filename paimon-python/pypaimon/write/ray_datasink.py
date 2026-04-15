@@ -188,7 +188,7 @@ class PaimonDatasink(_DatasinkBase):
             f"Write job failed for table {self._table_name}. Error: {error}",
             exc_info=error
         )
-        
+
         if self._pending_commit_messages:
             try:
                 table_commit = self._writer_builder.new_commit()
@@ -207,3 +207,149 @@ class PaimonDatasink(_DatasinkBase):
                 )
             finally:
                 self._pending_commit_messages = []
+
+
+@DeveloperAPI
+class PaimonPerWorkerDatasink(_DatasinkBase):
+    """Ray Datasink that performs write + commit independently on each worker.
+
+    Unlike :class:`PaimonDatasink`, which uses two-phase commit (workers produce
+    commit messages, driver commits atomically at the end), this sink lets each
+    Ray write task commit its own data immediately. Data becomes visible
+    incrementally as workers finish, rather than only after the whole job.
+
+    Trade-offs (intentional):
+
+    * **No overwrite support.** Atomic overwrite requires a single coordinated
+      commit; constructing this sink with ``overwrite=True`` raises ``ValueError``.
+    * **No abort / rollback on failure.** If some workers commit successfully
+      and a later worker fails, the already-committed data stays visible.
+      ``on_write_failed`` only logs; manual cleanup is the user's responsibility.
+    * **At-least-once semantics.** A worker can commit and then crash before
+      Ray observes success, causing Ray to retry and write the data again. This
+      mode is intended for primary-key tables with upsert semantics where
+      duplicate writes are idempotent.
+    * **Concurrent commits rely on Paimon's optimistic lock.** Many parallel
+      workers committing to the same table will compete via
+      ``FileStoreCommit._try_commit`` retries. Tens of workers are expected to
+      work fine; very high concurrency may benefit from external throttling.
+    """
+
+    def __init__(
+        self,
+        table: "Table",
+        overwrite: bool = False,
+        committer: Optional[str] = None,
+        message: Optional[str] = None,
+        min_rows_per_file: Optional[int] = None,
+        options: Optional[Dict[str, str]] = None,
+    ):
+        if overwrite:
+            raise ValueError(
+                "PaimonPerWorkerDatasink does not support overwrite=True; "
+                "atomic overwrite requires a single coordinated commit. "
+                "Use PaimonDatasink for two-phase commit with overwrite."
+            )
+        self.table = table
+        self.committer = committer
+        self.message = message
+        self._min_rows_per_file = min_rows_per_file
+        self._options = options
+        self._table_name = table.identifier.get_full_name()
+
+    @property
+    def min_rows_per_write(self) -> Optional[int]:
+        return self._min_rows_per_file
+
+    def __getstate__(self) -> dict:
+        return self.__dict__.copy()
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+        if not hasattr(self, '_table_name'):
+            self._table_name = self.table.identifier.get_full_name()
+
+    def on_write_start(self, schema=None) -> None:
+        logger.info(
+            f"Starting per-worker write job for table {self._table_name} "
+            f"(each worker commits independently; failures are not rolled back)"
+        )
+
+    def write(
+        self,
+        blocks: Iterable[Block],
+        ctx: TaskContext,
+    ) -> List[Any]:
+        table_write = None
+        table_commit = None
+        try:
+            writer_builder = self.table.new_batch_write_builder()
+            if self._options:
+                writer_builder = writer_builder.with_options(self._options)
+
+            table_write = writer_builder.new_write()
+
+            for block in blocks:
+                block_arrow: pa.Table = BlockAccessor.for_block(block).to_arrow()
+                if block_arrow.num_rows == 0:
+                    continue
+                table_write.write_arrow(block_arrow)
+
+            commit_messages = table_write.prepare_commit()
+            non_empty_messages = [m for m in commit_messages if not m.is_empty()]
+
+            if not non_empty_messages:
+                logger.info(
+                    f"Worker has no data to commit for table {self._table_name}"
+                )
+                return []
+
+            table_commit = writer_builder.new_commit(
+                committer=self.committer, message=self.message)
+            table_commit.commit(non_empty_messages)
+            logger.info(
+                f"Worker committed {len(non_empty_messages)} commit messages "
+                f"for table {self._table_name}"
+            )
+            return []
+        finally:
+            if table_write is not None:
+                try:
+                    table_write.close()
+                except Exception as e:
+                    logger.warning(
+                        f"Error closing table_write: {e}", exc_info=e
+                    )
+            if table_commit is not None:
+                try:
+                    table_commit.close()
+                except Exception as e:
+                    logger.warning(
+                        f"Error closing table_commit: {e}", exc_info=e
+                    )
+
+    def on_write_complete(self, write_result: Any) -> None:
+        # All commits already happened in worker tasks. Nothing to do here
+        # except summarize for the user.
+        if hasattr(write_result, "write_returns"):
+            write_returns = write_result.write_returns
+        elif isinstance(write_result, list):
+            write_returns = write_result
+        else:
+            write_returns = []
+        logger.info(
+            f"Per-worker write job complete for table {self._table_name}: "
+            f"{len(write_returns)} worker tasks finished"
+        )
+
+    def on_write_failed(self, error: Exception) -> None:
+        # Per-worker mode: data already committed by successful workers stays
+        # visible. We do NOT abort, because (a) we don't have the commit
+        # messages on the driver, and (b) once committed, abort cannot remove
+        # them anyway. Users must clean up manually if they need to.
+        logger.error(
+            f"Per-worker write job failed for table {self._table_name}: {error}. "
+            f"Note: any data already committed by successful workers remains "
+            f"visible and is NOT rolled back. Manual cleanup may be required.",
+            exc_info=error,
+        )
