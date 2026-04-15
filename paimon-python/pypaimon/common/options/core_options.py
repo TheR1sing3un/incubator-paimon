@@ -630,8 +630,7 @@ class CoreOptions:
 
     def target_file_size(self, has_primary_key, default=None):
         return self.options.get(CoreOptions.TARGET_FILE_SIZE,
-                                MemorySize.of_mebi_bytes(
-                                    128 if has_primary_key else 256) if default is None else MemorySize.parse(
+                                MemorySize.of_mebi_bytes(2048) if default is None else MemorySize.parse(
                                     default)).get_bytes()
 
     def blob_target_file_size(self, default=None):

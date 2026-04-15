@@ -2209,11 +2209,11 @@ class DataBlobWriterTest(unittest.TestCase):
         blob_files = [f for f in all_files if f.file_name.endswith('.blob')]
 
         # The key test: verify that blob.target-file-size is used instead of target-file-size
-        # If target-file-size (default 256MB for append-only) was used, we'd have 1 file
+        # If target-file-size (default 2048MB for append-only) was used, we'd have 1 file
         # If blob.target-file-size (1MB) is used, we should have multiple files
         total_data_size = num_blobs * blob_size
 
-        # Verify that the rolling logic used blob_target_file_size (1MB) not target_file_size (256MB)
+        # Verify that the rolling logic used blob_target_file_size (1MB) not target_file_size (2048MB)
         # If target_file_size was used, all data would fit in one file
         # If blob_target_file_size was used, data should be split
         if total_data_size > 1024 * 1024:  # Total > 1MB
