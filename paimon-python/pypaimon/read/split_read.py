@@ -210,6 +210,12 @@ class SplitRead(ABC):
             if self.table.is_primary_key_table:
                 schema_field_names.add('_SEQUENCE_NUMBER')
                 schema_field_names.add('_VALUE_KIND')
+                # _COMMIT_SNAPSHOT_ID is a physical system column on newly written files and a
+                # missing column on older files — either way it must reach the format reader so
+                # that partition_mapping's sequential real-index assignment stays aligned with the
+                # physical batch. FormatPyArrowReader returns NULL for missing columns, so legacy
+                # files remain readable.
+                schema_field_names.add('_COMMIT_SNAPSHOT_ID')
             read_file_fields = [read_field for read_field in read_fields if read_field in schema_field_names]
             read_predicate = trim_predicate_by_fields(self.push_down_predicate, read_file_fields)
             read_arrow_predicate = read_predicate.to_arrow() if read_predicate else None
@@ -241,6 +247,11 @@ class SplitRead(ABC):
 
         all_data_fields.append(SpecialFields.SEQUENCE_NUMBER)
         all_data_fields.append(SpecialFields.VALUE_KIND)
+        # Always include _COMMIT_SNAPSHOT_ID in the KV read schema to mirror Java's layout
+        # (key... , _SEQUENCE_NUMBER, _VALUE_KIND, _COMMIT_SNAPSHOT_ID, value...). Old data files
+        # that predate this column read back NULL via FormatPyArrowReader's missing-column path;
+        # the KeyValueWrapIterator falls back to DataFileMeta.commit_snapshot_id in that case.
+        all_data_fields.append(SpecialFields.COMMIT_SNAPSHOT_ID)
 
         for field in value_field:
             all_data_fields.append(field)

@@ -28,11 +28,18 @@ class SpecialFields:
     SEQUENCE_NUMBER = DataField(2147483646, "_SEQUENCE_NUMBER", AtomicType("BIGINT", nullable=False))
     VALUE_KIND = DataField(2147483645, "_VALUE_KIND", AtomicType("TINYINT", nullable=False))
     ROW_ID = DataField(2147483642, "_ROW_ID", AtomicType("BIGINT", nullable=False))
+    # Per-row materialized commit snapshot id, aligned with Java SpecialFields.COMMIT_SNAPSHOT_ID
+    # (field id Integer.MAX_VALUE - 6). Nullable: L0 writes leave this NULL — the real id is only
+    # known at commit time and is carried on DataFileMeta.commit_snapshot_id. Compaction rewriters
+    # (Java side) materialize it per row so merged outputs cannot "hitchhike" to the compacted
+    # file's max commitSnapshotId.
+    COMMIT_SNAPSHOT_ID = DataField(2147483641, "_COMMIT_SNAPSHOT_ID", AtomicType("BIGINT", nullable=True))
 
     SYSTEM_FIELD_NAMES = {
         '_SEQUENCE_NUMBER',
         '_VALUE_KIND',
-        '_ROW_ID'
+        '_ROW_ID',
+        '_COMMIT_SNAPSHOT_ID',
     }
 
     @staticmethod

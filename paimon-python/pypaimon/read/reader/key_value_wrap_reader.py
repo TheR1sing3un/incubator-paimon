@@ -37,7 +37,10 @@ class KeyValueWrapReader(RecordReader[KeyValue]):
         self.value_arity = value_arity
         self.merge_mode = merge_mode
         self.commit_snapshot_id = commit_snapshot_id
-        self.reused_kv = KeyValue(self.key_arity, self.value_arity)
+        # has_commit_snapshot_id=True: rows emitted by the merge-read path go through
+        # _create_key_value_fields which inserts _COMMIT_SNAPSHOT_ID between _VALUE_KIND and the
+        # value fields. The KV needs to know the extended layout so value_offset is key_arity + 3.
+        self.reused_kv = KeyValue(self.key_arity, self.value_arity, has_commit_snapshot_id=True)
 
     def read_batch(self) -> Optional[RecordIterator[KeyValue]]:
         iterator = self.data_reader.tuple_iterator()

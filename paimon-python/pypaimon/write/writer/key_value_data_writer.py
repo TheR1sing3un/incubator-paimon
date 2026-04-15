@@ -34,7 +34,7 @@ class KeyValueDataWriter(DataWriter):
         return self._sort_by_primary_key(combined)
 
     def _add_system_fields(self, data: pa.RecordBatch) -> pa.RecordBatch:
-        """Add system fields: _KEY_{pk_key}, _SEQUENCE_NUMBER, _VALUE_KIND."""
+        """Add system fields: _KEY_{pk_key}, _SEQUENCE_NUMBER, _VALUE_KIND, _COMMIT_SNAPSHOT_ID."""
         num_rows = data.num_rows
 
         new_arrays = []
@@ -55,6 +55,15 @@ class KeyValueDataWriter(DataWriter):
         value_kind_column = pa.array([0] * num_rows, type=pa.int8())
         new_arrays.append(value_kind_column)
         new_fields.append(pa.field('_VALUE_KIND', pa.int8(), nullable=False))
+
+        # _COMMIT_SNAPSHOT_ID: always materialized but NULL for L0 writes — pypaimon does not do
+        # local compaction, so the real snapshot id is only known at commit time and lives on
+        # DataFileMeta.commit_snapshot_id. This mirrors Java KeyValueSerializer.toRow, which
+        # writes NULL whenever snapshotId is unknown or equals Long.MAX_VALUE. Compaction
+        # rewriters (Java side) overwrite this column with per-row ids to defeat hitchhiking.
+        commit_snapshot_id_column = pa.nulls(num_rows, type=pa.int64())
+        new_arrays.append(commit_snapshot_id_column)
+        new_fields.append(pa.field('_COMMIT_SNAPSHOT_ID', pa.int64(), nullable=True))
 
         for i in range(data.num_columns):
             new_arrays.append(data.column(i))

@@ -368,5 +368,56 @@ class HeapEntryComparatorTest(unittest.TestCase):
         self.assertFalse(b < a)
 
 
+class KeyValuePerRowSnapshotIdTest(unittest.TestCase):
+    """Validate the per-row _COMMIT_SNAPSHOT_ID column takes precedence over the file-level
+    fallback, matching Java KeyValueDataFileRecordReader: per-row wins when > 0, else fall back
+    to the DataFileMeta-supplied value. This is what defeats 'hitchhiking' when reading
+    Java-compacted files whose file-level id is max(input) but each row carries its original id.
+    """
+
+    def test_per_row_value_preferred_over_file_level(self):
+        from pypaimon.table.row.key_value import KeyValue
+
+        kv = KeyValue(key_arity=1, value_arity=2, has_commit_snapshot_id=True)
+        # Extended tuple: (key, seq, kind, per_row_commit_snapshot_id, value_0, value_1)
+        kv.replace((100, 5, 0, 7, 'v0', 'v1'))
+        kv.set_commit_snapshot_id(99)  # file-level fallback — should be ignored when per-row wins
+
+        self.assertEqual(kv.commit_snapshot_id, 7,
+                         'per-row column must win over file-level when it carries a real id')
+
+    def test_null_per_row_falls_back_to_file_level(self):
+        from pypaimon.table.row.key_value import KeyValue
+
+        kv = KeyValue(key_arity=1, value_arity=2, has_commit_snapshot_id=True)
+        # NULL per-row slot — matches L0 files written by pypaimon (or Java before compaction).
+        kv.replace((100, 5, 0, None, 'v0', 'v1'))
+        kv.set_commit_snapshot_id(42)
+
+        self.assertEqual(kv.commit_snapshot_id, 42)
+
+    def test_non_positive_per_row_falls_back_to_file_level(self):
+        from pypaimon.table.row.key_value import KeyValue
+
+        kv = KeyValue(key_arity=1, value_arity=2, has_commit_snapshot_id=True)
+        # Java KeyValueSerializer only persists snapshotId > 0 && != Long.MAX_VALUE; others round
+        # to null. A 0 / negative per-row therefore means "not stamped" and must fall back.
+        kv.replace((100, 5, 0, 0, 'v0', 'v1'))
+        kv.set_commit_snapshot_id(42)
+
+        self.assertEqual(kv.commit_snapshot_id, 42)
+
+    def test_legacy_layout_has_no_per_row(self):
+        from pypaimon.table.row.key_value import KeyValue
+
+        kv = KeyValue(key_arity=1, value_arity=2)  # has_commit_snapshot_id=False (default)
+        # Legacy tuple: (key, seq, kind, value_0, value_1) — no per-row snapshot slot.
+        kv.replace((100, 5, 0, 'v0', 'v1'))
+        kv.set_commit_snapshot_id(42)
+
+        # Only the file-level value is visible; legacy callers never materialize per-row.
+        self.assertEqual(kv.commit_snapshot_id, 42)
+
+
 if __name__ == '__main__':
     unittest.main()
