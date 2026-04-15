@@ -20,6 +20,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import pyarrow as pa
 import ray
@@ -116,9 +117,13 @@ class RayPerWorkerIntegrationTest(unittest.TestCase):
         snap_before = table_before.snapshot_manager().get_latest_snapshot()
         sid_before = snap_before.id if snap_before is not None else 0
 
+        # min_rows_per_file=1 prevents Ray from merging the 4 small blocks
+        # into a single write task (the default 1M would collapse this test
+        # to a single commit).
         write_paimon(ds, identifier, self.catalog_options,
                      commit_mode='per_worker',
-                     concurrency=n_workers)
+                     concurrency=n_workers,
+                     min_rows_per_file=1)
 
         # Snapshot count after write: at least one new snapshot per worker
         # that produced data. Re-open table to refresh snapshot view.
@@ -142,6 +147,56 @@ class RayPerWorkerIntegrationTest(unittest.TestCase):
         df = result.to_pandas().sort_values('id').reset_index(drop=True)
         expected_ids = list(range(n_workers * rows_per_worker))
         self.assertEqual(list(df['id']), expected_ids)
+
+    def test_default_concurrency_applied_when_unset(self):
+        """per_worker mode must inject DEFAULT_PER_WORKER_CONCURRENCY when
+        the caller does not pass concurrency."""
+        from pypaimon.ray import write_paimon
+        from pypaimon.ray.ray_paimon import DEFAULT_PER_WORKER_CONCURRENCY
+
+        identifier, pa_schema = self._create_pk_table('pw_default_conc')
+        ds = ray.data.from_arrow(pa.Table.from_pydict(
+            {'id': [1], 'name': ['a'], 'value': [1]}, schema=pa_schema))
+
+        with patch.object(ray.data.Dataset, 'write_datasink',
+                          autospec=True) as mock_write:
+            write_paimon(ds, identifier, self.catalog_options,
+                         commit_mode='per_worker')
+            mock_write.assert_called_once()
+            kwargs = mock_write.call_args.kwargs
+            self.assertEqual(kwargs.get('concurrency'),
+                             DEFAULT_PER_WORKER_CONCURRENCY)
+
+    def test_explicit_concurrency_overrides_default(self):
+        """Explicit concurrency must win over the per_worker default."""
+        from pypaimon.ray import write_paimon
+
+        identifier, pa_schema = self._create_pk_table('pw_explicit_conc')
+        ds = ray.data.from_arrow(pa.Table.from_pydict(
+            {'id': [1], 'name': ['a'], 'value': [1]}, schema=pa_schema))
+
+        with patch.object(ray.data.Dataset, 'write_datasink',
+                          autospec=True) as mock_write:
+            write_paimon(ds, identifier, self.catalog_options,
+                         commit_mode='per_worker', concurrency=2)
+            kwargs = mock_write.call_args.kwargs
+            self.assertEqual(kwargs.get('concurrency'), 2)
+
+    def test_two_phase_mode_does_not_inject_default_concurrency(self):
+        """two_phase mode must keep None (Ray's cluster-based default)."""
+        from pypaimon.ray import write_paimon
+
+        identifier, pa_schema = self._create_pk_table('pw_twophase_conc')
+        ds = ray.data.from_arrow(pa.Table.from_pydict(
+            {'id': [1], 'name': ['a'], 'value': [1]}, schema=pa_schema))
+
+        with patch.object(ray.data.Dataset, 'write_datasink',
+                          autospec=True) as mock_write:
+            write_paimon(ds, identifier, self.catalog_options)
+            kwargs = mock_write.call_args.kwargs
+            # In two_phase mode concurrency stays unset, so the key should
+            # not appear in write_kwargs at all.
+            self.assertNotIn('concurrency', kwargs)
 
 
 if __name__ == '__main__':

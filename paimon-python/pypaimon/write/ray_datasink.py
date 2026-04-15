@@ -233,6 +233,9 @@ class PaimonPerWorkerDatasink(_DatasinkBase):
       workers committing to the same table will compete via
       ``FileStoreCommit._try_commit`` retries. Tens of workers are expected to
       work fine; very high concurrency may benefit from external throttling.
+      When used via :func:`pypaimon.ray.write_paimon` with
+      ``commit_mode='per_worker'``, ``concurrency`` defaults to 4 if the
+      caller does not set it explicitly, to bound metadata amplification.
     """
 
     def __init__(

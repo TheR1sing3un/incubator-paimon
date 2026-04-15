@@ -26,11 +26,20 @@ Usage::
     write_paimon(ds, "db.table", catalog_options={"warehouse": "/path"})
 """
 
+import logging
 from typing import Any, Dict, List, Optional
 
 import ray.data
 
 from pypaimon.common.predicate import Predicate
+
+logger = logging.getLogger(__name__)
+
+# Default concurrency cap for commit_mode="per_worker". Per-worker commits
+# grow metadata at roughly O(W^2) (base manifest-list is rewritten per
+# commit) and amplify small files to O(W * buckets * partitions); a
+# conservative default protects users who don't set concurrency explicitly.
+DEFAULT_PER_WORKER_CONCURRENCY = 4
 
 
 def read_paimon(
@@ -137,7 +146,7 @@ def write_paimon(
     ray_remote_args: Optional[Dict[str, Any]] = None,
     committer: Optional[str] = None,
     message: Optional[str] = None,
-    min_rows_per_file: Optional[int] = None,
+    min_rows_per_file: Optional[int] = 1_000_000,
     options: Optional[Dict[str, str]] = None,
     commit_mode: str = "two_phase",
 ) -> None:
@@ -149,12 +158,19 @@ def write_paimon(
         catalog_options: Options passed to ``CatalogFactory.create()``.
         overwrite: If ``True``, overwrite existing data in the table.
         concurrency: Optional max number of Ray write tasks to run concurrently.
+            For ``commit_mode='per_worker'``, defaults to
+            ``DEFAULT_PER_WORKER_CONCURRENCY`` (4) when unset instead of Ray's
+            cluster-based default, to bound optimistic-lock conflicts and
+            metadata amplification. Pass an explicit value to override.
         ray_remote_args: Optional kwargs passed to ``ray.remote`` in write tasks.
         committer: Optional committer name for audit tracking.
         message: Optional commit message for audit tracking.
-        min_rows_per_file: Optional minimum number of rows per write task.
-            Ray will merge small blocks to ensure each write task receives
-            at least this many rows, which helps reduce small files.
+        min_rows_per_file: Minimum number of rows per write task. Ray will
+            merge small blocks so each write task receives at least this
+            many rows, which reduces small-file fan-out. Defaults to
+            ``1_000_000``. Pass a smaller value (or ``None`` to fall back
+            to Ray's native block sizing) to disable merging — e.g. for
+            small-dataset tests or when you want per-block task parallelism.
         options: Optional dynamic table options to override defaults at write time,
             e.g. ``{"target-file-size": "256mb"}``.
         commit_mode: ``"two_phase"`` (default) uses :class:`PaimonDatasink`,
@@ -188,6 +204,15 @@ def write_paimon(
         raise ValueError(
             f"Unknown commit_mode={commit_mode!r}; "
             "expected 'two_phase' or 'per_worker'."
+        )
+
+    if commit_mode == "per_worker" and concurrency is None:
+        concurrency = DEFAULT_PER_WORKER_CONCURRENCY
+        logger.info(
+            "commit_mode='per_worker' with unset concurrency; defaulting "
+            "to %d to limit optimistic-lock conflicts and metadata "
+            "amplification. Pass concurrency=<N> explicitly to override.",
+            DEFAULT_PER_WORKER_CONCURRENCY,
         )
 
     write_kwargs = {}
