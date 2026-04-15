@@ -95,6 +95,7 @@ class PerWorkerSinkUnitTest(unittest.TestCase):
         sink = PaimonPerWorkerDatasink(self.table)
         sink.on_write_start()
         ctx = Mock(spec=TaskContext)
+        ctx.task_idx = 0
 
         block = pa.table({
             'id': [1, 2, 3],
@@ -164,6 +165,7 @@ class PerWorkerSinkUnitTest(unittest.TestCase):
         sink = PaimonPerWorkerDatasink(self.table)
         sink.on_write_start()
         ctx = Mock(spec=TaskContext)
+        ctx.task_idx = 0
 
         with patch.object(self.table, 'new_batch_write_builder') as mock_builder:
             mock_write_builder = Mock()
@@ -205,6 +207,57 @@ class PerWorkerSinkUnitTest(unittest.TestCase):
             sink.write([data], ctx)
             mock_write_builder.with_options.assert_called_once_with(
                 {'target-file-size': '64mb'})
+
+    def test_write_appends_worker_tag_to_message(self):
+        """Each worker's commit message should carry its task_idx for traceability."""
+        sink = PaimonPerWorkerDatasink(
+            self.table, committer="alice", message="daily sync")
+        sink.on_write_start()
+        ctx = Mock(spec=TaskContext)
+        ctx.task_idx = 7
+
+        with patch.object(self.table, 'new_batch_write_builder') as mock_builder:
+            mock_write_builder = Mock()
+            mock_write = Mock()
+            non_empty = Mock(spec=CommitMessage)
+            non_empty.is_empty.return_value = False
+            mock_write.prepare_commit.return_value = [non_empty]
+            mock_write_builder.new_write.return_value = mock_write
+            mock_commit = Mock()
+            mock_write_builder.new_commit.return_value = mock_commit
+            mock_builder.return_value = mock_write_builder
+
+            data = pa.table({'id': [1], 'name': ['A'], 'value': [1.0]},
+                            schema=self.pa_schema)
+            sink.write([data], ctx)
+
+            mock_write_builder.new_commit.assert_called_once_with(
+                committer="alice", message="daily sync [worker=7]")
+
+    def test_write_worker_tag_when_message_is_none(self):
+        """When user does not provide a message, the worker tag becomes the message."""
+        sink = PaimonPerWorkerDatasink(self.table)
+        sink.on_write_start()
+        ctx = Mock(spec=TaskContext)
+        ctx.task_idx = 3
+
+        with patch.object(self.table, 'new_batch_write_builder') as mock_builder:
+            mock_write_builder = Mock()
+            mock_write = Mock()
+            non_empty = Mock(spec=CommitMessage)
+            non_empty.is_empty.return_value = False
+            mock_write.prepare_commit.return_value = [non_empty]
+            mock_write_builder.new_write.return_value = mock_write
+            mock_commit = Mock()
+            mock_write_builder.new_commit.return_value = mock_commit
+            mock_builder.return_value = mock_write_builder
+
+            data = pa.table({'id': [1], 'name': ['A'], 'value': [1.0]},
+                            schema=self.pa_schema)
+            sink.write([data], ctx)
+
+            mock_write_builder.new_commit.assert_called_once_with(
+                committer=None, message="worker=3")
 
     def test_on_write_failed_does_not_abort(self):
         """on_write_failed must only log; no abort, no exception."""

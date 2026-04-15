@@ -307,11 +307,15 @@ class PaimonPerWorkerDatasink(_DatasinkBase):
                 )
                 return []
 
+            worker_tag = f"worker={ctx.task_idx}"
+            per_worker_message = (
+                f"{self.message} [{worker_tag}]" if self.message else worker_tag
+            )
             table_commit = writer_builder.new_commit(
-                committer=self.committer, message=self.message)
+                committer=self.committer, message=per_worker_message)
             table_commit.commit(non_empty_messages)
             logger.info(
-                f"Worker committed {len(non_empty_messages)} commit messages "
+                f"Worker {ctx.task_idx} committed {len(non_empty_messages)} commit messages "
                 f"for table {self._table_name}"
             )
             return []
