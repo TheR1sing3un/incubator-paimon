@@ -18,7 +18,7 @@
 import os
 from setuptools import find_packages, setup
 
-VERSION = "1.4.9"
+VERSION = "1.4.901"
 
 PACKAGES = find_packages(include=["pypaimon*"])
 
