@@ -43,6 +43,43 @@ except TypeError:
     _DatasinkBase = Datasink
 
 
+def _build_commit_tag(ctx: TaskContext) -> str:
+    """Build a per-worker commit-message tag with Ray job/attempt identifiers.
+
+    Includes job_id so commits from one ``write_paimon`` call are groupable in
+    the Paimon snapshot audit trail, and attempt when >0 so Ray task retries
+    are distinguishable from first-try writes. Falls back to just ``worker=N``
+    if the Ray runtime context is unavailable (e.g. unit tests without Ray).
+    """
+    job_id = None
+    attempt = None
+    try:
+        import ray
+        runtime_ctx = ray.get_runtime_context()
+        try:
+            job_id = runtime_ctx.get_job_id()
+        except Exception:
+            pass
+        for attr in ("get_task_attempt_number", "get_attempt_number"):
+            getter = getattr(runtime_ctx, attr, None)
+            if getter is not None:
+                try:
+                    attempt = getter()
+                    break
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    parts = []
+    if job_id:
+        parts.append(f"job={job_id}")
+    parts.append(f"worker={ctx.task_idx}")
+    if attempt:
+        parts.append(f"attempt={attempt}")
+    return " ".join(parts)
+
+
 @DeveloperAPI
 class PaimonDatasink(_DatasinkBase):
     def __init__(
@@ -309,9 +346,9 @@ class PaimonPerWorkerDatasink(_DatasinkBase):
                 )
                 return []
 
-            worker_tag = f"worker={ctx.task_idx}"
+            commit_tag = _build_commit_tag(ctx)
             per_worker_message = (
-                f"{self.message} [{worker_tag}]" if self.message else worker_tag
+                f"{self.message} [{commit_tag}]" if self.message else commit_tag
             )
             table_commit = writer_builder.new_commit(
                 committer=self.committer, message=per_worker_message)

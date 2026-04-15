@@ -208,48 +208,95 @@ class PerWorkerSinkUnitTest(unittest.TestCase):
             mock_write_builder.with_options.assert_called_once_with(
                 {'target-file-size': '64mb'})
 
+    @staticmethod
+    def _mock_runtime_ctx(job_id="01000000", attempt=0):
+        """Build a fake Ray RuntimeContext with controllable job_id/attempt."""
+        runtime_ctx = Mock()
+        runtime_ctx.get_job_id.return_value = job_id
+        runtime_ctx.get_task_attempt_number.return_value = attempt
+        return runtime_ctx
+
+    def _run_write_with_mocked_ray(self, sink, ctx, runtime_ctx):
+        """Shared scaffolding: patches new_batch_write_builder + ray runtime
+        context, drives one write() call, and returns the mock so the test can
+        assert on new_commit kwargs."""
+        with patch.object(self.table, 'new_batch_write_builder') as mock_builder, \
+                patch('ray.get_runtime_context',
+                      return_value=runtime_ctx):
+            mock_write_builder = Mock()
+            mock_write = Mock()
+            non_empty = Mock(spec=CommitMessage)
+            non_empty.is_empty.return_value = False
+            mock_write.prepare_commit.return_value = [non_empty]
+            mock_write_builder.new_write.return_value = mock_write
+            mock_write_builder.new_commit.return_value = Mock()
+            mock_builder.return_value = mock_write_builder
+
+            data = pa.table({'id': [1], 'name': ['A'], 'value': [1.0]},
+                            schema=self.pa_schema)
+            sink.write([data], ctx)
+            return mock_write_builder
+
     def test_write_appends_worker_tag_to_message(self):
-        """Each worker's commit message should carry its task_idx for traceability."""
+        """Each worker's commit message should carry job_id and task_idx."""
         sink = PaimonPerWorkerDatasink(
             self.table, committer="alice", message="daily sync")
         sink.on_write_start()
         ctx = Mock(spec=TaskContext)
         ctx.task_idx = 7
 
-        with patch.object(self.table, 'new_batch_write_builder') as mock_builder:
-            mock_write_builder = Mock()
-            mock_write = Mock()
-            non_empty = Mock(spec=CommitMessage)
-            non_empty.is_empty.return_value = False
-            mock_write.prepare_commit.return_value = [non_empty]
-            mock_write_builder.new_write.return_value = mock_write
-            mock_commit = Mock()
-            mock_write_builder.new_commit.return_value = mock_commit
-            mock_builder.return_value = mock_write_builder
+        mock_write_builder = self._run_write_with_mocked_ray(
+            sink, ctx, self._mock_runtime_ctx(job_id="0100abcd", attempt=0))
 
-            data = pa.table({'id': [1], 'name': ['A'], 'value': [1.0]},
-                            schema=self.pa_schema)
-            sink.write([data], ctx)
-
-            mock_write_builder.new_commit.assert_called_once_with(
-                committer="alice", message="daily sync [worker=7]")
+        mock_write_builder.new_commit.assert_called_once_with(
+            committer="alice",
+            message="daily sync [job=0100abcd worker=7]")
 
     def test_write_worker_tag_when_message_is_none(self):
-        """When user does not provide a message, the worker tag becomes the message."""
+        """Without user message, the tag itself (no brackets) is the message."""
         sink = PaimonPerWorkerDatasink(self.table)
         sink.on_write_start()
         ctx = Mock(spec=TaskContext)
         ctx.task_idx = 3
 
-        with patch.object(self.table, 'new_batch_write_builder') as mock_builder:
+        mock_write_builder = self._run_write_with_mocked_ray(
+            sink, ctx, self._mock_runtime_ctx(job_id="0100beef", attempt=0))
+
+        mock_write_builder.new_commit.assert_called_once_with(
+            committer=None, message="job=0100beef worker=3")
+
+    def test_write_tags_attempt_when_retrying(self):
+        """Retry attempts must be distinguishable in the commit message."""
+        sink = PaimonPerWorkerDatasink(self.table, message="daily sync")
+        sink.on_write_start()
+        ctx = Mock(spec=TaskContext)
+        ctx.task_idx = 2
+
+        mock_write_builder = self._run_write_with_mocked_ray(
+            sink, ctx, self._mock_runtime_ctx(job_id="0100cafe", attempt=2))
+
+        _, kwargs = mock_write_builder.new_commit.call_args
+        self.assertIn("attempt=2", kwargs["message"])
+        self.assertIn("job=0100cafe", kwargs["message"])
+        self.assertIn("worker=2", kwargs["message"])
+
+    def test_write_falls_back_when_runtime_context_unavailable(self):
+        """If Ray runtime context throws, fall back to worker-only tag."""
+        sink = PaimonPerWorkerDatasink(self.table)
+        sink.on_write_start()
+        ctx = Mock(spec=TaskContext)
+        ctx.task_idx = 5
+
+        with patch.object(self.table, 'new_batch_write_builder') as mock_builder, \
+                patch('ray.get_runtime_context',
+                      side_effect=RuntimeError("no ray")):
             mock_write_builder = Mock()
             mock_write = Mock()
             non_empty = Mock(spec=CommitMessage)
             non_empty.is_empty.return_value = False
             mock_write.prepare_commit.return_value = [non_empty]
             mock_write_builder.new_write.return_value = mock_write
-            mock_commit = Mock()
-            mock_write_builder.new_commit.return_value = mock_commit
+            mock_write_builder.new_commit.return_value = Mock()
             mock_builder.return_value = mock_write_builder
 
             data = pa.table({'id': [1], 'name': ['A'], 'value': [1.0]},
@@ -257,7 +304,7 @@ class PerWorkerSinkUnitTest(unittest.TestCase):
             sink.write([data], ctx)
 
             mock_write_builder.new_commit.assert_called_once_with(
-                committer=None, message="worker=3")
+                committer=None, message="worker=5")
 
     def test_on_write_failed_does_not_abort(self):
         """on_write_failed must only log; no abort, no exception."""
