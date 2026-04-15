@@ -25,7 +25,7 @@ under the License.
         <format>tar.gz</format>
     </formats>
     <includeBaseDirectory>true</includeBaseDirectory>
-    <baseDirectory>paimon-rest-server-${project.version}</baseDirectory>
+    <baseDirectory>paimon-rest-server</baseDirectory>
 
     <fileSets>
         <!-- lib/: project jar -->

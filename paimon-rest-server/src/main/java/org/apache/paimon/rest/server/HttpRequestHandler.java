@@ -86,6 +86,20 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
     protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) {
         String uri = request.uri().split("\\?")[0];
 
+        // Health check endpoint
+        if ("/health".equals(uri)) {
+            byte[] content = "ok".getBytes(StandardCharsets.UTF_8);
+            FullHttpResponse response =
+                    new DefaultFullHttpResponse(
+                            HttpVersion.HTTP_1_1,
+                            HttpResponseStatus.OK,
+                            Unpooled.wrappedBuffer(content));
+            response.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/plain; charset=UTF-8");
+            response.headers().set(HttpHeaderNames.CONTENT_LENGTH, content.length);
+            ctx.writeAndFlush(response);
+            return;
+        }
+
         // API requests go to the dispatcher
         if (uri.startsWith("/v1/")) {
             handleApiRequest(ctx, request);

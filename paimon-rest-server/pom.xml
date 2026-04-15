@@ -412,6 +412,7 @@ under the License.
                             <goal>single</goal>
                         </goals>
                         <configuration>
+                            <finalName>paimon-rest-server</finalName>
                             <descriptors>
                                 <descriptor>src/main/assembly/dist.xml</descriptor>
                             </descriptors>

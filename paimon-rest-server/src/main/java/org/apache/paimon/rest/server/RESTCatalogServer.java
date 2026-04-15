@@ -90,7 +90,11 @@ public class RESTCatalogServer {
         }
 
         String host = options.get(RESTCatalogServerOptions.HOST);
-        int port = options.get(RESTCatalogServerOptions.PORT);
+        String autoPort = System.getenv("AUTO_PORT0");
+        int port =
+                autoPort != null && !autoPort.isEmpty()
+                        ? Integer.parseInt(autoPort)
+                        : options.get(RESTCatalogServerOptions.PORT);
         String prefix = options.get(RESTCatalogServerOptions.PREFIX);
         int ioThreads = options.get(RESTCatalogServerOptions.IO_THREADS);
         int workerThreads = options.get(RESTCatalogServerOptions.WORKER_THREADS);
