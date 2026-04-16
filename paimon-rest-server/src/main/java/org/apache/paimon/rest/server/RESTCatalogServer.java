@@ -99,6 +99,7 @@ public class RESTCatalogServer {
         int ioThreads = options.get(RESTCatalogServerOptions.IO_THREADS);
         int workerThreads = options.get(RESTCatalogServerOptions.WORKER_THREADS);
         int maxContentLength = options.get(RESTCatalogServerOptions.MAX_CONTENT_LENGTH);
+        int soBacklog = options.get(RESTCatalogServerOptions.SO_BACKLOG);
 
         String authUrl = options.get(RESTCatalogServerOptions.AUTH_URL);
         TokenAuthenticator authenticator = createAuthenticator(authUrl);
@@ -115,6 +116,7 @@ public class RESTCatalogServer {
                         ioThreads,
                         workerThreads,
                         maxContentLength,
+                        soBacklog,
                         authHandler,
                         handler);
         this.httpServer.start();

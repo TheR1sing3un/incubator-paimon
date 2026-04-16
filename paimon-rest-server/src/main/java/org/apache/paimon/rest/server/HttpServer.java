@@ -52,6 +52,7 @@ public class HttpServer {
     private final int ioThreads;
     private final int workerThreads;
     private final int maxContentLength;
+    private final int soBacklog;
     private final ChannelHandler authHandler;
     private final HttpRequestHandler requestHandler;
     private final ConnectionMetricsHandler connectionMetricsHandler;
@@ -67,6 +68,7 @@ public class HttpServer {
             int ioThreads,
             int workerThreads,
             int maxContentLength,
+            int soBacklog,
             ChannelHandler authHandler,
             HttpRequestHandler requestHandler) {
         this.host = Preconditions.checkNotNull(host);
@@ -74,6 +76,7 @@ public class HttpServer {
         this.ioThreads = ioThreads;
         this.workerThreads = workerThreads;
         this.maxContentLength = maxContentLength;
+        this.soBacklog = soBacklog;
         this.authHandler = Preconditions.checkNotNull(authHandler);
         this.requestHandler = Preconditions.checkNotNull(requestHandler);
         this.connectionMetricsHandler = new ConnectionMetricsHandler();
@@ -111,7 +114,7 @@ public class HttpServer {
                                         requestHandler,
                                         maxContentLength,
                                         businessGroup))
-                        .option(ChannelOption.SO_BACKLOG, 128)
+                        .option(ChannelOption.SO_BACKLOG, soBacklog)
                         .childOption(ChannelOption.SO_KEEPALIVE, true);
 
         serverChannel = bootstrap.bind(host, port).sync().channel();

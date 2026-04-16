@@ -60,6 +60,15 @@ public class RESTCatalogServerOptions {
                     .defaultValue(10 * 1024 * 1024)
                     .withDescription("Maximum allowed content length for HTTP requests in bytes.");
 
+    public static final ConfigOption<Integer> SO_BACKLOG =
+            ConfigOptions.key("rest-server.so-backlog")
+                    .intType()
+                    .defaultValue(1024)
+                    .withDescription(
+                            "The maximum length of the TCP accept queue. "
+                                    + "Controls how many pending connections can wait "
+                                    + "when all worker threads are busy.");
+
     public static final ConfigOption<String> METADATA_RESOURCE_ID =
             ConfigOptions.key("rest-server.metadata.resource-id")
                     .stringType()
