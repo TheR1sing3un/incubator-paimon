@@ -208,4 +208,74 @@ public class BranchDiffOperationTest extends BranchMergeTestBase {
         assertThat(featureCommit.commitKind()).isEqualTo(Snapshot.CommitKind.APPEND);
         assertThat(featureCommit.deltaRecordCount()).isGreaterThan(0);
     }
+
+    @Test
+    public void testDiffAfterMerge() throws Exception {
+        FileStoreTable table = createPkTable();
+
+        // Write initial data to main
+        write(table, ioManager, row(1, "initial"));
+        table = getTableDefault();
+        table.createTag("ancestor");
+
+        // Create feature branch and write to it
+        catalog.createBranch(identifier(), "feature", "ancestor");
+        FileStoreTable featureTable = table.switchToBranch("feature");
+        write(featureTable, ioManager, row(2, "feature_v1"));
+
+        // Write to main too (so main has its own commit)
+        table = getTableDefault();
+        write(table, ioManager, row(10, "main_v1"));
+
+        // Merge feature into main
+        merge("feature", "main");
+
+        // Diff as merge preview: source=feature, target=main
+        table = getTableDefault();
+        BranchDiffOperation op =
+                new BranchDiffOperation(table.store().snapshotManager(), table.branchManager());
+        BranchDiffResult result = op.diff("feature", "main");
+
+        // merge_base should reflect that main already knows feature up to snap2
+        assertThat(result.mergeBaseBranch()).isEqualTo("feature");
+        assertThat(result.mergeBaseSnapshotId()).isEqualTo(2L);
+
+        // left_only (feature): nothing new after merge_base (feature's latest IS snap2)
+        assertThat(result.leftOnly()).isEmpty();
+
+        // right_only (main): main's original commit (not merge-replay)
+        assertThat(result.rightOnly()).hasSize(1);
+    }
+
+    @Test
+    public void testDiffAfterMergeWithNewCommits() throws Exception {
+        FileStoreTable table = createPkTable();
+
+        // Write initial data to main
+        write(table, ioManager, row(1, "initial"));
+        table = getTableDefault();
+        table.createTag("ancestor");
+
+        // Create feature branch and write to it
+        catalog.createBranch(identifier(), "feature", "ancestor");
+        FileStoreTable featureTable = table.switchToBranch("feature");
+        write(featureTable, ioManager, row(2, "feature_v1"));
+
+        // Merge feature into main
+        merge("feature", "main");
+
+        // Write more on feature AFTER the merge
+        featureTable = getTableDefault().switchToBranch("feature");
+        write(featureTable, ioManager, row(3, "feature_v2"));
+
+        // Diff as merge preview: source=feature, target=main
+        table = getTableDefault();
+        BranchDiffOperation op =
+                new BranchDiffOperation(table.store().snapshotManager(), table.branchManager());
+        BranchDiffResult result = op.diff("feature", "main");
+
+        // left_only (feature): only the new commit after the merge
+        assertThat(result.leftOnly()).hasSize(1);
+        assertThat(result.leftOnly().get(0).deltaRecordCount()).isGreaterThan(0);
+    }
 }

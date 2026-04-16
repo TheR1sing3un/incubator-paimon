@@ -29,6 +29,7 @@ import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonPro
 import javax.annotation.Nullable;
 
 import java.util.List;
+import java.util.Map;
 
 /** Response for diff between two branch refs, showing commits unique to each side. */
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -142,6 +143,7 @@ public class DiffResponse implements RESTResponse {
         private static final String FIELD_TIME_MILLIS = "time_millis";
         private static final String FIELD_TOTAL_RECORD_COUNT = "total_record_count";
         private static final String FIELD_DELTA_RECORD_COUNT = "delta_record_count";
+        private static final String FIELD_PROPERTIES = "properties";
 
         @JsonProperty(FIELD_SNAPSHOT_ID)
         private final long snapshotId;
@@ -169,6 +171,10 @@ public class DiffResponse implements RESTResponse {
         @JsonProperty(FIELD_DELTA_RECORD_COUNT)
         private final long deltaRecordCount;
 
+        @Nullable
+        @JsonProperty(FIELD_PROPERTIES)
+        private final Map<String, String> properties;
+
         @JsonCreator
         public DiffCommitEntry(
                 @JsonProperty(FIELD_SNAPSHOT_ID) long snapshotId,
@@ -178,7 +184,8 @@ public class DiffResponse implements RESTResponse {
                 @Nullable @JsonProperty(FIELD_COMMIT_UUID) String commitUuid,
                 @JsonProperty(FIELD_TIME_MILLIS) long timeMillis,
                 @JsonProperty(FIELD_TOTAL_RECORD_COUNT) long totalRecordCount,
-                @JsonProperty(FIELD_DELTA_RECORD_COUNT) long deltaRecordCount) {
+                @JsonProperty(FIELD_DELTA_RECORD_COUNT) long deltaRecordCount,
+                @Nullable @JsonProperty(FIELD_PROPERTIES) Map<String, String> properties) {
             this.snapshotId = snapshotId;
             this.schemaId = schemaId;
             this.commitKind = commitKind;
@@ -187,6 +194,7 @@ public class DiffResponse implements RESTResponse {
             this.timeMillis = timeMillis;
             this.totalRecordCount = totalRecordCount;
             this.deltaRecordCount = deltaRecordCount;
+            this.properties = properties;
         }
 
         @JsonGetter(FIELD_SNAPSHOT_ID)
@@ -229,6 +237,12 @@ public class DiffResponse implements RESTResponse {
         @JsonGetter(FIELD_DELTA_RECORD_COUNT)
         public long deltaRecordCount() {
             return deltaRecordCount;
+        }
+
+        @Nullable
+        @JsonGetter(FIELD_PROPERTIES)
+        public Map<String, String> properties() {
+            return properties;
         }
     }
 }

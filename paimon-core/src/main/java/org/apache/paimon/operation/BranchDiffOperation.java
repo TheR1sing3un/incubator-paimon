@@ -18,6 +18,7 @@
 
 package org.apache.paimon.operation;
 
+import org.apache.paimon.CoreOptions;
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.operation.MergeRangeResolver.BranchSnapshotRange;
 import org.apache.paimon.operation.MergeRangeResolver.MergeBase;
@@ -30,6 +31,7 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Read-only operation that computes the diff between two branches.
@@ -51,10 +53,14 @@ public class BranchDiffOperation {
     }
 
     /**
-     * Compute the diff between two branches.
+     * Compute the diff between two branches as a merge preview.
      *
-     * @param leftBranch the left branch name
-     * @param rightBranch the right branch name
+     * <p>The left branch is the source (to be merged), the right branch is the target (merge
+     * destination). The merge_base is computed from the target's perspective using its knowledge
+     * map, consistent with the actual merge operation.
+     *
+     * @param leftBranch the source branch (to be merged)
+     * @param rightBranch the target branch (merge destination)
      * @return the diff result containing merge-base info and unique snapshots on each side
      */
     public BranchDiffResult diff(String leftBranch, String rightBranch) {
@@ -66,13 +72,27 @@ public class BranchDiffOperation {
 
         MergeRangeResolver resolver = new MergeRangeResolver(snapshotManager, branchManager);
 
-        // Find merge-base (symmetric -- try both directions)
-        MergeBase mergeBase =
-                resolver.findMergeBase(leftBranch, rightBranch, Collections.emptyMap());
+        // Compute target's knowledge map — consistent with merge operation.
+        // This tells us which source snapshots the target has already merged.
+        Map<String, Long> targetKnowledge = resolver.computeKnowledgeMap(rightBranch);
+
+        // Find merge-base from target's perspective (same as merge operation)
+        MergeBase mergeBase = resolver.findMergeBase(leftBranch, rightBranch, targetKnowledge);
         if (mergeBase == null) {
-            mergeBase = resolver.findMergeBase(rightBranch, leftBranch, Collections.emptyMap());
+            // Symmetric fallback
+            mergeBase = resolver.findMergeBase(rightBranch, leftBranch, targetKnowledge);
         }
-        if (mergeBase == null) {
+
+        // Also find fork-based merge_base (without knowledge) for collecting target's commits.
+        // When knowledge advances the merge_base onto the source branch, the target's commits
+        // should still be collected from the structural fork point.
+        MergeBase forkBase =
+                resolver.findMergeBase(leftBranch, rightBranch, Collections.emptyMap());
+        if (forkBase == null) {
+            forkBase = resolver.findMergeBase(rightBranch, leftBranch, Collections.emptyMap());
+        }
+
+        if (mergeBase == null && forkBase == null) {
             throw new IllegalStateException(
                     String.format(
                             "No common ancestor found between '%s' and '%s'. "
@@ -80,26 +100,44 @@ public class BranchDiffOperation {
                                     + "or branches created before merge support was enabled.",
                             leftBranch, rightBranch));
         }
+        if (mergeBase == null) {
+            mergeBase = forkBase;
+        }
+        if (forkBase == null) {
+            forkBase = mergeBase;
+        }
 
         LOG.info(
-                "Diff merge-base: branch='{}', snapshotId={}.",
+                "Diff merge-base: branch='{}', snapshotId={}. Fork-base: branch='{}', snapshotId={}.",
                 mergeBase.branch,
-                mergeBase.snapshotId);
+                mergeBase.snapshotId,
+                forkBase.branch,
+                forkBase.snapshotId);
 
-        List<Snapshot> leftOnly = collectSnapshots(resolver, leftBranch, mergeBase);
-        List<Snapshot> rightOnly = collectSnapshots(resolver, rightBranch, mergeBase);
+        // left_only: source snapshots that would be replayed on merge (use targetKnowledge)
+        List<Snapshot> leftOnly =
+                collectOriginalSnapshots(resolver, leftBranch, mergeBase, targetKnowledge);
+        // right_only: target's own commits after fork point (reference for conflict risk)
+        List<Snapshot> rightOnly =
+                collectOriginalSnapshots(resolver, rightBranch, forkBase, Collections.emptyMap());
 
         return new BranchDiffResult(mergeBase.branch, mergeBase.snapshotId, leftOnly, rightOnly);
     }
 
-    private List<Snapshot> collectSnapshots(
-            MergeRangeResolver resolver, String branch, MergeBase mergeBase) {
+    /**
+     * Collect original (non-merge-replay) snapshots for a branch after the merge-base, using the
+     * knowledge map to skip already-known snapshots.
+     */
+    private List<Snapshot> collectOriginalSnapshots(
+            MergeRangeResolver resolver,
+            String branch,
+            MergeBase mergeBase,
+            Map<String, Long> knowledge) {
         List<BranchSnapshotRange> ranges;
         try {
-            ranges = resolver.buildRangesFromMergeBase(branch, mergeBase, Collections.emptyMap());
+            ranges = resolver.buildRangesFromMergeBase(branch, mergeBase, knowledge);
         } catch (IllegalArgumentException e) {
-            // Branch is the merge-base itself or has no chain to merge-base; collect directly
-            return collectDirectSnapshots(branch, mergeBase);
+            return collectDirectOriginalSnapshots(branch, mergeBase, knowledge);
         }
 
         List<Snapshot> snapshots = new ArrayList<>();
@@ -108,7 +146,9 @@ public class BranchDiffOperation {
             for (long id = range.startIdExclusive + 1; id <= range.endIdInclusive; id++) {
                 try {
                     Snapshot snapshot = branchMgr.snapshot(id);
-                    snapshots.add(snapshot);
+                    if (!isMergeReplaySnapshot(snapshot)) {
+                        snapshots.add(snapshot);
+                    }
                 } catch (Exception e) {
                     LOG.warn(
                             "Snapshot {} on branch '{}' is not available, skipping.",
@@ -121,10 +161,11 @@ public class BranchDiffOperation {
     }
 
     /**
-     * Collect snapshots directly for a branch that IS the merge-base branch, from
+     * Collect original snapshots directly for a branch that IS the merge-base branch, from
      * (mergeBase.snapshotId, latest].
      */
-    private List<Snapshot> collectDirectSnapshots(String branch, MergeBase mergeBase) {
+    private List<Snapshot> collectDirectOriginalSnapshots(
+            String branch, MergeBase mergeBase, Map<String, Long> knowledge) {
         if (!branch.equals(mergeBase.branch)) {
             return Collections.emptyList();
         }
@@ -134,16 +175,32 @@ public class BranchDiffOperation {
             return Collections.emptyList();
         }
 
+        Long known = knowledge.get(branch);
+        long startExclusive =
+                known != null ? Math.max(mergeBase.snapshotId, known) : mergeBase.snapshotId;
+
         List<Snapshot> snapshots = new ArrayList<>();
-        for (long id = mergeBase.snapshotId + 1; id <= latest.id(); id++) {
+        for (long id = startExclusive + 1; id <= latest.id(); id++) {
             try {
                 Snapshot snapshot = branchMgr.snapshot(id);
-                snapshots.add(snapshot);
+                if (!isMergeReplaySnapshot(snapshot)) {
+                    snapshots.add(snapshot);
+                }
             } catch (Exception e) {
                 LOG.warn("Snapshot {} on branch '{}' is not available, skipping.", id, branch);
             }
         }
         return snapshots;
+    }
+
+    /** Check if a snapshot was produced by merge replay (not an original commit). */
+    private static boolean isMergeReplaySnapshot(Snapshot snapshot) {
+        Map<String, String> props = snapshot.properties();
+        if (props == null) {
+            return false;
+        }
+        return props.containsKey(
+                CoreOptions.SNAPSHOT_COMMIT_PREFIX + CoreOptions.COMMIT_MERGE_SOURCE_BRANCH_KEY);
     }
 
     /** Result of a branch diff operation. */

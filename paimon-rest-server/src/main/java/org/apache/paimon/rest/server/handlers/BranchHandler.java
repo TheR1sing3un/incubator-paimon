@@ -239,7 +239,8 @@ public class BranchHandler implements RouteRegistrar {
                 snapshot.commitUuid(),
                 snapshot.timeMillis(),
                 snapshot.totalRecordCount(),
-                snapshot.deltaRecordCount());
+                snapshot.deltaRecordCount(),
+                snapshot.properties());
     }
 
     public RESTResponse getBranch(Identifier identifier, String branchName) throws Exception {
