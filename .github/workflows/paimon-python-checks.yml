@@ -89,19 +89,19 @@ jobs:
       - name: Verify Python version
         run: python --version
 
-      - name: Verify requirements.txt dependencies can be installed
+      - name: Verify setup.py dependencies can be installed
         shell: bash
         run: |
           cd paimon-python
           python -m pip install --upgrade pip
           TEMP_DIR=$(mktemp -d)
-          python -m pip install -r dev/requirements.txt --target "$TEMP_DIR" || {
-            echo "ERROR: Failed to resolve dependencies from dev/requirements.txt"
+          python -m pip install . --target "$TEMP_DIR" || {
+            echo "ERROR: Failed to resolve dependencies from setup.py"
             rm -rf "$TEMP_DIR"
             exit 1
           }
           rm -rf "$TEMP_DIR"
-          echo "✓ dev/requirements.txt can be resolved on this Python"
+          echo "✓ setup.py dependencies can be resolved on this Python"
 
       - name: Download native library artifact
         uses: actions/download-artifact@v7
@@ -177,7 +177,7 @@ jobs:
           chmod +x paimon-python/dev/lint-python.sh
           ./paimon-python/dev/lint-python.sh -i pytest_torch
 
-  # One job: check dev/requirements.txt on each Python version in sequence, then Ray version test on 3.10.
+  # One job: check setup.py dependencies on each Python version in sequence, then Ray version test on 3.10.
   requirement_version_compatible_test:
     runs-on: ubuntu-latest
     steps:
@@ -190,71 +190,71 @@ jobs:
             build-essential git curl cmake \
             && sudo rm -rf /var/lib/apt/lists/*
 
-      - name: Verify dev/requirements.txt on Python 3.8
+      - name: Verify setup.py dependencies on Python 3.8
         uses: actions/setup-python@v5
         with:
           python-version: '3.8'
-      - name: Resolve requirements (3.8)
+      - name: Resolve dependencies (3.8)
         run: |
           cd paimon-python && python -m pip install --upgrade pip
           TEMP_DIR=$(mktemp -d)
-          python -m pip install -r dev/requirements.txt --target "$TEMP_DIR" || { rm -rf "$TEMP_DIR"; exit 1; }
-          rm -rf "$TEMP_DIR" && echo "✓ dev/requirements.txt OK on Python 3.8"
+          python -m pip install . --target "$TEMP_DIR" || { rm -rf "$TEMP_DIR"; exit 1; }
+          rm -rf "$TEMP_DIR" && echo "✓ setup.py dependencies OK on Python 3.8"
 
-      - name: Verify dev/requirements.txt on Python 3.9
+      - name: Verify setup.py dependencies on Python 3.9
         uses: actions/setup-python@v5
         with:
           python-version: '3.9'
-      - name: Resolve requirements (3.9)
+      - name: Resolve dependencies (3.9)
         run: |
           cd paimon-python && python -m pip install --upgrade pip
           TEMP_DIR=$(mktemp -d)
-          python -m pip install -r dev/requirements.txt --target "$TEMP_DIR" || { rm -rf "$TEMP_DIR"; exit 1; }
-          rm -rf "$TEMP_DIR" && echo "✓ dev/requirements.txt OK on Python 3.9"
+          python -m pip install . --target "$TEMP_DIR" || { rm -rf "$TEMP_DIR"; exit 1; }
+          rm -rf "$TEMP_DIR" && echo "✓ setup.py dependencies OK on Python 3.9"
 
-      - name: Verify dev/requirements.txt on Python 3.10
+      - name: Verify setup.py dependencies on Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      - name: Resolve requirements (3.10)
+      - name: Resolve dependencies (3.10)
         run: |
           cd paimon-python && python -m pip install --upgrade pip
           TEMP_DIR=$(mktemp -d)
-          python -m pip install -r dev/requirements.txt --target "$TEMP_DIR" || { rm -rf "$TEMP_DIR"; exit 1; }
-          rm -rf "$TEMP_DIR" && echo "✓ dev/requirements.txt OK on Python 3.10"
+          python -m pip install . --target "$TEMP_DIR" || { rm -rf "$TEMP_DIR"; exit 1; }
+          rm -rf "$TEMP_DIR" && echo "✓ setup.py dependencies OK on Python 3.10"
 
-      - name: Verify dev/requirements.txt on Python 3.11
+      - name: Verify setup.py dependencies on Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Resolve requirements (3.11)
+      - name: Resolve dependencies (3.11)
         run: |
           cd paimon-python && python -m pip install --upgrade pip
           TEMP_DIR=$(mktemp -d)
-          python -m pip install -r dev/requirements.txt --target "$TEMP_DIR" || { rm -rf "$TEMP_DIR"; exit 1; }
-          rm -rf "$TEMP_DIR" && echo "✓ dev/requirements.txt OK on Python 3.11"
+          python -m pip install . --target "$TEMP_DIR" || { rm -rf "$TEMP_DIR"; exit 1; }
+          rm -rf "$TEMP_DIR" && echo "✓ setup.py dependencies OK on Python 3.11"
 
-      - name: Verify dev/requirements.txt on Python 3.12
+      - name: Verify setup.py dependencies on Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Resolve requirements (3.12)
+      - name: Resolve dependencies (3.12)
         run: |
           cd paimon-python && python -m pip install --upgrade pip
           TEMP_DIR=$(mktemp -d)
-          python -m pip install -r dev/requirements.txt --target "$TEMP_DIR" || { rm -rf "$TEMP_DIR"; exit 1; }
-          rm -rf "$TEMP_DIR" && echo "✓ dev/requirements.txt OK on Python 3.12"
+          python -m pip install . --target "$TEMP_DIR" || { rm -rf "$TEMP_DIR"; exit 1; }
+          rm -rf "$TEMP_DIR" && echo "✓ setup.py dependencies OK on Python 3.12"
 
-      - name: Verify dev/requirements.txt on Python 3.13
+      - name: Verify setup.py dependencies on Python 3.13
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Resolve requirements (3.13)
+      - name: Resolve dependencies (3.13)
         run: |
           cd paimon-python && python -m pip install --upgrade pip
           TEMP_DIR=$(mktemp -d)
-          python -m pip install -r dev/requirements.txt --target "$TEMP_DIR" || { rm -rf "$TEMP_DIR"; exit 1; }
-          rm -rf "$TEMP_DIR" && echo "✓ dev/requirements.txt OK on Python 3.13"
+          python -m pip install . --target "$TEMP_DIR" || { rm -rf "$TEMP_DIR"; exit 1; }
+          rm -rf "$TEMP_DIR" && echo "✓ setup.py dependencies OK on Python 3.13"
 
       - name: Setup Python 3.10 for Ray test
         uses: actions/setup-python@v5

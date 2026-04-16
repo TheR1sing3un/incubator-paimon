@@ -12,7 +12,7 @@ Pypaimon requires Python 3.6+.
 
 # Dependencies
 
-The core dependencies are listed in `dev/requirements.txt`.
+The core dependencies are declared in `setup.py` (`install_requires`).
 The development dependencies are listed in `dev/requirements-dev.txt`.
 
 # Build
