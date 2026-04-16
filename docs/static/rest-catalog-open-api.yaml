@@ -1231,10 +1231,12 @@ paths:
     get:
       tags:
         - branch
-      summary: Diff two refs (Phase 2)
+      summary: Diff branches (Merge Preview)
       description: |
-        Compare two refs (branch names or commit IDs) and return the schema changes between them.
-        This endpoint is reserved for Phase 2 and currently returns 501 Not Implemented.
+        Preview what would happen if merging the source branch (left) into the target branch (right).
+        Returns the merge_base computed from the target's perspective (consistent with the merge operation),
+        the source-only snapshots that would be replayed on merge, and the target-only original commits
+        for conflict risk assessment. Merge-replay snapshots are excluded from both sides.
       operationId: diffRefs
       parameters:
         - name: prefix
@@ -1257,13 +1259,13 @@ paths:
           required: true
           schema:
             type: string
-          description: Left ref (branch name or commit ID)
+          description: Source branch name (the branch to be merged)
         - name: right
           in: query
           required: true
           schema:
             type: string
-          description: Right ref (branch name or commit ID)
+          description: Target branch name (the merge destination)
       responses:
         "200":
           description: Diff result
@@ -1276,23 +1278,21 @@ paths:
         "401":
           $ref: '#/components/responses/UnauthorizedErrorResponse'
         "404":
-          $ref: '#/components/responses/TableNotExistErrorResponse'
-        "501":
-          description: Not yet implemented (Phase 2)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BranchNotExistErrorResponse'
         "500":
           $ref: '#/components/responses/ServerErrorResponse'
   /v1/{prefix}/databases/{database}/tables/{table}/branches/{branch}/merge:
     post:
       tags:
         - branch
-      summary: Merge branch (Phase 2)
+      summary: Merge branch
       description: |
-        Merge a source branch into the target branch. This endpoint is reserved for Phase 2
-        and currently returns 501 Not Implemented.
+        Merge a source branch into the target branch using replay mode. The operation works at the
+        metadata level — manifest entries from the source branch are replayed onto the target branch.
+        No data files are copied or rewritten. Conflict resolution happens at read time through
+        the table's merge engine (e.g. deduplicate, first-row, aggregation, partial-update).
+        Requires: PK table, no partitions, compatible schema, sequence.snapshot-ordering=true.
+        Repeated merge is idempotent (no new snapshots if no new changes on source).
       operationId: mergeBranch
       parameters:
         - name: prefix
@@ -1328,12 +1328,6 @@ paths:
           $ref: '#/components/responses/UnauthorizedErrorResponse'
         "404":
           $ref: '#/components/responses/BranchNotExistErrorResponse'
-        "501":
-          description: Not yet implemented (Phase 2)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
         "500":
           $ref: '#/components/responses/ServerErrorResponse'
   /v1/{prefix}/databases/{database}/tables/{table}/commits:
@@ -3596,60 +3590,76 @@ components:
       properties:
         source_branch:
           type: string
-          description: The branch to merge from
-        message:
-          type: string
-          nullable: true
-          description: Merge commit message
-        strategy:
-          type: string
-          nullable: true
-          description: "Merge strategy (reserved for Phase 2, e.g. none, ours, theirs)"
-          default: "none"
-        squash:
-          type: boolean
-          description: Whether to squash commits during merge
-          default: false
+          description: The source branch to merge from
     DiffResponse:
       type: object
       properties:
         left_ref:
           type: string
-          description: Left ref as provided in the query
+          description: Source branch name (as provided in left query param)
         right_ref:
           type: string
-          description: Right ref as provided in the query
-        left_commit_id:
-          type: string
-          nullable: true
-          description: Resolved commit ID for the left ref
-        right_commit_id:
-          type: string
-          nullable: true
-          description: Resolved commit ID for the right ref
-        changes:
+          description: Target branch name (as provided in right query param)
+        merge_base:
+          $ref: '#/components/schemas/MergeBaseInfo'
+        left_only:
           type: array
           items:
-            $ref: '#/components/schemas/DiffChange'
-          description: List of schema changes between the two refs
-    DiffChange:
+            $ref: '#/components/schemas/DiffCommitEntry'
+          description: Source snapshots that would be replayed on merge (excludes merge-replay snapshots)
+        right_only:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiffCommitEntry'
+          description: Target original commits after fork point (excludes merge-replay snapshots, for conflict risk reference)
+    MergeBaseInfo:
       type: object
+      description: The common ancestor between the two branches, computed from the target's merge knowledge
       properties:
-        type:
+        branch:
           type: string
-          description: "Change type (e.g. ADD_COLUMN, DROP_COLUMN, MODIFY_COLUMN, CHANGE_OPTION)"
-        column_name:
+          description: The branch where the merge-base snapshot resides
+        snapshot_id:
+          type: integer
+          format: int64
+          description: The snapshot ID of the merge-base
+    DiffCommitEntry:
+      type: object
+      description: A single commit (snapshot) in a diff result
+      properties:
+        snapshot_id:
+          type: integer
+          format: int64
+        schema_id:
+          type: integer
+          format: int64
+        commit_kind:
+          type: string
+          description: "Commit type: APPEND, COMPACT, or OVERWRITE"
+        commit_user:
           type: string
           nullable: true
-          description: Column name affected by the change
-        column_type:
+        commit_uuid:
           type: string
           nullable: true
-          description: Column data type (for ADD_COLUMN or MODIFY_COLUMN)
-        nullable:
-          type: boolean
+        time_millis:
+          type: integer
+          format: int64
+          description: Commit timestamp in milliseconds
+        total_record_count:
+          type: integer
+          format: int64
+          description: Total record count in the table after this commit
+        delta_record_count:
+          type: integer
+          format: int64
+          description: Number of records changed in this commit
+        properties:
+          type: object
           nullable: true
-          description: Whether the column is nullable
+          additionalProperties:
+            type: string
+          description: Snapshot properties (e.g. paimon.commit.merge-source-branch for merge-replay snapshots)
     GetBranchResponse:
       type: object
       properties:
