@@ -24,6 +24,7 @@ import org.apache.paimon.Snapshot;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.operation.BranchMergeOperation;
+import org.apache.paimon.options.CatalogOptions;
 import org.apache.paimon.partition.PartitionStatistics;
 import org.apache.paimon.rest.responses.GetTagResponse;
 import org.apache.paimon.schema.SchemaManager;
@@ -54,6 +55,7 @@ import java.util.SortedMap;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
@@ -64,37 +66,75 @@ import java.util.stream.Collectors;
 public class RESTFileSystemCatalog extends FileSystemCatalog {
 
     /**
-     * Per-branch JVM locks ensuring mutual exclusion between merge and normal commits targeting the
-     * same branch. Lock key format: {@code database.table#branch}.
-     *
-     * <p>Branch-level granularity allows concurrent writes to different branches of the same table
-     * (e.g., writing to branchA while merging onto main). Operations on the same branch (commit,
-     * merge, rollback) are serialized.
-     *
-     * <p>This is sufficient when all writes go through a single REST Server process. For
-     * multi-instance deployments, requests for the same table should be routed to the same
-     * instance, or a distributed lock should be configured via {@code lock.type}.
+     * Per-branch lock entry that combines a JVM-level execution lock with a process-level HDFS
+     * lock. The HDFS lock is acquired when the first thread arrives and released only when the last
+     * queued thread finishes — avoiding repeated HDFS acquire/release cycles. Only one thread at a
+     * time attempts the HDFS lock; all others wait in the JVM.
      */
-    private final ConcurrentHashMap<String, ReentrantLock> branchLocks = new ConcurrentHashMap<>();
+    private static class BranchLockEntry {
+        final ReentrantLock executionLock = new ReentrantLock();
+        final AtomicInteger waitingCount = new AtomicInteger(0);
+        volatile Path hdfsLockPath;
+        volatile long hdfsLockAcquireTime;
+    }
+
+    private final ConcurrentHashMap<String, BranchLockEntry> branchLockEntries =
+            new ConcurrentHashMap<>();
+
+    private final FileBasedBranchLock distributedBranchLock;
+
+    /** If the remaining TTL is less than this margin, release the lock proactively. */
+    private static final double LOCK_TTL_SAFETY_RATIO = 0.8;
 
     private <T> T withBranchLock(String database, String table, String branch, Callable<T> callable)
             throws Exception {
         String key = database + "." + table + "#" + branch;
-        ReentrantLock lock = branchLocks.computeIfAbsent(key, k -> new ReentrantLock());
-        lock.lock();
+        BranchLockEntry entry = branchLockEntries.computeIfAbsent(key, k -> new BranchLockEntry());
+
+        entry.waitingCount.incrementAndGet();
+        entry.executionLock.lock();
         try {
+            // Acquire or re-acquire HDFS lock if not held or approaching TTL expiry
+            if (entry.hdfsLockPath == null || isLockNearExpiry(entry)) {
+                if (entry.hdfsLockPath != null) {
+                    distributedBranchLock.release(entry.hdfsLockPath);
+                    entry.hdfsLockPath = null;
+                }
+                Path tablePath = getTableLocation(Identifier.create(database, table));
+                entry.hdfsLockPath = distributedBranchLock.acquire(tablePath, branch);
+                entry.hdfsLockAcquireTime = System.currentTimeMillis();
+            }
             return callable.call();
         } finally {
-            lock.unlock();
+            // Last thread out: release HDFS lock
+            if (entry.waitingCount.decrementAndGet() == 0) {
+                Path lockPath = entry.hdfsLockPath;
+                entry.hdfsLockPath = null;
+                if (lockPath != null) {
+                    distributedBranchLock.release(lockPath);
+                }
+            }
+            entry.executionLock.unlock();
         }
     }
 
+    private boolean isLockNearExpiry(BranchLockEntry entry) {
+        long elapsed = System.currentTimeMillis() - entry.hdfsLockAcquireTime;
+        return elapsed > distributedBranchLock.getLockTtl().toMillis() * LOCK_TTL_SAFETY_RATIO;
+    }
+
     public RESTFileSystemCatalog(FileIO fileIO, Path warehouse) {
-        super(fileIO, warehouse);
+        this(fileIO, warehouse, CatalogContext.create(new org.apache.paimon.options.Options()));
     }
 
     public RESTFileSystemCatalog(FileIO fileIO, Path warehouse, CatalogContext context) {
         super(fileIO, warehouse, context);
+        this.distributedBranchLock =
+                new FileBasedBranchLock(
+                        fileIO,
+                        context.options().get(CatalogOptions.LOCK_ACQUIRE_TIMEOUT),
+                        context.options().get(CatalogOptions.LOCK_CHECK_MAX_SLEEP),
+                        context.options().get(CatalogOptions.LOCK_TTL));
     }
 
     @Override

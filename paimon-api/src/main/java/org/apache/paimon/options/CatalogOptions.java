@@ -76,6 +76,14 @@ public class CatalogOptions {
                     .defaultValue(Duration.ofMinutes(8))
                     .withDescription("The maximum time to wait for acquiring the lock.");
 
+    public static final ConfigOption<Duration> LOCK_TTL =
+            key("lock.ttl")
+                    .durationType()
+                    .defaultValue(Duration.ofMinutes(10))
+                    .withDescription(
+                            "The TTL for file-based distributed locks. "
+                                    + "A lock file older than this duration is considered stale and will be force-deleted.");
+
     public static final ConfigOption<Integer> CLIENT_POOL_SIZE =
             key("client-pool-size")
                     .intType()
