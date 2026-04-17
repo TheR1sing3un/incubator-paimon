@@ -79,8 +79,10 @@ def parse_args(argv=None):
                         help="Disable HTTP keep-alive, force new TCP connection per request")
     parser.add_argument("--reconnect", action="store_true",
                         help="Recreate catalog (new TCP connection) before each request")
-    parser.add_argument("--http-max-retries", type=int, default=None,
-                        help="HTTP retry count for 429/502/503/504 and read errors (default: 3, set to 0 to disable)")
+    parser.add_argument("--http-max-connect-retries", type=int, default=None,
+                        help="HTTP retry count for connect errors (default: 3, set to 0 to disable)")
+    parser.add_argument("--http-max-read-retries", type=int, default=None,
+                        help="HTTP retry count for read/status errors 429/502/503/504 (default: 3, set to 0 to disable)")
     parser.add_argument("--sweep", action="store_true",
                         help="Run concurrency sweep instead of single run")
     parser.add_argument("--rows-per-commit", type=int, default=100,
@@ -113,7 +115,8 @@ def build_config(args) -> BenchmarkConfig:
         http_timeout=args.http_timeout,
         disable_keepalive=args.disable_keepalive,
         reconnect=args.reconnect,
-        http_max_retries=args.http_max_retries,
+        http_max_connect_retries=args.http_max_connect_retries,
+        http_max_read_retries=args.http_max_read_retries,
     )
 
 

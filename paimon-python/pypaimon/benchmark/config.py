@@ -25,7 +25,8 @@ class BenchmarkConfig:
     http_timeout: Optional[int] = None
     disable_keepalive: bool = False
     reconnect: bool = False
-    http_max_retries: Optional[int] = None
+    http_max_connect_retries: Optional[int] = None
+    http_max_read_retries: Optional[int] = None
 
     output_dir: str = "./benchmark_results"
     output_format: str = "json"

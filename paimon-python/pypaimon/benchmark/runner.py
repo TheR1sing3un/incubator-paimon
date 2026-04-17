@@ -17,14 +17,16 @@ class LoadGeneratorActor:
     def __init__(self, scenario: BaseBenchmarkScenario, catalog_options: dict,
                  context: dict, seed: int, http_timeout: int = None,
                  disable_keepalive: bool = False, reconnect: bool = False,
-                 http_max_retries: int = None):
+                 http_max_connect_retries: int = None,
+                 http_max_read_retries: int = None):
         import random
 
         self.catalog_options = catalog_options
         self.http_timeout = http_timeout
         self.disable_keepalive = disable_keepalive
         self.reconnect = reconnect
-        self.http_max_retries = http_max_retries
+        self.http_max_connect_retries = http_max_connect_retries
+        self.http_max_read_retries = http_max_read_retries
         self.catalog = self._create_catalog()
         self.scenario = scenario
         self.context = dict(context)
@@ -33,61 +35,18 @@ class LoadGeneratorActor:
         self.rng = random.Random(seed)
 
     def _create_catalog(self):
-        self._patch_http_client()
         from pypaimon import CatalogFactory
-        catalog = CatalogFactory.create(self.catalog_options)
-        return catalog
-
-    def _patch_http_client(self):
-        """Patch pypaimon's HttpClient BEFORE any request is made, so our
-        retry/timeout/keepalive config applies to the initial GET /v1/config
-        call inside CatalogFactory.create()."""
-        import types
-        from requests.adapters import HTTPAdapter
-        from urllib3.util.retry import Retry
-        from pypaimon.api import client as pp_client
-
-        # Avoid double-patching (actor may call this multiple times in reconnect mode)
-        if getattr(pp_client.HttpClient, "_benchmark_patched", False):
-            return
-
-        original_init = pp_client.HttpClient.__init__
-        http_timeout = self.http_timeout
-        http_max_retries = self.http_max_retries
-        disable_keepalive = self.disable_keepalive
-
-        def patched_init(hc_self, uri):
-            original_init(hc_self, uri)
-            session = hc_self.session
-
-            if disable_keepalive:
-                session.headers.update({"Connection": "close"})
-
-            if http_max_retries is not None:
-                n = http_max_retries
-                retry = Retry(
-                    total=n, connect=n, read=n, status=n,
-                    backoff_factor=1,
-                    status_forcelist=[429, 502, 503, 504],
-                    allowed_methods=["GET", "HEAD", "PUT", "DELETE", "TRACE", "OPTIONS"],
-                    raise_on_status=False, raise_on_redirect=False,
-                )
-                adapter = HTTPAdapter(max_retries=retry)
-                session.mount("http://", adapter)
-                session.mount("https://", adapter)
-
-            if http_timeout is not None:
-                original_request = session.request.__func__
-                timeout_val = (http_timeout, http_timeout)
-
-                def request_with_timeout(self_session, *args, **kwargs):
-                    kwargs.setdefault("timeout", timeout_val)
-                    return original_request(self_session, *args, **kwargs)
-
-                session.request = types.MethodType(request_with_timeout, session)
-
-        pp_client.HttpClient.__init__ = patched_init
-        pp_client.HttpClient._benchmark_patched = True
+        opts = dict(self.catalog_options)
+        if self.http_timeout is not None:
+            opts["http.connect-timeout"] = str(self.http_timeout)
+            opts["http.read-timeout"] = str(self.http_timeout)
+        if self.http_max_connect_retries is not None:
+            opts["http.max-connect-retries"] = str(self.http_max_connect_retries)
+        if self.http_max_read_retries is not None:
+            opts["http.max-read-retries"] = str(self.http_max_read_retries)
+        if self.disable_keepalive:
+            opts["http.keep-alive"] = "false"
+        return CatalogFactory.create(opts)
 
     def warmup(self, seconds: float):
         deadline = time.monotonic() + seconds
@@ -132,7 +91,8 @@ class BenchmarkRunner:
                 http_timeout=self.config.http_timeout,
                 disable_keepalive=self.config.disable_keepalive,
                 reconnect=self.config.reconnect,
-                http_max_retries=self.config.http_max_retries,
+                http_max_connect_retries=self.config.http_max_connect_retries,
+                http_max_read_retries=self.config.http_max_read_retries,
             )
             for i in range(num_workers)
         ]
