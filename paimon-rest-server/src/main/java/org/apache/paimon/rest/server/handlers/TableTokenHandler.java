@@ -62,7 +62,8 @@ public class TableTokenHandler implements RouteRegistrar {
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     RESTResponse response =
-                            MetricsHelper.wrapCatalogOp("get_table_token", () -> getTableToken(id));
+                            MetricsHelper.wrapCatalogOp(
+                                    "get_table_token", id.getFullName(), () -> getTableToken(id));
                     return new RouteResult(200, response);
                 });
         router.post(
@@ -70,7 +71,8 @@ public class TableTokenHandler implements RouteRegistrar {
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     RESTResponse response =
-                            MetricsHelper.wrapCatalogOp("auth_table", () -> authTable(id, body));
+                            MetricsHelper.wrapCatalogOp(
+                                    "auth_table", id.getFullName(), () -> authTable(id, body));
                     return new RouteResult(200, response);
                 });
     }

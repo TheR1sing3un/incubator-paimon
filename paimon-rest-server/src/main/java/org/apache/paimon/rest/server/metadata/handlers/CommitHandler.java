@@ -81,7 +81,9 @@ public class CommitHandler implements RouteRegistrar {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     CommitInfo result =
                             MetricsHelper.wrapCatalogOp(
-                                    "reset_commit", () -> resetCommit(id, vars.get("commitId")));
+                                    "reset_commit",
+                                    id.getFullName(),
+                                    () -> resetCommit(id, vars.get("commitId")));
                     return new RouteResult(200, result);
                 });
         router.get(
@@ -90,7 +92,9 @@ public class CommitHandler implements RouteRegistrar {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     CommitInfo result =
                             MetricsHelper.wrapCatalogOp(
-                                    "get_commit", () -> getCommit(id, vars.get("commitId")));
+                                    "get_commit",
+                                    id.getFullName(),
+                                    () -> getCommit(id, vars.get("commitId")));
                     return new RouteResult(200, result);
                 });
         router.get(
@@ -99,7 +103,9 @@ public class CommitHandler implements RouteRegistrar {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     RESTResponse response =
                             MetricsHelper.wrapCatalogOp(
-                                    "list_commits", () -> listCommits(id, params));
+                                    "list_commits",
+                                    id.getFullName(),
+                                    () -> listCommits(id, params));
                     return new RouteResult(200, response);
                 });
     }

@@ -66,7 +66,7 @@ public class TagHandler implements RouteRegistrar {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     RESTResponse response =
                             MetricsHelper.wrapCatalogOp(
-                                    "get_tag", () -> getTag(id, vars.get("tag")));
+                                    "get_tag", id.getFullName(), () -> getTag(id, vars.get("tag")));
                     return new RouteResult(200, response);
                 });
         router.delete(
@@ -74,7 +74,7 @@ public class TagHandler implements RouteRegistrar {
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     MetricsHelper.wrapCatalogOpVoid(
-                            "delete_tag", () -> deleteTag(id, vars.get("tag")));
+                            "delete_tag", id.getFullName(), () -> deleteTag(id, vars.get("tag")));
                     return new RouteResult(200, null);
                 });
         router.get(
@@ -82,14 +82,16 @@ public class TagHandler implements RouteRegistrar {
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     RESTResponse response =
-                            MetricsHelper.wrapCatalogOp("list_tags", () -> listTags(id, params));
+                            MetricsHelper.wrapCatalogOp(
+                                    "list_tags", id.getFullName(), () -> listTags(id, params));
                     return new RouteResult(200, response);
                 });
         router.post(
                 tagsPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    MetricsHelper.wrapCatalogOpVoid("create_tag", () -> createTag(id, body));
+                    MetricsHelper.wrapCatalogOpVoid(
+                            "create_tag", id.getFullName(), () -> createTag(id, body));
                     return new RouteResult(200, null);
                 });
     }

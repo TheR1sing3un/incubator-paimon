@@ -89,8 +89,12 @@ public class FunctionHandler implements RouteRegistrar {
         router.post(
                 functionsPath,
                 (auth, vars, params, body) -> {
+                    String funcId =
+                            HandlerUtils.safeExtractNameAsIdentifier(body, vars.get("database"));
                     MetricsHelper.wrapCatalogOpVoid(
-                            "create_function", () -> createFunction(vars.get("database"), body));
+                            "create_function",
+                            funcId,
+                            () -> createFunction(vars.get("database"), body));
                     return new RouteResult(200, null);
                 });
         router.get(
@@ -107,7 +111,8 @@ public class FunctionHandler implements RouteRegistrar {
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("function"));
                     RESTResponse response =
-                            MetricsHelper.wrapCatalogOp("get_function", () -> getFunction(id));
+                            MetricsHelper.wrapCatalogOp(
+                                    "get_function", id.getFullName(), () -> getFunction(id));
                     return new RouteResult(200, response);
                 });
         router.post(
@@ -115,14 +120,15 @@ public class FunctionHandler implements RouteRegistrar {
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("function"));
                     MetricsHelper.wrapCatalogOpVoid(
-                            "alter_function", () -> alterFunction(id, body));
+                            "alter_function", id.getFullName(), () -> alterFunction(id, body));
                     return new RouteResult(200, null);
                 });
         router.delete(
                 functionPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("function"));
-                    MetricsHelper.wrapCatalogOpVoid("drop_function", () -> dropFunction(id));
+                    MetricsHelper.wrapCatalogOpVoid(
+                            "drop_function", id.getFullName(), () -> dropFunction(id));
                     return new RouteResult(200, null);
                 });
     }

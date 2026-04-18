@@ -91,8 +91,10 @@ public class TableHandler implements RouteRegistrar {
         router.post(
                 tablesRenamePath,
                 (auth, vars, params, body) -> {
+                    String tableId = HandlerUtils.safeExtractIdentifier(body, "source");
                     RESTResponse response =
-                            MetricsHelper.wrapCatalogOp("rename_table", () -> renameTable(body));
+                            MetricsHelper.wrapCatalogOp(
+                                    "rename_table", tableId, () -> renameTable(body));
                     return new RouteResult(200, response);
                 });
         router.get(
@@ -114,8 +116,11 @@ public class TableHandler implements RouteRegistrar {
         router.post(
                 registerPath,
                 (auth, vars, params, body) -> {
+                    String tableId = HandlerUtils.safeExtractIdentifier(body, "identifier");
                     MetricsHelper.wrapCatalogOpVoid(
-                            "register_table", () -> registerTable(vars.get("database"), body));
+                            "register_table",
+                            tableId,
+                            () -> registerTable(vars.get("database"), body));
                     return new RouteResult(200, null);
                 });
         router.get(
@@ -129,8 +134,9 @@ public class TableHandler implements RouteRegistrar {
         router.post(
                 tablesPath,
                 (auth, vars, params, body) -> {
+                    String tableId = HandlerUtils.safeExtractIdentifier(body, "identifier");
                     MetricsHelper.wrapCatalogOpVoid(
-                            "create_table", () -> createTable(vars.get("database"), body));
+                            "create_table", tableId, () -> createTable(vars.get("database"), body));
                     return new RouteResult(200, null);
                 });
         router.get(
@@ -147,21 +153,24 @@ public class TableHandler implements RouteRegistrar {
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     RESTResponse response =
-                            MetricsHelper.wrapCatalogOp("get_table", () -> getTable(id));
+                            MetricsHelper.wrapCatalogOp(
+                                    "get_table", id.getFullName(), () -> getTable(id));
                     return new RouteResult(200, response);
                 });
         router.post(
                 tablePath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    MetricsHelper.wrapCatalogOpVoid("alter_table", () -> alterTable(id, body));
+                    MetricsHelper.wrapCatalogOpVoid(
+                            "alter_table", id.getFullName(), () -> alterTable(id, body));
                     return new RouteResult(200, null);
                 });
         router.delete(
                 tablePath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    MetricsHelper.wrapCatalogOpVoid("drop_table", () -> dropTable(id));
+                    MetricsHelper.wrapCatalogOpVoid(
+                            "drop_table", id.getFullName(), () -> dropTable(id));
                     return new RouteResult(200, null);
                 });
     }

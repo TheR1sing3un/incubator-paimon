@@ -20,6 +20,9 @@ package org.apache.paimon.rest.server.handlers;
 
 import org.apache.paimon.rest.RESTApi;
 import org.apache.paimon.rest.RESTResponse;
+import org.apache.paimon.utils.JsonSerdeUtil;
+
+import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.databind.JsonNode;
 
 import javax.annotation.Nullable;
 
@@ -191,5 +194,60 @@ public class HandlerUtils {
 
     public static boolean filterByPrefix(String name, @Nullable String prefix) {
         return prefix == null || name.startsWith(prefix);
+    }
+
+    /**
+     * Safely extract a table/view/function identifier from the request body for metrics purposes.
+     * Parses the JSON body and looks for the specified field (e.g., "identifier" or
+     * "fromIdentifier") containing "database" and "table" sub-fields.
+     *
+     * <p>Returns empty string if the body is malformed or the identifier is missing — never throws.
+     * This method is designed to be called before the metrics wrapper so that body parse failures
+     * still get counted as catalog operation errors.
+     *
+     * @param body the raw JSON request body
+     * @param identifierField the JSON field name containing the identifier (e.g., "identifier",
+     *     "fromIdentifier")
+     * @return "database.table" string, or empty string on failure
+     */
+    public static String safeExtractIdentifier(String body, String identifierField) {
+        try {
+            JsonNode root = JsonSerdeUtil.fromJson(body, JsonNode.class);
+            if (root != null && root.has(identifierField)) {
+                JsonNode idNode = root.get(identifierField);
+                String db = idNode.has("database") ? idNode.get("database").asText() : "";
+                String object = idNode.has("object") ? idNode.get("object").asText() : "";
+                if (!db.isEmpty() && !object.isEmpty()) {
+                    return db + "." + object;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return "";
+    }
+
+    /**
+     * Safely extract a "name" field from the request body and combine with the database from URL
+     * path to form a "database.name" identifier for metrics. Used for create operations where the
+     * body has a simple "name" field instead of a full identifier object.
+     *
+     * <p>Returns empty string if the body is malformed or the name is missing — never throws.
+     *
+     * @param body the raw JSON request body
+     * @param database the database name from the URL path
+     * @return "database.name" string, or empty string on failure
+     */
+    public static String safeExtractNameAsIdentifier(String body, String database) {
+        try {
+            JsonNode root = JsonSerdeUtil.fromJson(body, JsonNode.class);
+            if (root != null && root.has("name")) {
+                String name = root.get("name").asText();
+                if (!name.isEmpty() && database != null && !database.isEmpty()) {
+                    return database + "." + name;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return "";
     }
 }

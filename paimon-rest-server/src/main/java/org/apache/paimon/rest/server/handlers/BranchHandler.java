@@ -76,14 +76,17 @@ public class BranchHandler implements RouteRegistrar {
                 diffPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    return MetricsHelper.wrapCatalogOp("diff_refs", () -> diffRefs(id, params));
+                    return MetricsHelper.wrapCatalogOp(
+                            "diff_refs", id.getFullName(), () -> diffRefs(id, params));
                 });
         router.post(
                 branchMergePath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     MetricsHelper.wrapCatalogOpVoid(
-                            "merge_branch", () -> mergeBranch(id, vars.get("branch"), body));
+                            "merge_branch",
+                            id.getFullName(),
+                            () -> mergeBranch(id, vars.get("branch"), body));
                     return new RouteResult(200, null);
                 });
         router.post(
@@ -91,7 +94,9 @@ public class BranchHandler implements RouteRegistrar {
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     MetricsHelper.wrapCatalogOpVoid(
-                            "fast_forward_branch", () -> fastForward(id, vars.get("branch")));
+                            "fast_forward_branch",
+                            id.getFullName(),
+                            () -> fastForward(id, vars.get("branch")));
                     return new RouteResult(200, null);
                 });
         router.delete(
@@ -99,7 +104,9 @@ public class BranchHandler implements RouteRegistrar {
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     MetricsHelper.wrapCatalogOpVoid(
-                            "drop_branch", () -> dropBranch(id, vars.get("branch")));
+                            "drop_branch",
+                            id.getFullName(),
+                            () -> dropBranch(id, vars.get("branch")));
                     return new RouteResult(200, null);
                 });
         router.get(
@@ -108,7 +115,9 @@ public class BranchHandler implements RouteRegistrar {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     RESTResponse response =
                             MetricsHelper.wrapCatalogOp(
-                                    "get_branch", () -> getBranch(id, vars.get("branch")));
+                                    "get_branch",
+                                    id.getFullName(),
+                                    () -> getBranch(id, vars.get("branch")));
                     return new RouteResult(200, response);
                 });
         router.get(
@@ -116,14 +125,16 @@ public class BranchHandler implements RouteRegistrar {
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     RESTResponse response =
-                            MetricsHelper.wrapCatalogOp("list_branches", () -> listBranches(id));
+                            MetricsHelper.wrapCatalogOp(
+                                    "list_branches", id.getFullName(), () -> listBranches(id));
                     return new RouteResult(200, response);
                 });
         router.post(
                 branchesPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
-                    MetricsHelper.wrapCatalogOpVoid("create_branch", () -> createBranch(id, body));
+                    MetricsHelper.wrapCatalogOpVoid(
+                            "create_branch", id.getFullName(), () -> createBranch(id, body));
                     return new RouteResult(200, null);
                 });
     }

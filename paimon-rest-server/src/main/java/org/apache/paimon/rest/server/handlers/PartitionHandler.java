@@ -68,7 +68,9 @@ public class PartitionHandler implements RouteRegistrar {
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     MetricsHelper.wrapCatalogOpVoid(
-                            "mark_done_partitions", () -> markDonePartitions(id, body));
+                            "mark_done_partitions",
+                            id.getFullName(),
+                            () -> markDonePartitions(id, body));
                     return new RouteResult(200, null);
                 });
         router.post(
@@ -78,6 +80,7 @@ public class PartitionHandler implements RouteRegistrar {
                     RESTResponse response =
                             MetricsHelper.wrapCatalogOp(
                                     "list_partitions_by_names",
+                                    id.getFullName(),
                                     () -> listPartitionsByNames(id, body, params));
                     return new RouteResult(200, response);
                 });
@@ -87,7 +90,9 @@ public class PartitionHandler implements RouteRegistrar {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     RESTResponse response =
                             MetricsHelper.wrapCatalogOp(
-                                    "list_partitions", () -> listPartitions(id, params));
+                                    "list_partitions",
+                                    id.getFullName(),
+                                    () -> listPartitions(id, params));
                     return new RouteResult(200, response);
                 });
     }

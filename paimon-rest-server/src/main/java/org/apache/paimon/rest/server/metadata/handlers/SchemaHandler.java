@@ -75,7 +75,7 @@ public class SchemaHandler implements RouteRegistrar {
                     long schemaId = Long.parseLong(vars.get("schemaId"));
                     RESTResponse response =
                             MetricsHelper.wrapCatalogOp(
-                                    "get_schema", () -> getSchema(id, schemaId));
+                                    "get_schema", id.getFullName(), () -> getSchema(id, schemaId));
                     return new RouteResult(200, response);
                 });
         router.get(
@@ -83,7 +83,8 @@ public class SchemaHandler implements RouteRegistrar {
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     RESTResponse response =
-                            MetricsHelper.wrapCatalogOp("list_schemas", () -> listSchemas(id));
+                            MetricsHelper.wrapCatalogOp(
+                                    "list_schemas", id.getFullName(), () -> listSchemas(id));
                     return new RouteResult(200, response);
                 });
     }

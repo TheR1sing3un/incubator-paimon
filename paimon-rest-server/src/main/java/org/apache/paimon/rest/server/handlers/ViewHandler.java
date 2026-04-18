@@ -75,8 +75,10 @@ public class ViewHandler implements RouteRegistrar {
         router.post(
                 viewsRenamePath,
                 (auth, vars, params, body) -> {
+                    String viewId = HandlerUtils.safeExtractIdentifier(body, "source");
                     RESTResponse response =
-                            MetricsHelper.wrapCatalogOp("rename_view", () -> renameView(body));
+                            MetricsHelper.wrapCatalogOp(
+                                    "rename_view", viewId, () -> renameView(body));
                     return new RouteResult(200, response);
                 });
         router.get(
@@ -98,8 +100,9 @@ public class ViewHandler implements RouteRegistrar {
         router.post(
                 viewsPath,
                 (auth, vars, params, body) -> {
+                    String viewId = HandlerUtils.safeExtractIdentifier(body, "identifier");
                     MetricsHelper.wrapCatalogOpVoid(
-                            "create_view", () -> createView(vars.get("database"), body));
+                            "create_view", viewId, () -> createView(vars.get("database"), body));
                     return new RouteResult(200, null);
                 });
         router.get(
@@ -116,21 +119,24 @@ public class ViewHandler implements RouteRegistrar {
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("view"));
                     RESTResponse response =
-                            MetricsHelper.wrapCatalogOp("get_view", () -> getView(id));
+                            MetricsHelper.wrapCatalogOp(
+                                    "get_view", id.getFullName(), () -> getView(id));
                     return new RouteResult(200, response);
                 });
         router.post(
                 viewPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("view"));
-                    MetricsHelper.wrapCatalogOpVoid("alter_view", () -> alterView(id, body));
+                    MetricsHelper.wrapCatalogOpVoid(
+                            "alter_view", id.getFullName(), () -> alterView(id, body));
                     return new RouteResult(200, null);
                 });
         router.delete(
                 viewPath,
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("view"));
-                    MetricsHelper.wrapCatalogOpVoid("drop_view", () -> dropView(id));
+                    MetricsHelper.wrapCatalogOpVoid(
+                            "drop_view", id.getFullName(), () -> dropView(id));
                     return new RouteResult(200, null);
                 });
     }

@@ -64,7 +64,7 @@ public class ConsumerHandler implements RouteRegistrar {
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     MetricsHelper.wrapCatalogOpVoid(
-                            "reset_consumer", () -> resetConsumer(id, body));
+                            "reset_consumer", id.getFullName(), () -> resetConsumer(id, body));
                     return new RouteResult(200, null);
                 });
         router.get(
@@ -73,7 +73,9 @@ public class ConsumerHandler implements RouteRegistrar {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     RESTResponse response =
                             MetricsHelper.wrapCatalogOp(
-                                    "list_consumers", () -> listConsumers(id, params));
+                                    "list_consumers",
+                                    id.getFullName(),
+                                    () -> listConsumers(id, params));
                     return new RouteResult(200, response);
                 });
     }

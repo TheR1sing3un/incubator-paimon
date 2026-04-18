@@ -41,18 +41,36 @@ public class MetricsHelper {
      * @return the result of the callable
      */
     public static <T> T wrapCatalogOp(String opName, Callable<T> callable) throws Exception {
+        return wrapCatalogOp(opName, "", callable);
+    }
+
+    /**
+     * Wraps a catalog operation with metrics collection, including a table-level dimension.
+     *
+     * <p>Reports: catalog_op_total (count), catalog_op_latency (value), catalog_op_error (count on
+     * failure). The {@code tableId} is passed as the table dimension to PerfUtil for per-table
+     * breakdown (e.g., "mydb.mytable").
+     *
+     * @param opName operation name used as subtag (e.g., "get_table", "list_databases")
+     * @param tableId table identifier for per-table metrics (e.g., "database.table"), or empty
+     *     string if not applicable
+     * @param callable the actual catalog call
+     * @return the result of the callable
+     */
+    public static <T> T wrapCatalogOp(String opName, String tableId, Callable<T> callable)
+            throws Exception {
         long start = System.currentTimeMillis();
         try {
             T result = callable.call();
             long duration = System.currentTimeMillis() - start;
-            safePerf(() -> PerfUtil.perfCount(opName, "", "catalog_op_total"));
-            safePerf(() -> PerfUtil.perfValue(opName, "catalog_op_latency", duration));
+            safePerf(() -> PerfUtil.perfCount(opName, tableId, "catalog_op_total"));
+            safePerf(() -> PerfUtil.perfValue(opName, tableId, "catalog_op_latency", duration));
             return result;
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - start;
-            safePerf(() -> PerfUtil.perfCount(opName, "", "catalog_op_total"));
-            safePerf(() -> PerfUtil.perfCount(opName, "", "catalog_op_error"));
-            safePerf(() -> PerfUtil.perfValue(opName, "catalog_op_latency", duration));
+            safePerf(() -> PerfUtil.perfCount(opName, tableId, "catalog_op_total"));
+            safePerf(() -> PerfUtil.perfCount(opName, tableId, "catalog_op_error"));
+            safePerf(() -> PerfUtil.perfValue(opName, tableId, "catalog_op_latency", duration));
             throw e;
         }
     }
@@ -65,8 +83,21 @@ public class MetricsHelper {
      */
     public static void wrapCatalogOpVoid(String opName, RunnableWithException runnable)
             throws Exception {
+        wrapCatalogOpVoid(opName, "", runnable);
+    }
+
+    /**
+     * Wraps a void catalog operation with metrics collection, including a table-level dimension.
+     *
+     * @param opName operation name used as subtag
+     * @param tableId table identifier for per-table metrics (e.g., "database.table")
+     * @param runnable the actual catalog call
+     */
+    public static void wrapCatalogOpVoid(
+            String opName, String tableId, RunnableWithException runnable) throws Exception {
         wrapCatalogOp(
                 opName,
+                tableId,
                 () -> {
                     runnable.run();
                     return null;

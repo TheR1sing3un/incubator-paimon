@@ -34,6 +34,7 @@ import org.apache.paimon.rest.server.RouteRegistrar;
 import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
 import org.apache.paimon.rest.server.utils.MetricsHelper;
+import org.apache.paimon.rest.server.utils.PerfUtil;
 import org.apache.paimon.table.TableSnapshot;
 import org.apache.paimon.utils.JsonSerdeUtil;
 import org.apache.paimon.utils.SnapshotNotExistException;
@@ -49,6 +50,7 @@ import java.util.Optional;
 
 import static org.apache.paimon.rest.server.handlers.HandlerUtils.parseMaxResults;
 import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
+import static org.apache.paimon.rest.server.utils.MetricsHelper.safePerf;
 
 /** Handler for snapshot-related REST endpoints. */
 public class SnapshotHandler implements RouteRegistrar {
@@ -76,7 +78,9 @@ public class SnapshotHandler implements RouteRegistrar {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     RESTResponse response =
                             MetricsHelper.wrapCatalogOp(
-                                    "get_latest_snapshot", () -> getLatestSnapshot(id));
+                                    "get_latest_snapshot",
+                                    id.getFullName(),
+                                    () -> getLatestSnapshot(id));
                     return new RouteResult(200, response);
                 });
         router.get(
@@ -85,7 +89,9 @@ public class SnapshotHandler implements RouteRegistrar {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     RESTResponse response =
                             MetricsHelper.wrapCatalogOp(
-                                    "load_snapshot", () -> loadSnapshot(id, vars.get("version")));
+                                    "load_snapshot",
+                                    id.getFullName(),
+                                    () -> loadSnapshot(id, vars.get("version")));
                     return new RouteResult(200, response);
                 });
         router.get(
@@ -94,7 +100,9 @@ public class SnapshotHandler implements RouteRegistrar {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     RESTResponse response =
                             MetricsHelper.wrapCatalogOp(
-                                    "list_snapshots", () -> listSnapshots(id, params));
+                                    "list_snapshots",
+                                    id.getFullName(),
+                                    () -> listSnapshots(id, params));
                     return new RouteResult(200, response);
                 });
         router.post(
@@ -103,7 +111,9 @@ public class SnapshotHandler implements RouteRegistrar {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     RESTResponse response =
                             MetricsHelper.wrapCatalogOp(
-                                    "commit_snapshot", () -> commitSnapshot(id, body));
+                                    "commit_snapshot",
+                                    id.getFullName(),
+                                    () -> commitSnapshot(id, body));
                     return new RouteResult(200, response);
                 });
         router.post(
@@ -111,7 +121,7 @@ public class SnapshotHandler implements RouteRegistrar {
                 (auth, vars, params, body) -> {
                     Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
                     MetricsHelper.wrapCatalogOpVoid(
-                            "rollback_table", () -> rollbackTable(id, body));
+                            "rollback_table", id.getFullName(), () -> rollbackTable(id, body));
                     return new RouteResult(200, null);
                 });
     }
@@ -153,6 +163,11 @@ public class SnapshotHandler implements RouteRegistrar {
         boolean success =
                 catalog.commitSnapshot(
                         identifier, request.getTableId(), snapshot, request.getStatistics());
+        // Report commit conflict when success is false (indicates a conflict)
+        if (!success) {
+            String tableId = identifier.getFullName();
+            safePerf(() -> PerfUtil.perfCount(tableId, "", "commit_conflict_total"));
+        }
         return new CommitTableResponse(success);
     }
 
