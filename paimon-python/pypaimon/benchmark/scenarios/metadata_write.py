@@ -1,10 +1,27 @@
+################################################################################
+#  Licensed to the Apache Software Foundation (ASF) under one
+#  or more contributor license agreements.  See the NOTICE file
+#  distributed with this work for additional information
+#  regarding copyright ownership.  The ASF licenses this file
+#  to you under the Apache License, Version 2.0 (the
+#  "License"); you may not use this file except in compliance
+#  with the License.  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+# limitations under the License.
+#################################################################################
+
 import random
 import uuid
 
 import pyarrow as pa
 
 from pypaimon.benchmark.config import BenchmarkConfig
-from pypaimon.benchmark.metrics import MetricsCollector
 from pypaimon.benchmark.scenarios.base import BaseBenchmarkScenario
 from pypaimon.schema.schema import Schema
 
@@ -44,18 +61,14 @@ class CreateTableScenario(BaseBenchmarkScenario):
             "schema": schema,
         }
 
-    def run_once(self, context: dict, collector: MetricsCollector, rng: random.Random):
-        catalog = context["catalog"]
+    def make_request(self, catalog, context, rng):
         db = context["benchmark_db"]
         schema = context["schema"]
         table_name = f"bench_create_{uuid.uuid4().hex[:12]}"
         identifier = f"{db}.{table_name}"
-        collector.timed_call(
-            "create_table",
-            lambda: catalog.create_table(identifier, schema, False)
-        )
+        return "create_table", lambda: catalog.create_table(identifier, schema, False)
 
-    def teardown(self, config: BenchmarkConfig, context: dict):
+    def teardown(self, config, context):
         pass
 
 
@@ -67,18 +80,14 @@ class AlterTableScenario(BaseBenchmarkScenario):
     def setup(self, config: BenchmarkConfig) -> dict:
         return _setup_table_ids(config)
 
-    def run_once(self, context: dict, collector: MetricsCollector, rng: random.Random):
+    def make_request(self, catalog, context, rng):
         from pypaimon.schema.schema_change import SchemaChange
-        catalog = context["catalog"]
         table_id = rng.choice(context["table_ids"])
         key = f"benchmark.option.{uuid.uuid4().hex[:8]}"
         changes = [SchemaChange.set_option(key, "value")]
-        collector.timed_call(
-            "alter_table",
-            lambda: catalog.alter_table(table_id, changes)
-        )
+        return "alter_table", lambda: catalog.alter_table(table_id, changes)
 
-    def teardown(self, config: BenchmarkConfig, context: dict):
+    def teardown(self, config, context):
         pass
 
 
@@ -90,16 +99,12 @@ class CreateBranchScenario(BaseBenchmarkScenario):
     def setup(self, config: BenchmarkConfig) -> dict:
         return _setup_table_ids(config)
 
-    def run_once(self, context: dict, collector: MetricsCollector, rng: random.Random):
-        catalog = context["catalog"]
+    def make_request(self, catalog, context, rng):
         table_id = rng.choice(context["table_ids"])
         branch_name = f"bench_br_{uuid.uuid4().hex[:8]}"
-        collector.timed_call(
-            "create_branch",
-            lambda: catalog.create_branch(table_id, branch_name)
-        )
+        return "create_branch", lambda: catalog.create_branch(table_id, branch_name)
 
-    def teardown(self, config: BenchmarkConfig, context: dict):
+    def teardown(self, config, context):
         pass
 
 
@@ -111,16 +116,12 @@ class CreateTagScenario(BaseBenchmarkScenario):
     def setup(self, config: BenchmarkConfig) -> dict:
         return _setup_table_ids(config)
 
-    def run_once(self, context: dict, collector: MetricsCollector, rng: random.Random):
-        catalog = context["catalog"]
+    def make_request(self, catalog, context, rng):
         table_id = rng.choice(context["table_ids"])
         tag_name = f"bench_tag_{uuid.uuid4().hex[:8]}"
-        collector.timed_call(
-            "create_tag",
-            lambda: catalog.create_tag(table_id, tag_name)
-        )
+        return "create_tag", lambda: catalog.create_tag(table_id, tag_name)
 
-    def teardown(self, config: BenchmarkConfig, context: dict):
+    def teardown(self, config, context):
         pass
 
 

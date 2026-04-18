@@ -1,7 +1,24 @@
+################################################################################
+#  Licensed to the Apache Software Foundation (ASF) under one
+#  or more contributor license agreements.  See the NOTICE file
+#  distributed with this work for additional information
+#  regarding copyright ownership.  The ASF licenses this file
+#  to you under the Apache License, Version 2.0 (the
+#  "License"); you may not use this file except in compliance
+#  with the License.  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+# limitations under the License.
+#################################################################################
+
 import random
 
 from pypaimon.benchmark.config import BenchmarkConfig
-from pypaimon.benchmark.metrics import MetricsCollector
 from pypaimon.benchmark.scenarios.base import BaseBenchmarkScenario
 
 
@@ -29,11 +46,10 @@ class ListDatabasesScenario(BaseBenchmarkScenario):
     def setup(self, config: BenchmarkConfig) -> dict:
         return {"benchmark_db": config.benchmark_db}
 
-    def run_once(self, context: dict, collector: MetricsCollector, rng: random.Random):
-        catalog = context["catalog"]
-        collector.timed_call("list_databases", lambda: catalog.list_databases())
+    def make_request(self, catalog, context, rng):
+        return "list_databases", lambda: catalog.list_databases()
 
-    def teardown(self, config: BenchmarkConfig, context: dict):
+    def teardown(self, config, context):
         pass
 
 
@@ -45,12 +61,11 @@ class ListTablesScenario(BaseBenchmarkScenario):
     def setup(self, config: BenchmarkConfig) -> dict:
         return {"benchmark_db": config.benchmark_db}
 
-    def run_once(self, context: dict, collector: MetricsCollector, rng: random.Random):
-        catalog = context["catalog"]
+    def make_request(self, catalog, context, rng):
         db = context["benchmark_db"]
-        collector.timed_call("list_tables", lambda: catalog.list_tables(db))
+        return "list_tables", lambda: catalog.list_tables(db)
 
-    def teardown(self, config: BenchmarkConfig, context: dict):
+    def teardown(self, config, context):
         pass
 
 
@@ -62,12 +77,11 @@ class GetTableScenario(BaseBenchmarkScenario):
     def setup(self, config: BenchmarkConfig) -> dict:
         return _setup_table_identifiers(config)
 
-    def run_once(self, context: dict, collector: MetricsCollector, rng: random.Random):
-        catalog = context["catalog"]
+    def make_request(self, catalog, context, rng):
         table_id = rng.choice(context["table_ids"])
-        collector.timed_call("get_table", lambda: catalog.get_table(table_id))
+        return "get_table", lambda: catalog.get_table(table_id)
 
-    def teardown(self, config: BenchmarkConfig, context: dict):
+    def teardown(self, config, context):
         pass
 
 
@@ -79,12 +93,11 @@ class LoadSnapshotScenario(BaseBenchmarkScenario):
     def setup(self, config: BenchmarkConfig) -> dict:
         return _setup_table_identifiers(config)
 
-    def run_once(self, context: dict, collector: MetricsCollector, rng: random.Random):
-        catalog = context["catalog"]
+    def make_request(self, catalog, context, rng):
         table_id = rng.choice(context["table_ids"])
-        collector.timed_call("load_snapshot", lambda: catalog.load_snapshot(table_id))
+        return "load_snapshot", lambda: catalog.load_snapshot(table_id)
 
-    def teardown(self, config: BenchmarkConfig, context: dict):
+    def teardown(self, config, context):
         pass
 
 
@@ -96,12 +109,11 @@ class ListBranchesScenario(BaseBenchmarkScenario):
     def setup(self, config: BenchmarkConfig) -> dict:
         return _setup_table_identifiers(config)
 
-    def run_once(self, context: dict, collector: MetricsCollector, rng: random.Random):
-        catalog = context["catalog"]
+    def make_request(self, catalog, context, rng):
         table_id = rng.choice(context["table_ids"])
-        collector.timed_call("list_branches", lambda: catalog.list_branches(table_id))
+        return "list_branches", lambda: catalog.list_branches(table_id)
 
-    def teardown(self, config: BenchmarkConfig, context: dict):
+    def teardown(self, config, context):
         pass
 
 
@@ -113,12 +125,11 @@ class ListTagsScenario(BaseBenchmarkScenario):
     def setup(self, config: BenchmarkConfig) -> dict:
         return _setup_table_identifiers(config)
 
-    def run_once(self, context: dict, collector: MetricsCollector, rng: random.Random):
-        catalog = context["catalog"]
+    def make_request(self, catalog, context, rng):
         table_id = rng.choice(context["table_ids"])
-        collector.timed_call("list_tags", lambda: catalog.list_tags(table_id))
+        return "list_tags", lambda: catalog.list_tags(table_id)
 
-    def teardown(self, config: BenchmarkConfig, context: dict):
+    def teardown(self, config, context):
         pass
 
 

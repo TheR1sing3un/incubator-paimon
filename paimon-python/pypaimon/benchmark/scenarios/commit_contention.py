@@ -1,12 +1,28 @@
+################################################################################
+#  Licensed to the Apache Software Foundation (ASF) under one
+#  or more contributor license agreements.  See the NOTICE file
+#  distributed with this work for additional information
+#  regarding copyright ownership.  The ASF licenses this file
+#  to you under the Apache License, Version 2.0 (the
+#  "License"); you may not use this file except in compliance
+#  with the License.  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+# limitations under the License.
+#################################################################################
+
 import logging
 import random
-import time
 import uuid
 
 import pyarrow as pa
 
 from pypaimon.benchmark.config import BenchmarkConfig
-from pypaimon.benchmark.metrics import MetricsCollector
 from pypaimon.benchmark.scenarios.base import BaseBenchmarkScenario
 
 logger = logging.getLogger(__name__)
@@ -29,12 +45,25 @@ def _generate_batch(rng: random.Random, num_rows: int = 100) -> pa.Table:
     })
 
 
-class CommitContentionScenario(BaseBenchmarkScenario):
-    """Multiple concurrent writers commit to the same table.
+def _build_commit_thunk(catalog, table_id: str, rng: random.Random, rows: int):
+    def do_commit():
+        table = catalog.get_table(table_id)
+        write_builder = table.new_batch_write_builder()
+        writer = write_builder.new_write()
+        committer = write_builder.new_commit()
+        try:
+            batch = _generate_batch(rng, rows)
+            writer.write_arrow(batch)
+            commit_messages = writer.prepare_commit()
+            committer.commit(commit_messages)
+        finally:
+            writer.close()
+            committer.close()
+    return do_commit
 
-    Each run_once cycle: write a small batch -> prepare_commit -> commit.
-    This exercises the full commit pipeline including optimistic lock retries.
-    """
+
+class CommitContentionScenario(BaseBenchmarkScenario):
+    """Multiple concurrent writers commit to the same table."""
 
     def __init__(self, rows_per_commit: int = 100):
         self.rows_per_commit = rows_per_commit
@@ -56,35 +85,14 @@ class CommitContentionScenario(BaseBenchmarkScenario):
         return {
             "benchmark_db": config.benchmark_db,
             "table_identifier": identifier,
-            "catalog_options": config.catalog_options,
             "rows_per_commit": self.rows_per_commit,
         }
 
-    def run_once(self, context: dict, collector: MetricsCollector, rng: random.Random):
-        from pypaimon import CatalogFactory
+    def make_request(self, catalog, context, rng):
+        return "commit", _build_commit_thunk(
+            catalog, context["table_identifier"], rng, context["rows_per_commit"])
 
-        catalog_options = context["catalog_options"]
-        table_id = context["table_identifier"]
-        rows = context["rows_per_commit"]
-
-        def do_commit():
-            catalog = CatalogFactory.create(catalog_options)
-            table = catalog.get_table(table_id)
-            write_builder = table.new_batch_write_builder()
-            writer = write_builder.new_write()
-            committer = write_builder.new_commit()
-            try:
-                batch = _generate_batch(rng, rows)
-                writer.write_arrow(batch)
-                commit_messages = writer.prepare_commit()
-                committer.commit(commit_messages)
-            finally:
-                writer.close()
-                committer.close()
-
-        collector.timed_call("commit", do_commit)
-
-    def teardown(self, config: BenchmarkConfig, context: dict):
+    def teardown(self, config, context):
         pass
 
 
@@ -118,35 +126,15 @@ class MultiTableCommitScenario(BaseBenchmarkScenario):
         return {
             "benchmark_db": config.benchmark_db,
             "table_ids": table_ids,
-            "catalog_options": config.catalog_options,
             "rows_per_commit": self.rows_per_commit,
         }
 
-    def run_once(self, context: dict, collector: MetricsCollector, rng: random.Random):
-        from pypaimon import CatalogFactory
-
-        catalog_options = context["catalog_options"]
+    def make_request(self, catalog, context, rng):
         table_id = rng.choice(context["table_ids"])
-        rows = context["rows_per_commit"]
+        return "commit", _build_commit_thunk(
+            catalog, table_id, rng, context["rows_per_commit"])
 
-        def do_commit():
-            catalog = CatalogFactory.create(catalog_options)
-            table = catalog.get_table(table_id)
-            write_builder = table.new_batch_write_builder()
-            writer = write_builder.new_write()
-            committer = write_builder.new_commit()
-            try:
-                batch = _generate_batch(rng, rows)
-                writer.write_arrow(batch)
-                commit_messages = writer.prepare_commit()
-                committer.commit(commit_messages)
-            finally:
-                writer.close()
-                committer.close()
-
-        collector.timed_call("commit", do_commit)
-
-    def teardown(self, config: BenchmarkConfig, context: dict):
+    def teardown(self, config, context):
         pass
 
 

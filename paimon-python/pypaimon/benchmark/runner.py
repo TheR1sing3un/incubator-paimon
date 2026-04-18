@@ -1,70 +1,77 @@
+################################################################################
+#  Licensed to the Apache Software Foundation (ASF) under one
+#  or more contributor license agreements.  See the NOTICE file
+#  distributed with this work for additional information
+#  regarding copyright ownership.  The ASF licenses this file
+#  to you under the Apache License, Version 2.0 (the
+#  "License"); you may not use this file except in compliance
+#  with the License.  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+# limitations under the License.
+#################################################################################
+
 import logging
+import random
 import time
-from typing import List, Optional, Type
+from typing import Dict, List, Optional, Type
 
 import ray
 
 from pypaimon.benchmark.config import BenchmarkConfig
-from pypaimon.benchmark.metrics import MetricsAggregator, MetricsCollector
+from pypaimon.benchmark.metrics import (MetricsAggregator, MetricsCollector,
+                                        RequestRecord, _classify_error)
 from pypaimon.benchmark.scenarios.base import BaseBenchmarkScenario
 
 logger = logging.getLogger(__name__)
 
 
-@ray.remote
-class LoadGeneratorActor:
+def _build_request_fn(scenario: BaseBenchmarkScenario, catalog_options: dict,
+                      context: dict, start_at_epoch: Optional[float]):
+    """Return a function Ray Data can apply per row. The fn creates a fresh
+    Catalog, executes one request, returns a dict."""
 
-    def __init__(self, scenario: BaseBenchmarkScenario, catalog_options: dict,
-                 context: dict, seed: int, http_timeout: int = None,
-                 disable_keepalive: bool = False, reconnect: bool = False,
-                 http_max_connect_retries: int = None,
-                 http_max_read_retries: int = None):
-        import random
-
-        self.catalog_options = catalog_options
-        self.http_timeout = http_timeout
-        self.disable_keepalive = disable_keepalive
-        self.reconnect = reconnect
-        self.http_max_connect_retries = http_max_connect_retries
-        self.http_max_read_retries = http_max_read_retries
-        self.catalog = self._create_catalog()
-        self.scenario = scenario
-        self.context = dict(context)
-        self.context["catalog"] = self.catalog
-        self.metrics = MetricsCollector()
-        self.rng = random.Random(seed)
-
-    def _create_catalog(self):
+    def _fn(row: Dict) -> Dict:
+        import time as _time
         from pypaimon import CatalogFactory
-        opts = dict(self.catalog_options)
-        if self.http_timeout is not None:
-            opts["http.connect-timeout"] = str(self.http_timeout)
-            opts["http.read-timeout"] = str(self.http_timeout)
-        if self.http_max_connect_retries is not None:
-            opts["http.max-connect-retries"] = str(self.http_max_connect_retries)
-        if self.http_max_read_retries is not None:
-            opts["http.max-read-retries"] = str(self.http_max_read_retries)
-        if self.disable_keepalive:
-            opts["http.keep-alive"] = "false"
-        return CatalogFactory.create(opts)
 
-    def warmup(self, seconds: float):
-        deadline = time.monotonic() + seconds
-        dummy_collector = MetricsCollector()
-        while time.monotonic() < deadline:
-            self.scenario.run_once(self.context, dummy_collector, self.rng)
+        if start_at_epoch is not None:
+            wait = start_at_epoch - _time.time()
+            if wait > 0:
+                _time.sleep(wait)
 
-    def run(self, duration_seconds: float, rate_limit: Optional[float] = None) -> dict:
-        deadline = time.monotonic() + duration_seconds
-        interval = 1.0 / rate_limit if rate_limit else 0
-        while time.monotonic() < deadline:
-            if self.reconnect:
-                self.catalog = self._create_catalog()
-                self.context["catalog"] = self.catalog
-            self.scenario.run_once(self.context, self.metrics, self.rng)
-            if interval > 0:
-                time.sleep(interval)
-        return self.metrics.to_report()
+        seed = int(row["id"])
+        rng = random.Random(seed)
+        start_ns = _time.time_ns()
+        start = _time.monotonic()
+        try:
+            catalog = CatalogFactory.create(catalog_options)
+            api_name, thunk = scenario.make_request(catalog, context, rng)
+            thunk()
+            duration_ms = (_time.monotonic() - start) * 1000
+            return {
+                "api_name": api_name,
+                "start_time_ns": start_ns,
+                "duration_ms": duration_ms,
+                "status": "ok",
+                "error_message": "",
+            }
+        except Exception as e:
+            duration_ms = (_time.monotonic() - start) * 1000
+            return {
+                "api_name": "unknown",
+                "start_time_ns": start_ns,
+                "duration_ms": duration_ms,
+                "status": _classify_error(e),
+                "error_message": str(e)[:200],
+            }
+
+    return _fn
 
 
 class BenchmarkRunner:
@@ -74,61 +81,72 @@ class BenchmarkRunner:
 
     def run_scenario(self, scenario: BaseBenchmarkScenario,
                      num_workers: Optional[int] = None) -> dict:
-        num_workers = num_workers or self.config.num_workers
+        concurrency = num_workers or self.config.num_workers
 
         logger.info("Setting up scenario: %s", scenario.name())
         context = scenario.setup(self.config)
 
-        actor_cpus = self.config.actor_num_cpus
-        logger.info("Creating %d load generator actors (%.2f CPUs each)", num_workers, actor_cpus)
-        actor_cls = LoadGeneratorActor.options(num_cpus=actor_cpus)
-        actors = [
-            actor_cls.remote(
-                scenario,
-                self.config.catalog_options,
-                context,
-                seed=i,
-                http_timeout=self.config.http_timeout,
-                disable_keepalive=self.config.disable_keepalive,
-                reconnect=self.config.reconnect,
-                http_max_connect_retries=self.config.http_max_connect_retries,
-                http_max_read_retries=self.config.http_max_read_retries,
-            )
-            for i in range(num_workers)
-        ]
+        task_cpus = self.config.task_num_cpus
 
-        if self.config.warmup_seconds > 0:
-            logger.info("Warming up for %ds", self.config.warmup_seconds)
-            ray.get([a.warmup.remote(self.config.warmup_seconds) for a in actors])
+        start_at_epoch = None
+        if self.config.sync_start_delay > 0:
+            start_at_epoch = time.time() + self.config.sync_start_delay
+            logger.info("Synchronized start: tasks fire at epoch=%.3f (in %.1fs)",
+                         start_at_epoch, self.config.sync_start_delay)
 
-        logger.info("Running benchmark for %ds with %d workers",
-                     self.config.duration_seconds, num_workers)
+        # Total requests = explicit config, or estimated based on concurrency.
+        total_requests = self.config.requests_per_run or (concurrency * 100)
+
+        logger.info("Ray Data pipeline (task mode): total_requests=%d, "
+                     "max_in_flight=%d, task_num_cpus=%.2f",
+                     total_requests, concurrency, task_cpus)
+
+        fn = _build_request_fn(scenario, self.config.catalog_options,
+                                context, start_at_epoch)
+
         run_start = time.monotonic()
-        futures = [
-            a.run.remote(self.config.duration_seconds, self.config.request_rate_limit)
-            for a in actors
-        ]
-        reports = ray.get(futures)
+
+        # Task mode (plan C):
+        #   - Split the dataset into exactly `concurrency` blocks via
+        #     override_num_blocks, so at most `concurrency` tasks run in parallel.
+        #   - Do NOT pass concurrency=... to map(); that would switch to actor pool.
+        #   - num_cpus per task still constrains how many tasks fit on the cluster.
+        ds = ray.data.range(
+            total_requests, override_num_blocks=concurrency
+        ).map(fn, num_cpus=task_cpus)
+
+        # materialize: execute and pull all rows back to driver.
+        records = ds.take_all()
         actual_duration = time.monotonic() - run_start
 
-        logger.info("Aggregating results from %d actors (actual %.1fs)",
-                     len(reports), actual_duration)
-        aggregated = MetricsAggregator.aggregate(reports, actual_duration)
+        collector = MetricsCollector()
+        for rec in records:
+            collector.record(RequestRecord(
+                api_name=rec["api_name"],
+                start_time_ns=int(rec["start_time_ns"]),
+                duration_ms=float(rec["duration_ms"]),
+                status=rec["status"],
+                error_message=rec.get("error_message") or None,
+            ))
+
+        logger.info("Benchmark done: %d completed in %.1fs",
+                     len(records), actual_duration)
+
+        report = collector.to_report()
+        aggregated = MetricsAggregator.aggregate([report], actual_duration)
 
         try:
             scenario.teardown(self.config, context)
         except Exception as e:
             logger.warning("Teardown failed: %s", e)
 
-        for a in actors:
-            ray.kill(a)
-
         return {
             "scenario": scenario.name(),
             "config": {
-                "num_workers": num_workers,
-                "duration_seconds": self.config.duration_seconds,
-                "warmup_seconds": self.config.warmup_seconds,
+                "concurrency": concurrency,
+                "task_num_cpus": task_cpus,
+                "total_requests": total_requests,
+                "sync_start_delay": self.config.sync_start_delay,
             },
             "results": aggregated,
         }

@@ -1,3 +1,21 @@
+################################################################################
+#  Licensed to the Apache Software Foundation (ASF) under one
+#  or more contributor license agreements.  See the NOTICE file
+#  distributed with this work for additional information
+#  regarding copyright ownership.  The ASF licenses this file
+#  to you under the Apache License, Version 2.0 (the
+#  "License"); you may not use this file except in compliance
+#  with the License.  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+# limitations under the License.
+#################################################################################
+
 """
 Paimon REST Catalog Benchmark Tool
 
@@ -54,8 +72,8 @@ def parse_args(argv=None):
                         help="Mixed workload profile")
     parser.add_argument("--concurrency", default="1,4,16,64",
                         help="Comma-separated concurrency levels")
-    parser.add_argument("--actor-num-cpus", type=float, default=1.0,
-                        help="CPU resources per Ray actor (e.g., 0.1 to run 1000 actors on 100 CPUs)")
+    parser.add_argument("--task-num-cpus", type=float, default=0.1,
+                        help="CPU resources per Ray task (default 0.1 so concurrency can exceed cluster CPU count)")
     parser.add_argument("--duration", type=int, default=60,
                         help="Benchmark duration in seconds")
     parser.add_argument("--warmup", type=int, default=10,
@@ -75,10 +93,12 @@ def parse_args(argv=None):
                         help="Output format")
     parser.add_argument("--http-timeout", type=int, default=None,
                         help="HTTP request timeout in seconds (default: no timeout, set lower to trigger timeout errors)")
-    parser.add_argument("--disable-keepalive", action="store_true",
-                        help="Disable HTTP keep-alive, force new TCP connection per request")
-    parser.add_argument("--reconnect", action="store_true",
-                        help="Recreate catalog (new TCP connection) before each request")
+    parser.add_argument("--sync-start-delay", type=float, default=0.0,
+                        help="Wall-clock sync: wait N seconds after task dispatch starts, "
+                             "then every task begins at the same instant. 0 = no sync.")
+    parser.add_argument("--requests-per-run", type=int, default=None,
+                        help="Upper bound on total requests per run. Default = max(concurrency*1000, 10000). "
+                             "Driver stops iterating after --duration anyway.")
     parser.add_argument("--http-max-connect-retries", type=int, default=None,
                         help="HTTP retry count for connect errors (default: 3, set to 0 to disable)")
     parser.add_argument("--http-max-read-retries", type=int, default=None,
@@ -111,12 +131,12 @@ def build_config(args) -> BenchmarkConfig:
         num_tables=args.num_tables,
         output_dir=args.output_dir,
         output_format=args.output_format,
-        actor_num_cpus=args.actor_num_cpus,
+        task_num_cpus=args.task_num_cpus,
         http_timeout=args.http_timeout,
-        disable_keepalive=args.disable_keepalive,
-        reconnect=args.reconnect,
         http_max_connect_retries=args.http_max_connect_retries,
         http_max_read_retries=args.http_max_read_retries,
+        sync_start_delay=args.sync_start_delay,
+        requests_per_run=args.requests_per_run,
     )
 
 
