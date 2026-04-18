@@ -193,6 +193,19 @@ class MockRESTCatalogTest extends RESTCatalogTest {
     }
 
     @Test
+    void testAppIdAutoHeader() throws Exception {
+        // Setting the internal app-id key should produce X-Paimon-App-Id header
+        options.set(RESTCatalogOptions.APP_ID_KEY, "application_123456");
+        RESTCatalog restCatalog = initCatalog(false);
+
+        Map<String, String> parameters = new HashMap<>();
+        RESTAuthParameter restAuthParameter =
+                new RESTAuthParameter("/path", parameters, "method", "data");
+        Map<String, String> headers = restCatalog.api().authFunction().apply(restAuthParameter);
+        assertEquals(headers.get(RESTCatalogOptions.APP_ID_HEADER), "application_123456");
+    }
+
+    @Test
     void testCreateTableDefaultOptions() throws Exception {
         String catalogConfigKey = "default-key";
         options.set(TABLE_DEFAULT_OPTION_PREFIX + catalogConfigKey, "default-value");

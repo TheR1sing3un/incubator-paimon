@@ -21,6 +21,7 @@ package org.apache.paimon.rest.server;
 import org.apache.paimon.catalog.AbstractCatalog;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.DelegateCatalog;
+import org.apache.paimon.rest.RESTCatalogOptions;
 import org.apache.paimon.rest.responses.ErrorResponse;
 import org.apache.paimon.rest.server.auth.AuthContext;
 import org.apache.paimon.rest.server.handlers.BranchHandler;
@@ -123,18 +124,30 @@ public class RouteDispatcher {
         String body = request.content().toString(StandardCharsets.UTF_8);
         String method = request.method().name();
         String userId = authContext.userId();
+        String appId = request.headers().get(RESTCatalogOptions.APP_ID_HEADER);
+        if (appId == null || appId.isEmpty()) {
+            appId = "unknown";
+        }
         long startTime = System.currentTimeMillis();
 
         Router.RouteMatch match = router.findMatch(method, path);
         if (match == null) {
             long duration = System.currentTimeMillis() - startTime;
-            LOG.warn("REST route not found: {} {} params={}", method, path, params);
+            LOG.warn("REST route not found: {} {} params={} appId={}", method, path, params, appId);
             reportRequestMetrics(
-                    "NOT_FOUND", method, path, duration, 404, userId, body.length(), "unknown");
+                    "NOT_FOUND",
+                    method,
+                    path,
+                    duration,
+                    404,
+                    userId,
+                    body.length(),
+                    "unknown",
+                    appId);
             return new RouteResult(404, null);
         }
 
-        LOG.info("REST request: {} {} params={}", method, path, params);
+        LOG.info("REST request: {} {} params={} appId={}", method, path, params, appId);
 
         boolean shouldAudit = metadataStore != null && isMutatingMethod(method);
 
@@ -148,13 +161,14 @@ public class RouteDispatcher {
             long duration = System.currentTimeMillis() - startTime;
             int statusCode = resolveStatusCode(e);
             LOG.warn(
-                    "REST error: {} {} status={} exception={} message={} duration={}ms",
+                    "REST error: {} {} status={} exception={} message={} duration={}ms appId={}",
                     method,
                     path,
                     statusCode,
                     e.getClass().getSimpleName(),
                     e.getMessage(),
-                    duration);
+                    duration,
+                    appId);
             reportRequestMetrics(
                     routePattern,
                     method,
@@ -163,24 +177,27 @@ public class RouteDispatcher {
                     statusCode,
                     userId,
                     body.length(),
-                    targetId);
+                    targetId,
+                    appId);
             String exceptionName = unwrapException(e).getClass().getSimpleName();
             String routeKey = method + ":" + routePattern;
             String exceptionExtra = userId + "@" + routeKey;
             safePerf(() -> PerfUtil.perfCount(exceptionName, exceptionExtra, "request_exception"));
             if (shouldAudit) {
-                auditLog(authContext, match, body, "FAILED", truncateMessage(e.getMessage()));
+                auditLog(
+                        authContext, match, body, appId, "FAILED", truncateMessage(e.getMessage()));
             }
             return buildErrorResult(e, statusCode);
         }
 
         long duration = System.currentTimeMillis() - startTime;
         LOG.info(
-                "REST response: {} {} status={} duration={}ms",
+                "REST response: {} {} status={} duration={}ms appId={}",
                 method,
                 path,
                 result.status(),
-                duration);
+                duration,
+                appId);
         reportRequestMetrics(
                 routePattern,
                 method,
@@ -189,13 +206,14 @@ public class RouteDispatcher {
                 result.status(),
                 userId,
                 body.length(),
-                targetId);
+                targetId,
+                appId);
 
         if (shouldAudit) {
             if (result.status() < 400) {
-                auditLog(authContext, match, body, "SUCCESS", null);
+                auditLog(authContext, match, body, appId, "SUCCESS", null);
             } else {
-                auditLog(authContext, match, body, "FAILED", "HTTP " + result.status());
+                auditLog(authContext, match, body, appId, "FAILED", "HTTP " + result.status());
             }
         }
 
@@ -210,12 +228,15 @@ public class RouteDispatcher {
             int statusCode,
             String userId,
             int bodyLength,
-            String targetId) {
+            String targetId,
+            String appId) {
         String subtag = method + ":" + routePattern;
         safePerf(() -> PerfUtil.perfValue(subtag, userId, "request_latency", durationMs));
         safePerf(() -> PerfUtil.perfValue(subtag, userId, "request_body_size", bodyLength));
         String statusKey = "request_" + statusCode;
         safePerf(() -> PerfUtil.perfCount(subtag, userId, statusKey));
+        // Record per-app metrics
+        safePerf(() -> PerfUtil.perfCount(subtag, appId, "request_by_app"));
         if (statusCode >= 400) {
             String errorExtra = userId + "@" + targetId;
             safePerf(() -> PerfUtil.perfCount(path, errorExtra, "request_error_detail"));
@@ -268,6 +289,7 @@ public class RouteDispatcher {
             AuthContext authContext,
             Router.RouteMatch match,
             @Nullable String body,
+            String appId,
             String status,
             @Nullable String errorMessage) {
         Map<String, String> vars = match.pathVariables();
@@ -281,7 +303,7 @@ public class RouteDispatcher {
 
         String targetType = resolveTargetType(match.matchedPattern());
         String targetId = buildTargetId(vars, body);
-        String requestSummary = buildRequestSummary(body);
+        String requestSummary = buildRequestSummary(body, appId);
 
         metadataStore.logOperation(
                 database != null ? database : "",
@@ -445,16 +467,23 @@ public class RouteDispatcher {
     private static final int MAX_ERROR_MESSAGE_LENGTH = 2048;
 
     @Nullable
-    private static String buildRequestSummary(@Nullable String body) {
+    private static String buildRequestSummary(@Nullable String body, String appId) {
+        // Inject appId into the request summary JSON
+        String appIdPrefix = "{\"appId\":\"" + appId + "\",";
         if (body == null || body.isEmpty()) {
-            return null;
+            return "{\"appId\":\"" + appId + "\"}";
         }
-        if (body.length() <= MAX_REQUEST_SUMMARY_LENGTH) {
-            return body;
+        // Merge appId into existing JSON object: replace leading '{' with '{"appId":"xxx",'
+        String merged;
+        if (body.startsWith("{")) {
+            merged = appIdPrefix + body.substring(1);
+        } else {
+            merged = appIdPrefix + "\"body\":" + body + "}";
         }
-        // Wrap the truncated text as a JSON string so the column stays valid JSON
-        String truncated = body.substring(0, MAX_REQUEST_SUMMARY_LENGTH);
-        // Escape for JSON string value: replace \ with \\ and " with \"
+        if (merged.length() <= MAX_REQUEST_SUMMARY_LENGTH) {
+            return merged;
+        }
+        String truncated = merged.substring(0, MAX_REQUEST_SUMMARY_LENGTH);
         truncated = truncated.replace("\\", "\\\\").replace("\"", "\\\"");
         return "{\"truncated\":\"" + truncated + "...\"}";
     }

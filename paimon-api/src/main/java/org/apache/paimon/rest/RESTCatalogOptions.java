@@ -91,6 +91,14 @@ public class RESTCatalogOptions {
                     .noDefaultValue()
                     .withDescription("REST Catalog auth DLF token ecs role name.");
 
+    /**
+     * Internal key used by Flink/Spark to pass the auto-detected application ID. Not a user-facing
+     * configuration.
+     */
+    public static final String APP_ID_KEY = "app-id";
+
+    public static final String APP_ID_HEADER = "X-Paimon-App-Id";
+
     public static final ConfigOption<String> HTTP_USER_AGENT =
             ConfigOptions.key("header.User-Agent")
                     .stringType()

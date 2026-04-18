@@ -28,6 +28,7 @@ import org.apache.paimon.function.Function;
 import org.apache.paimon.function.FunctionDefinition;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.rest.RESTCatalog;
+import org.apache.paimon.rest.RESTCatalogOptions;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.schema.SchemaChange;
 import org.apache.paimon.spark.catalog.FormatTableCatalog;
@@ -127,10 +128,20 @@ public class SparkCatalog extends SparkBaseCatalog
         checkRequiredConfigurations();
         SparkSession sparkSession = PaimonSparkSession$.MODULE$.active();
         this.catalogName = name;
+        Options catalogOptions = Options.fromMap(options.asCaseSensitiveMap());
+        // Auto-inject Spark application ID
+        if (!catalogOptions.containsKey(RESTCatalogOptions.APP_ID_KEY)) {
+            try {
+                String appId = sparkSession.sparkContext().applicationId();
+                if (appId != null && !appId.isEmpty()) {
+                    catalogOptions.set(RESTCatalogOptions.APP_ID_KEY, appId);
+                }
+            } catch (Exception e) {
+                LOG.debug("Failed to resolve Spark application ID for app-id header", e);
+            }
+        }
         CatalogContext catalogContext =
-                CatalogContext.create(
-                        Options.fromMap(options.asCaseSensitiveMap()),
-                        sparkSession.sessionState().newHadoopConf());
+                CatalogContext.create(catalogOptions, sparkSession.sessionState().newHadoopConf());
         this.catalog = CatalogFactory.createCatalog(catalogContext);
         this.defaultDatabase =
                 options.getOrDefault(DEFAULT_DATABASE.key(), DEFAULT_DATABASE.defaultValue());

@@ -188,6 +188,11 @@ public class RESTApi {
     public RESTApi(Options options, boolean configRequired) {
         this.client = new HttpClient(options.get(RESTCatalogOptions.URI));
         AuthProvider authProvider = createAuthProvider(options);
+        // Inject app-id as header if configured (set internally by Flink/Spark)
+        String appId = options.getString(RESTCatalogOptions.APP_ID_KEY, null);
+        if (appId != null && !appId.isEmpty()) {
+            options.set(HEADER_PREFIX + RESTCatalogOptions.APP_ID_HEADER, appId);
+        }
         Map<String, String> baseHeaders = extractPrefixMap(options, HEADER_PREFIX);
         if (configRequired) {
             String warehouse = options.get(WAREHOUSE);

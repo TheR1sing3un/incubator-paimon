@@ -21,6 +21,7 @@ package org.apache.paimon.rest.server;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.RESTFileSystemCatalog;
 import org.apache.paimon.fs.local.LocalFileIO;
+import org.apache.paimon.rest.RESTCatalogOptions;
 import org.apache.paimon.rest.server.auth.AuthContext;
 
 import org.apache.paimon.shade.netty4.io.netty.buffer.Unpooled;
@@ -95,6 +96,37 @@ class RouteDispatcherTest {
         } finally {
             request.release();
         }
+    }
+
+    @Test
+    void testDispatchWithAppIdHeader() throws Exception {
+        // Verify that requests carrying X-Paimon-App-Id header are processed normally
+        FullHttpRequest request =
+                createRequest(HttpMethod.GET, "/v1/config?warehouse=" + tempDir.toString());
+        request.headers().set(RESTCatalogOptions.APP_ID_HEADER, "application_test_001");
+        RouteResult result = dispatcher.dispatch(AuthContext.ANONYMOUS, request);
+        assertThat(result.status()).isEqualTo(200);
+        request.release();
+    }
+
+    @Test
+    void testDispatch404WithAppIdHeader() throws Exception {
+        // Verify that 404 path also processes appId header without error
+        FullHttpRequest request = createRequest(HttpMethod.GET, "/v1/test/nonexistent");
+        request.headers().set(RESTCatalogOptions.APP_ID_HEADER, "application_test_002");
+        RouteResult result = dispatcher.dispatch(AuthContext.ANONYMOUS, request);
+        assertThat(result.status()).isEqualTo(404);
+        request.release();
+    }
+
+    @Test
+    void testDispatchWithoutAppIdHeader() throws Exception {
+        // Verify that requests without X-Paimon-App-Id still work (appId defaults to "unknown")
+        FullHttpRequest request =
+                createRequest(HttpMethod.GET, "/v1/config?warehouse=" + tempDir.toString());
+        RouteResult result = dispatcher.dispatch(AuthContext.ANONYMOUS, request);
+        assertThat(result.status()).isEqualTo(200);
+        request.release();
     }
 
     private static FullHttpRequest createRequest(HttpMethod method, String uri) {
