@@ -192,6 +192,8 @@ def write_paimon(
     min_rows_per_file: Optional[int] = 1_000_000,
     options: Optional[Dict[str, str]] = None,
     commit_mode: str = "two_phase",
+    shuffle: bool = False,
+    num_blocks: Optional[int] = None,
 ) -> None:
     """Write a Ray Dataset to a Paimon table.
 
@@ -248,30 +250,70 @@ def write_paimon(
             incrementally. ``per_worker`` does not support ``overwrite=True``,
             does not roll back on failure, and is at-least-once — intended for
             primary-key (upsert) tables.
+        shuffle: Whether to hash-partition the dataset by
+            ``(partition, bucket)`` before writing, so each output block
+            carries a single ``(partition, bucket)`` group and L0 files
+            converge to roughly ``num_partitions * num_buckets``. Defaults
+            to ``False``. Auto-disabled with a warning when the table is
+            not ``HASH_FIXED`` or when ``commit_mode='per_worker'``; in
+            those cases the ``num_blocks`` rule still applies.
+        num_blocks: Explicit block count for ``ds.repartition``. When
+            ``None`` (default):
+
+            * ``shuffle=False``: ``min_rows_per_file`` is passed through
+              as Ray Data's ``target_num_rows_per_block`` for stream
+              rebalance without a shuffle barrier.
+            * ``shuffle=True``: num_blocks is estimated as
+              ``min(num_buckets, cluster_cpus * 2, 2048)``. The auto
+              estimator does not know the actual number of on-disk
+              partitions (that would require a catalog scan on the write
+              path); heavily partitioned tables should pass
+              ``num_blocks`` explicitly to approximate
+              ``num_partitions * num_buckets``.
+
+            When specified, ``num_blocks`` wins over auto-estimation and
+            over ``min_rows_per_file``. Setting ``num_blocks`` larger than
+            the number of unique ``(partition, bucket)`` groups is
+            harmless (extra blocks empty after hash partitioning) but
+            wastes scheduler slots — an info log is emitted.
     """
     from pypaimon.catalog.catalog_factory import CatalogFactory
+    from pypaimon.ray.shuffle import maybe_apply_repartition
     from pypaimon.write.ray_datasink import (PaimonDatasink,
                                              PaimonPerWorkerDatasink)
 
     catalog = CatalogFactory.create(catalog_options)
     table = catalog.get_table(table_identifier)
 
-    if commit_mode == "two_phase":
-        datasink = PaimonDatasink(table, overwrite=overwrite,
-                                  committer=committer, message=message,
-                                  min_rows_per_file=min_rows_per_file,
-                                  options=options)
-    elif commit_mode == "per_worker":
-        datasink = PaimonPerWorkerDatasink(
-            table, overwrite=overwrite,
-            committer=committer, message=message,
-            min_rows_per_file=min_rows_per_file,
-            options=options,
-        )
-    else:
+    if commit_mode not in ("two_phase", "per_worker"):
         raise ValueError(
             f"Unknown commit_mode={commit_mode!r}; "
             "expected 'two_phase' or 'per_worker'."
+        )
+
+    dataset, repartition_applied = maybe_apply_repartition(
+        dataset, table,
+        shuffle=shuffle,
+        num_blocks=num_blocks,
+        min_rows_per_file=min_rows_per_file,
+        commit_mode=commit_mode,
+    )
+    # When Ray-level repartition was applied, suppress the Datasink's own
+    # min_rows_per_write coalesce to avoid a second layer of block merging
+    # on top of the shape we just chose.
+    datasink_min_rows = None if repartition_applied else min_rows_per_file
+
+    if commit_mode == "two_phase":
+        datasink = PaimonDatasink(table, overwrite=overwrite,
+                                  committer=committer, message=message,
+                                  min_rows_per_file=datasink_min_rows,
+                                  options=options)
+    else:  # commit_mode == "per_worker"
+        datasink = PaimonPerWorkerDatasink(
+            table, overwrite=overwrite,
+            committer=committer, message=message,
+            min_rows_per_file=datasink_min_rows,
+            options=options,
         )
 
     if commit_mode == "per_worker" and concurrency is None:
