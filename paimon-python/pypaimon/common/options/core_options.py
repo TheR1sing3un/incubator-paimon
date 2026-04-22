@@ -233,6 +233,30 @@ class CoreOptions:
         .default_value(MemorySize.of_mebi_bytes(256))
         .with_description("The target file size for blob files.")
     )
+
+    VECTOR_COLUMN_FAMILY_ENABLED: ConfigOption[bool] = (
+        ConfigOptions.key("vector-column-family.enabled")
+        .boolean_type()
+        .default_value(False)
+        .with_description("Enable vector column family separation for primary key tables. "
+                          "Vector columns are written to append-only .vector.bin files "
+                          "and replaced with VectorDescriptor BINARY columns in the main data files.")
+    )
+
+    VECTOR_COLUMN_FAMILY_COLUMNS: ConfigOption[str] = (
+        ConfigOptions.key("vector-column-family.columns")
+        .string_type()
+        .no_default_value()
+        .with_description("Comma-separated vector column names to participate in vector-column-family. "
+                          "Empty = auto-detect all VectorType columns.")
+    )
+
+    VECTOR_COLUMN_FAMILY_TARGET_FILE_SIZE: ConfigOption[MemorySize] = (
+        ConfigOptions.key("vector-column-family.target-file-size")
+        .memory_type()
+        .default_value(MemorySize.of_mebi_bytes(128))
+        .with_description("Target size of one .vector.bin file before rollover.")
+    )
     DATA_FILE_PREFIX: ConfigOption[str] = (
         ConfigOptions.key("data-file.prefix")
         .string_type()
@@ -632,6 +656,25 @@ class CoreOptions:
         return self.options.get(CoreOptions.TARGET_FILE_SIZE,
                                 MemorySize.of_mebi_bytes(2048) if default is None else MemorySize.parse(
                                     default)).get_bytes()
+
+    def vector_column_family_enabled(self, default=None):
+        return self.options.get(CoreOptions.VECTOR_COLUMN_FAMILY_ENABLED, default)
+
+    def vector_column_family_columns(self, default=None):
+        raw = self.options.get(CoreOptions.VECTOR_COLUMN_FAMILY_COLUMNS, default)
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            return [c.strip() for c in raw.split(",") if c.strip()]
+        if isinstance(raw, (list, set, tuple)):
+            return [str(c).strip() for c in raw if str(c).strip()]
+        return []
+
+    def vector_column_family_target_file_size(self, default=None):
+        value = self.options.get(CoreOptions.VECTOR_COLUMN_FAMILY_TARGET_FILE_SIZE, default)
+        if value is None:
+            return MemorySize.of_mebi_bytes(128).get_bytes()
+        return value.get_bytes()
 
     def blob_target_file_size(self, default=None):
         """

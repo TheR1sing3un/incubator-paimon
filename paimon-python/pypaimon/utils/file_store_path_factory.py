@@ -34,6 +34,7 @@ class FileStorePathFactory:
     STATISTICS_PREFIX = "stat-"
 
     BUCKET_PATH_PREFIX = "bucket-"
+    VECTOR_BIN_SUFFIX = ".vector.bin"
 
     def __init__(
         self,
@@ -116,6 +117,17 @@ class FileStorePathFactory:
 
     def global_index_path_factory(self) -> 'IndexPathFactory':
         return IndexPathFactory(self.index_path())
+
+    def vector_bin_path(self, partition: Tuple, bucket: int) -> str:
+        """Produce {bucket_dir}/{data_file_prefix}{uuid}-0.vector.bin for Vector Column Family."""
+        import uuid as _uuid
+        bucket_dir = self.bucket_path(partition, bucket)
+        return "{}/{}{}-0{}".format(
+            bucket_dir.rstrip("/"),
+            self.data_file_prefix,
+            _uuid.uuid4(),
+            self.VECTOR_BIN_SUFFIX,
+        )
 
 
 class IndexPathFactory:

@@ -76,6 +76,32 @@ class Schema:
                     raise ValueError(
                         "Vector column '{}' must be nullable.".format(field.name))
 
+        # Vector column family: stricter validation on top of VectorType rules above
+        if options and str(options.get("vector-column-family.enabled", "false")).lower() == "true":
+            if not pk_set:
+                raise ValueError(
+                    "Vector column family requires a primary key table.")
+            if options.get("data-file.external-paths"):
+                raise ValueError(
+                    "Vector column family does not support data-file.external-paths.")
+            configured_raw = options.get("vector-column-family.columns", "") or ""
+            configured_cols = [c.strip() for c in configured_raw.split(",") if c.strip()]
+            auto_vector_cols = [f.name for f in fields if isinstance(f.type, VectorType)]
+            effective_cols = configured_cols or auto_vector_cols
+            if len(effective_cols) != 1:
+                raise ValueError(
+                    "Vector column family currently supports exactly one vector column, "
+                    "got {}.".format(effective_cols))
+            col_name = effective_cols[0]
+            vf = next((f for f in fields if f.name == col_name), None)
+            if vf is None:
+                raise ValueError(
+                    "Vector column '{}' not found in schema.".format(col_name))
+            if not isinstance(vf.type, VectorType):
+                raise ValueError(
+                    "Vector column family column '{}' must be VectorType, got {}."
+                    .format(col_name, vf.type))
+
         # Check if Blob type exists in the schema
         has_blob_type = any(
             'blob' in str(field.type).lower()

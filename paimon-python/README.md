@@ -150,6 +150,26 @@ tw.close(); tc.close()
 
 Reads transparently handle Java's vector-column-family layout — if the Parquet column contains `VectorDescriptor` bytes, PyPaimon resolves them against the referenced `.vector.bin` file and returns a `fixed_size_list` column.
 
+### Vector Column Family write (Phase 2)
+
+For embedding-heavy PK tables, enable vector-column-family to store the VECTOR column bytes in append-only `.vector.bin` files, leaving only a tiny `VectorDescriptor` in the main Parquet data file:
+
+```python
+schema = Schema.from_pyarrow_schema(
+    pa_schema,
+    primary_keys=["id"],
+    options={
+        "bucket": "1",
+        "vector-column-family.enabled": "true",
+        "vector-column-family.target-file-size": "128mb",  # optional
+    },
+)
+```
+
+Writes go through `VectorColumnFamilyDataWriter`, which strips the VECTOR column from each batch, rolls `.vector.bin` at the configured size, and records the vector files in `DataFileMeta.extra_files`. Reads stay transparent: `FormatPyArrowReader` resolves descriptors back into `fixed_size_list`. Cleanup of orphan `.vector.bin` files is handled by `pypaimon.operation.vector_file_garbage_collector.VectorFileGarbageCollector(table).gc()`.
+
+See `docs/design/2026-04-21-vector-type-python-port-phase2.md` for the full design.
+
 # Query Server
 
 A lightweight HTTP query service (FastAPI + DuckDB) that allows browser-based SQL querying of Paimon tables. It is designed for ad-hoc exploration via the Paimon frontend SQL Playground.

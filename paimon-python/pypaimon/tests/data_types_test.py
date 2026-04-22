@@ -250,6 +250,72 @@ class DataTypesTest(unittest.TestCase):
         self.assertIsInstance(schema.fields[1].type, VectorType)
         self.assertEqual(schema.fields[1].type.length, 4)
 
+    def test_vcf_requires_primary_key(self):
+        from pypaimon.schema.schema import Schema
+        pa_schema = pa.schema([
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("embed", pa.list_(pa.float32(), 4), nullable=True),
+        ])
+        with self.assertRaises(ValueError):
+            Schema.from_pyarrow_schema(
+                pa_schema,
+                options={"vector-column-family.enabled": "true"})
+
+    def test_vcf_requires_exactly_one_vector(self):
+        from pypaimon.schema.schema import Schema
+        pa_schema = pa.schema([
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("embed1", pa.list_(pa.float32(), 4), nullable=True),
+            pa.field("embed2", pa.list_(pa.float32(), 4), nullable=True),
+        ])
+        with self.assertRaises(ValueError):
+            Schema.from_pyarrow_schema(
+                pa_schema,
+                primary_keys=["id"],
+                options={"vector-column-family.enabled": "true"})
+
+    def test_vcf_rejects_external_paths(self):
+        from pypaimon.schema.schema import Schema
+        pa_schema = pa.schema([
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("embed", pa.list_(pa.float32(), 4), nullable=True),
+        ])
+        with self.assertRaises(ValueError):
+            Schema.from_pyarrow_schema(
+                pa_schema,
+                primary_keys=["id"],
+                options={
+                    "vector-column-family.enabled": "true",
+                    "data-file.external-paths": "s3://bucket/x",
+                })
+
+    def test_vcf_happy_path(self):
+        from pypaimon.schema.schema import Schema
+        pa_schema = pa.schema([
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("embed", pa.list_(pa.float32(), 4), nullable=True),
+        ])
+        schema = Schema.from_pyarrow_schema(
+            pa_schema,
+            primary_keys=["id"],
+            options={"vector-column-family.enabled": "true"})
+        self.assertEqual(len(schema.fields), 2)
+
+    def test_vcf_explicit_columns_must_be_vector(self):
+        from pypaimon.schema.schema import Schema
+        pa_schema = pa.schema([
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("not_a_vector", pa.int64(), nullable=True),
+        ])
+        with self.assertRaises(ValueError):
+            Schema.from_pyarrow_schema(
+                pa_schema,
+                primary_keys=["id"],
+                options={
+                    "vector-column-family.enabled": "true",
+                    "vector-column-family.columns": "not_a_vector",
+                })
+
     def test_vector_type_eq_hash(self):
         a = VectorType(nullable=True, length=4, element_type=AtomicType("FLOAT"))
         b = VectorType(nullable=True, length=4, element_type=AtomicType("FLOAT"))

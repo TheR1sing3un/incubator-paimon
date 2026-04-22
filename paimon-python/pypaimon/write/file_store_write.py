@@ -27,6 +27,8 @@ from pypaimon.write.writer.append_only_data_writer import AppendOnlyDataWriter
 from pypaimon.write.writer.data_blob_writer import DataBlobWriter
 from pypaimon.write.writer.data_writer import DataWriter
 from pypaimon.write.writer.key_value_data_writer import KeyValueDataWriter
+from pypaimon.write.writer.vector_cf_data_writer import VectorColumnFamilyDataWriter
+from pypaimon.schema.data_types import VectorType
 from pypaimon.table.bucket_mode import BucketMode
 
 
@@ -69,6 +71,29 @@ class FileStoreWrite:
                 return 0
             return self._seq_number_stats(partition).get(bucket, 1)
 
+        # VCF: highest precedence — only meaningful on PK tables
+        if options.vector_column_family_enabled() and self.table.is_primary_key_table:
+            configured = options.vector_column_family_columns()
+            vector_cols = configured or [
+                f.name for f in self.table.fields if isinstance(f.type, VectorType)
+            ]
+            if len(vector_cols) != 1:
+                raise ValueError(
+                    "Vector column family currently supports exactly one vector column, got {}."
+                    .format(vector_cols))
+            merge_mode = self._resolve_merge_mode(options)
+            return VectorColumnFamilyDataWriter(
+                table=self.table,
+                partition=partition,
+                bucket=bucket,
+                max_seq_number=max_seq_number(),
+                options=options,
+                vector_column=vector_cols[0],
+                target_file_size=options.vector_column_family_target_file_size(),
+                write_cols=self.write_cols,
+                merge_mode=merge_mode,
+            )
+
         # Check if table has blob columns
         if self._has_blob_columns():
             return DataBlobWriter(
@@ -79,14 +104,7 @@ class FileStoreWrite:
                 options=options
             )
         elif self.table.is_primary_key_table:
-            # Resolve merge mode for versioned-partial-update
-            merge_mode = None
-            if options.merge_engine() == MergeEngine.VERSIONED_PARTIAL_UPDATE:
-                mode_str = options.versioned_partial_update_merge_mode()
-                vm = VersionedMergeMode.from_string(mode_str)
-                # Align with Java: UPSERT -> None (serialized as null), IGNORE -> 1
-                if vm == VersionedMergeMode.IGNORE:
-                    merge_mode = vm.to_byte_value()
+            merge_mode = self._resolve_merge_mode(options)
             return KeyValueDataWriter(
                 table=self.table,
                 partition=partition,
@@ -104,6 +122,16 @@ class FileStoreWrite:
                 options=options,
                 write_cols=self.write_cols
             )
+
+    @staticmethod
+    def _resolve_merge_mode(options: CoreOptions) -> Optional[int]:
+        # Align with Java: UPSERT -> None (serialized as null), IGNORE -> 1
+        if options.merge_engine() == MergeEngine.VERSIONED_PARTIAL_UPDATE:
+            mode_str = options.versioned_partial_update_merge_mode()
+            vm = VersionedMergeMode.from_string(mode_str)
+            if vm == VersionedMergeMode.IGNORE:
+                return vm.to_byte_value()
+        return None
 
     def _has_blob_columns(self) -> bool:
         """Check if the table schema contains blob columns."""
