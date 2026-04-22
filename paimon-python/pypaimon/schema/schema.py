@@ -22,7 +22,7 @@ import pyarrow as pa
 
 from pypaimon.common.options.core_options import CoreOptions
 from pypaimon.common.json_util import json_field
-from pypaimon.schema.data_types import DataField, PyarrowFieldParser
+from pypaimon.schema.data_types import DataField, PyarrowFieldParser, VectorType
 
 
 @dataclass
@@ -61,6 +61,20 @@ class Schema:
             for field in fields:
                 if field.name in pk_set:
                     field.type.nullable = False
+
+        # Vector columns must be nullable, non-PK, non-partition (matches Java SchemaValidation)
+        partition_set = set(partition_keys) if partition_keys else set()
+        for field in fields:
+            if isinstance(field.type, VectorType):
+                if field.name in pk_set:
+                    raise ValueError(
+                        "Vector column '{}' cannot be a primary key.".format(field.name))
+                if field.name in partition_set:
+                    raise ValueError(
+                        "Vector column '{}' cannot be a partition key.".format(field.name))
+                if not field.type.nullable:
+                    raise ValueError(
+                        "Vector column '{}' must be nullable.".format(field.name))
 
         # Check if Blob type exists in the schema
         has_blob_type = any(

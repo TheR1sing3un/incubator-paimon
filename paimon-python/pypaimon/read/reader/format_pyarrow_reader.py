@@ -23,8 +23,9 @@ import pyarrow.dataset as ds
 from pyarrow import RecordBatch
 
 from pypaimon.common.file_io import FileIO
+from pypaimon.data.vector_ref import resolve_vector_descriptors
 from pypaimon.read.reader.iface.record_batch_reader import RecordBatchReader
-from pypaimon.schema.data_types import DataField, PyarrowFieldParser
+from pypaimon.schema.data_types import DataField, PyarrowFieldParser, VectorType
 from pypaimon.table.special_fields import SpecialFields
 
 
@@ -40,8 +41,12 @@ class FormatPyArrowReader(RecordBatchReader):
         file_path_for_pyarrow = file_io.to_filesystem_path(file_path)
         self.dataset = ds.dataset(file_path_for_pyarrow, format=file_format, filesystem=file_io.filesystem)
         self._file_format = file_format
+        self._file_io = file_io
         self.read_fields = read_fields
         self._read_field_names = [f.name for f in read_fields]
+        self._vector_fields = {
+            f.name: f.type for f in read_fields if isinstance(f.type, VectorType)
+        }
 
         # Identify which fields exist in the file and which are missing
         file_schema_names = set(self.dataset.schema.names)
@@ -67,7 +72,7 @@ class FormatPyArrowReader(RecordBatchReader):
                 batch = self._cast_orc_time_columns(batch)
 
             if not self.missing_fields:
-                return batch
+                return self._apply_vector_resolution(batch)
 
             def _type_for_missing(name: str) -> pa.DataType:
                 if self._output_schema is not None:
@@ -98,10 +103,43 @@ class FormatPyArrowReader(RecordBatchReader):
                     nullable = not SpecialFields.is_system_field(field_name)
                     out_fields.append(pa.field(field_name, col_type, nullable=nullable))
             # Create a new RecordBatch with all columns
-            return pa.RecordBatch.from_arrays(all_columns, schema=pa.schema(out_fields))
+            return self._apply_vector_resolution(
+                pa.RecordBatch.from_arrays(all_columns, schema=pa.schema(out_fields)))
 
         except StopIteration:
             return None
+
+    def _apply_vector_resolution(self, batch: Optional[RecordBatch]) -> Optional[RecordBatch]:
+        if batch is None or not self._vector_fields:
+            return batch
+        new_columns = []
+        new_fields = []
+        for i, name in enumerate(batch.schema.names):
+            col = batch.column(i)
+            vt = self._vector_fields.get(name)
+            if vt is None:
+                new_columns.append(col)
+                new_fields.append(batch.schema.field(i))
+                continue
+
+            element_pa_type = PyarrowFieldParser.from_paimon_type(vt.element)
+            target_type = pa.list_(element_pa_type, vt.length)
+            if pa.types.is_fixed_size_list(col.type):
+                new_columns.append(col)
+                new_fields.append(batch.schema.field(i))
+            elif pa.types.is_list(col.type) or pa.types.is_large_list(col.type):
+                new_columns.append(col.cast(target_type))
+                new_fields.append(pa.field(name, target_type, nullable=vt.nullable))
+            elif pa.types.is_binary(col.type) or pa.types.is_large_binary(col.type):
+                descriptor_bytes = col.to_pylist()
+                resolved = resolve_vector_descriptors(
+                    self._file_io, descriptor_bytes, element_pa_type, vt.length)
+                new_columns.append(resolved)
+                new_fields.append(pa.field(name, target_type, nullable=vt.nullable))
+            else:
+                raise ValueError(
+                    "VECTOR column '{}' has unsupported physical type {}".format(name, col.type))
+        return pa.RecordBatch.from_arrays(new_columns, schema=pa.schema(new_fields))
 
     def _cast_orc_time_columns(self, batch):
         """Cast int32 TIME columns back to time32('ms') when reading ORC.

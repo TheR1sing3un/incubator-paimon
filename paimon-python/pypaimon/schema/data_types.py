@@ -310,6 +310,61 @@ class RowType(DataType):
         return "ROW<{}>{}".format(', '.join(field_strs), null_suffix)
 
 
+VALID_VECTOR_ELEMENT_TYPES = {"BOOLEAN", "TINYINT", "SMALLINT", "INT", "INTEGER",
+                              "BIGINT", "FLOAT", "DOUBLE"}
+
+
+@dataclass
+class VectorType(DataType):
+    element: DataType
+    length: int
+
+    MIN_LENGTH = 1
+
+    def __init__(self, nullable: bool, length: int, element_type: DataType):
+        super().__init__(nullable)
+        if element_type is None:
+            raise ValueError("Element type must not be null.")
+        if not isinstance(element_type, AtomicType):
+            raise ValueError(
+                "Invalid element type for vector (must be atomic): {}".format(element_type))
+        base = element_type.type.upper().split("(")[0].split(" ")[0]
+        if base not in VALID_VECTOR_ELEMENT_TYPES:
+            raise ValueError("Invalid element type for vector: {}".format(element_type))
+        if length is None or length < self.MIN_LENGTH:
+            raise ValueError(
+                "Vector length must be >= {}, got {}".format(self.MIN_LENGTH, length))
+        self.element = element_type
+        self.length = length
+
+    def __eq__(self, other):
+        if self is other:
+            return True
+        if not isinstance(other, VectorType):
+            return False
+        return (self.element == other.element
+                and self.length == other.length
+                and self.nullable == other.nullable)
+
+    def __hash__(self):
+        return hash((self.element, self.length, self.nullable))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "type": "VECTOR" if self.nullable else "VECTOR NOT NULL",
+            "element": self.element.to_dict() if self.element else None,
+            "length": self.length,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "VectorType":
+        return DataTypeParser.parse_data_type(data)
+
+    def __str__(self) -> str:
+        null_suffix = "" if self.nullable else " NOT NULL"
+        return "VECTOR<{}, {}>{}".format(self.element, self.length, null_suffix)
+
+
 class Keyword(Enum):
     CHAR = "CHAR"
     VARCHAR = "VARCHAR"
@@ -411,6 +466,16 @@ class DataTypeParser:
                             field_json, field_id))
                 nullable = "NOT NULL" not in type_string
                 return RowType(nullable, fields)
+
+            elif type_string.startswith("VECTOR"):
+                element = DataTypeParser.parse_data_type(
+                    json_data.get("element"), field_id)
+                length = json_data.get("length")
+                if length is None:
+                    raise ValueError(
+                        "Missing 'length' field for VECTOR type: {}".format(json_data))
+                nullable = "NOT NULL" not in type_string
+                return VectorType(nullable, int(length), element)
 
             else:
                 return DataTypeParser.parse_atomic_type_sql_string(type_string)
@@ -521,6 +586,9 @@ class PyarrowFieldParser:
                 return pyarrow.date32()
             if type_name.startswith('TIME'):
                 return pyarrow.time32('ms')
+        elif isinstance(data_type, VectorType):
+            element_pa = PyarrowFieldParser.from_paimon_type(data_type.element)
+            return pyarrow.list_(element_pa, data_type.length)
         elif isinstance(data_type, ArrayType):
             return pyarrow.list_(PyarrowFieldParser.from_paimon_type(data_type.element))
         elif isinstance(data_type, MapType):
@@ -590,6 +658,14 @@ class PyarrowFieldParser:
             type_name = 'DATE'
         elif types.is_time(pa_type):
             type_name = 'TIME(0)'
+        elif types.is_fixed_size_list(pa_type):
+            pa_type: pyarrow.FixedSizeListType
+            element_type = PyarrowFieldParser.to_paimon_type(pa_type.value_type, True)
+            if isinstance(element_type, AtomicType):
+                base = element_type.type.upper().split("(")[0].split(" ")[0]
+                if base in VALID_VECTOR_ELEMENT_TYPES:
+                    return VectorType(nullable, pa_type.list_size, element_type)
+            return ArrayType(nullable, element_type)
         elif types.is_list(pa_type) or types.is_large_list(pa_type):
             pa_type: pyarrow.ListType
             element_type = PyarrowFieldParser.to_paimon_type(pa_type.value_type, nullable)
@@ -682,7 +758,9 @@ class PyarrowFieldParser:
                     return {"type": "long", "logicalType": "local-timestamp-micros"}
                 else:
                     raise ValueError(f"Avro does not support pyarrow timestamp with unit {unit}.")
-        elif pyarrow.types.is_list(field_type) or pyarrow.types.is_large_list(field_type):
+        elif (pyarrow.types.is_list(field_type)
+              or pyarrow.types.is_large_list(field_type)
+              or pyarrow.types.is_fixed_size_list(field_type)):
             value_field = field_type.value_field
             return {
                 "type": "array",

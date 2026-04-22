@@ -20,7 +20,7 @@ from parameterized import parameterized
 import pyarrow as pa
 
 from pypaimon.schema.data_types import (DataField, AtomicType, ArrayType, MultisetType, MapType,
-                                        RowType, PyarrowFieldParser)
+                                        RowType, PyarrowFieldParser, VectorType, DataTypeParser)
 
 
 class DataTypesTest(unittest.TestCase):
@@ -144,3 +144,120 @@ class DataTypesTest(unittest.TestCase):
 
         paimon_type = PyarrowFieldParser.to_paimon_type(pa.time32('ms'), nullable=True)
         self.assertEqual(paimon_type.type, "TIME(0)")
+
+    def test_vector_type_str(self):
+        vt = VectorType(nullable=True, length=128, element_type=AtomicType("FLOAT"))
+        self.assertEqual(str(vt), "VECTOR<FLOAT, 128>")
+
+        vt_nn = VectorType(nullable=False, length=3, element_type=AtomicType("DOUBLE"))
+        self.assertEqual(str(vt_nn), "VECTOR<DOUBLE, 3> NOT NULL")
+
+    def test_vector_type_to_dict_roundtrip(self):
+        vt = VectorType(nullable=True, length=1024, element_type=AtomicType("FLOAT"))
+        d = vt.to_dict()
+        self.assertEqual(d["type"], "VECTOR")
+        self.assertEqual(d["length"], 1024)
+        self.assertEqual(d["element"], AtomicType("FLOAT").to_dict())
+
+        vt2 = DataTypeParser.parse_data_type(d)
+        self.assertEqual(vt, vt2)
+
+    def test_vector_type_not_null_json(self):
+        vt = VectorType(nullable=False, length=16, element_type=AtomicType("FLOAT"))
+        d = vt.to_dict()
+        self.assertEqual(d["type"], "VECTOR NOT NULL")
+        vt2 = DataTypeParser.parse_data_type(d)
+        self.assertFalse(vt2.nullable)
+        self.assertEqual(vt2.length, 16)
+
+    def test_vector_type_invalid_element(self):
+        with self.assertRaises(ValueError):
+            VectorType(nullable=True, length=8, element_type=AtomicType("STRING"))
+
+    def test_vector_type_invalid_length(self):
+        with self.assertRaises(ValueError):
+            VectorType(nullable=True, length=0, element_type=AtomicType("FLOAT"))
+        with self.assertRaises(ValueError):
+            VectorType(nullable=True, length=-1, element_type=AtomicType("FLOAT"))
+
+    def test_vector_type_to_pyarrow(self):
+        vt = VectorType(nullable=True, length=128, element_type=AtomicType("FLOAT"))
+        pa_type = PyarrowFieldParser.from_paimon_type(vt)
+        self.assertTrue(pa.types.is_fixed_size_list(pa_type))
+        self.assertEqual(pa_type.list_size, 128)
+        self.assertTrue(pa.types.is_float32(pa_type.value_type))
+
+    def test_pyarrow_to_vector_type(self):
+        pa_type = pa.list_(pa.float32(), 64)
+        paimon_type = PyarrowFieldParser.to_paimon_type(pa_type, nullable=True)
+        self.assertIsInstance(paimon_type, VectorType)
+        self.assertEqual(paimon_type.length, 64)
+        self.assertEqual(paimon_type.element.type, "FLOAT")
+
+    def test_pyarrow_fixed_size_list_non_vector_element(self):
+        # fixed_size_list<string, 4> 不是合法 VECTOR，退回 ArrayType
+        pa_type = pa.list_(pa.string(), 4)
+        paimon_type = PyarrowFieldParser.to_paimon_type(pa_type, nullable=True)
+        self.assertIsInstance(paimon_type, ArrayType)
+
+    def test_vector_type_roundtrip_through_pyarrow(self):
+        vt = VectorType(nullable=True, length=256, element_type=AtomicType("DOUBLE"))
+        pa_type = PyarrowFieldParser.from_paimon_type(vt)
+        vt2 = PyarrowFieldParser.to_paimon_type(pa_type, nullable=True)
+        self.assertEqual(vt, vt2)
+
+    def test_vector_type_to_avro(self):
+        fixed_size = pa.list_(pa.float32(), 32)
+        avro = PyarrowFieldParser.to_avro_type(fixed_size, "embed")
+        self.assertEqual(avro["type"], "array")
+        self.assertEqual(avro["items"], "float")
+
+    def test_schema_vector_column_cannot_be_pk(self):
+        from pypaimon.schema.schema import Schema
+        pa_schema = pa.schema([
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("embed", pa.list_(pa.float32(), 4), nullable=True),
+        ])
+        with self.assertRaises(ValueError):
+            Schema.from_pyarrow_schema(pa_schema, primary_keys=["embed"])
+
+    def test_schema_vector_column_cannot_be_partition(self):
+        from pypaimon.schema.schema import Schema
+        pa_schema = pa.schema([
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("embed", pa.list_(pa.float32(), 4), nullable=True),
+        ])
+        with self.assertRaises(ValueError):
+            Schema.from_pyarrow_schema(pa_schema, partition_keys=["embed"])
+
+    def test_schema_vector_column_must_be_nullable(self):
+        from pypaimon.schema.schema import Schema
+        pa_schema = pa.schema([
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("embed", pa.list_(pa.float32(), 4), nullable=False),
+        ])
+        with self.assertRaises(ValueError):
+            Schema.from_pyarrow_schema(pa_schema, primary_keys=["id"])
+
+    def test_schema_vector_column_ok_when_nullable_and_not_pk(self):
+        from pypaimon.schema.schema import Schema
+        pa_schema = pa.schema([
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("embed", pa.list_(pa.float32(), 4), nullable=True),
+        ])
+        schema = Schema.from_pyarrow_schema(pa_schema, primary_keys=["id"])
+        self.assertEqual(len(schema.fields), 2)
+        self.assertIsInstance(schema.fields[1].type, VectorType)
+        self.assertEqual(schema.fields[1].type.length, 4)
+
+    def test_vector_type_eq_hash(self):
+        a = VectorType(nullable=True, length=4, element_type=AtomicType("FLOAT"))
+        b = VectorType(nullable=True, length=4, element_type=AtomicType("FLOAT"))
+        c = VectorType(nullable=True, length=5, element_type=AtomicType("FLOAT"))
+        d = VectorType(nullable=False, length=4, element_type=AtomicType("FLOAT"))
+        e = VectorType(nullable=True, length=4, element_type=AtomicType("DOUBLE"))
+        self.assertEqual(a, b)
+        self.assertEqual(hash(a), hash(b))
+        self.assertNotEqual(a, c)
+        self.assertNotEqual(a, d)
+        self.assertNotEqual(a, e)

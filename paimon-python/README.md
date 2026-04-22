@@ -120,6 +120,36 @@ write_paimon(df, "db.table", opts,
 - Daft-side `df.where(...)` filters are currently kept as residuals (Daft applies them post-scan). For real Paimon-side predicate pushdown, pass a `pypaimon.Predicate` via the `filter=` argument.
 - `min_rows_per_file` (available in `pypaimon.ray`) is not supported in v1 because Daft's `DataSink` lacks an equivalent block-coalescing hook. To control output file sizes, call `df.repartition(N)` before `write_paimon`.
 
+# Vector / Embedding Columns
+
+PyPaimon supports Paimon's `VECTOR<element, length>` type for dense fixed-dimension embeddings (Phase 1: Parquet-backed, `fixed_size_list` in-memory). See `docs/design/2026-04-21-vector-type-python-port.md` for the design.
+
+```python
+import pyarrow as pa
+from pypaimon import CatalogFactory, Schema
+
+catalog = CatalogFactory.create({"warehouse": "/tmp/vec_wh"})
+catalog.create_database("vec_db", True)
+
+pa_schema = pa.schema([
+    pa.field("id", pa.int64(), nullable=False),
+    pa.field("embed", pa.list_(pa.float32(), 128), nullable=True),  # VECTOR<FLOAT, 128>
+])
+catalog.create_table("vec_db.t", Schema.from_pyarrow_schema(pa_schema), False)
+
+table = catalog.get_table("vec_db.t")
+batch = pa.Table.from_pydict({
+    "id": pa.array([1, 2], type=pa.int64()),
+    "embed": pa.array([[0.1] * 128, [0.2] * 128], type=pa.list_(pa.float32(), 128)),
+}, schema=pa_schema)
+wb = table.new_batch_write_builder()
+tw, tc = wb.new_write(), wb.new_commit()
+tw.write_arrow(batch); tc.commit(tw.prepare_commit())
+tw.close(); tc.close()
+```
+
+Reads transparently handle Java's vector-column-family layout — if the Parquet column contains `VectorDescriptor` bytes, PyPaimon resolves them against the referenced `.vector.bin` file and returns a `fixed_size_list` column.
+
 # Query Server
 
 A lightweight HTTP query service (FastAPI + DuckDB) that allows browser-based SQL querying of Paimon tables. It is designed for ad-hoc exploration via the Paimon frontend SQL Playground.
