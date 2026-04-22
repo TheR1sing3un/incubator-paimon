@@ -61,6 +61,7 @@ public class KeyValueFileStoreScan extends AbstractFileStoreScan {
     private final SimpleStatsEvolutions fieldValueStatsConverters;
     private final BucketSelectConverter bucketSelectConverter;
     private final boolean deletionVectorsEnabled;
+    private final boolean dvFreshnessReadEnabled;
     private final MergeEngine mergeEngine;
     private final ChangelogProducer changelogProducer;
     private final boolean fileIndexReadEnabled;
@@ -88,6 +89,7 @@ public class KeyValueFileStoreScan extends AbstractFileStoreScan {
             ManifestFile.Factory manifestFileFactory,
             Integer scanManifestParallelism,
             boolean deletionVectorsEnabled,
+            boolean dvFreshnessReadEnabled,
             MergeEngine mergeEngine,
             ChangelogProducer changelogProducer,
             boolean fileIndexReadEnabled) {
@@ -109,6 +111,7 @@ public class KeyValueFileStoreScan extends AbstractFileStoreScan {
                         sid -> keyValueFieldsExtractor.valueFields(scanTableSchema(sid)),
                         schema.id());
         this.deletionVectorsEnabled = deletionVectorsEnabled;
+        this.dvFreshnessReadEnabled = dvFreshnessReadEnabled;
         this.mergeEngine = mergeEngine;
         this.changelogProducer = changelogProducer;
         this.fileIndexReadEnabled = fileIndexReadEnabled;
@@ -134,8 +137,26 @@ public class KeyValueFileStoreScan extends AbstractFileStoreScan {
     /** Note: Keep this thread-safe. */
     @Override
     protected boolean filterByStats(ManifestEntry entry) {
-        if (isValueFilterEnabled() && !filterByValueFilter(entry)) {
-            return false;
+        if (isValueFilterEnabled()) {
+            // Reaching here means the caller explicitly opted in to value-stats pruning via
+            // enableValueFilter() — currently only DataTableBatchScan / DataTableStreamScan do
+            // this, and they are responsible for pre-filtering L0 away unless the table is in
+            // FRESHNESS mode. L0 files cannot be pruned per-file by value stats (key ranges
+            // overlap, so a shadowed older version would surface as a false positive). We either
+            // (a) fail loudly if a new caller violates the contract, or (b) let L0 bypass pruning
+            // when the caller legitimately wants L0 visibility (FRESHNESS).
+            if (entry.file().level() == 0) {
+                if (!dvFreshnessReadEnabled) {
+                    throw new IllegalStateException(
+                            "L0 file reached enabled value-filter stats pruning but FRESHNESS "
+                                    + "mode is not active. Upstream must apply "
+                                    + "withLevelFilter(level > 0) before enableValueFilter(), or "
+                                    + "switch to deletion-vectors.read-mode=FRESHNESS.");
+                }
+                // FRESHNESS: keep L0 unconditionally; stats pruning only applies to L1+.
+            } else if (!filterByValueFilter(entry)) {
+                return false;
+            }
         }
 
         Predicate notEvolvedFilter =
@@ -284,7 +305,10 @@ public class KeyValueFileStoreScan extends AbstractFileStoreScan {
         }
 
         // entries come from the same bucket, if any of it doesn't meet the request, we could
-        // filter the bucket.
+        // filter the bucket. This is safe even when L0 files are present: we either keep all
+        // files in the bucket (merge-on-read handles version resolution) or drop all of them
+        // (no key/value surfaces at all) — there is no per-file pruning that could let a
+        // shadowed older version leak through.
         for (ManifestEntry entry : entries) {
             if (filterByValueFilter(entry)) {
                 return entries;

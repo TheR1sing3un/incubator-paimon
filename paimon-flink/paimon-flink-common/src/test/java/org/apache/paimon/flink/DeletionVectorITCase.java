@@ -44,29 +44,38 @@ public class DeletionVectorITCase extends CatalogITCaseBase {
     @TempDir java.nio.file.Path tempExternalPath;
 
     private static Stream<Arguments> parameters1() {
-        // parameters: changelogProducer, dvBitmap64
+        // parameters: changelogProducer, dvBitmap64, dvReadMode
         return Stream.of(
-                Arguments.of("none", true),
-                Arguments.of("none", false),
-                Arguments.of("lookup", true),
-                Arguments.of("lookup", false));
+                Arguments.of("none", true, "performance"),
+                Arguments.of("none", false, "performance"),
+                Arguments.of("lookup", true, "performance"),
+                Arguments.of("lookup", false, "performance"),
+                Arguments.of("none", true, "freshness"),
+                Arguments.of("none", false, "freshness"),
+                Arguments.of("lookup", true, "freshness"),
+                Arguments.of("lookup", false, "freshness"));
     }
 
     private static Stream<Arguments> parameters2() {
-        // parameters: changelogProducer, dvVersion
-        return Stream.of(Arguments.of("input", true), Arguments.of("input", false));
+        // parameters: changelogProducer, dvBitmap64, dvReadMode
+        return Stream.of(
+                Arguments.of("input", true, "performance"),
+                Arguments.of("input", false, "performance"),
+                Arguments.of("input", true, "freshness"),
+                Arguments.of("input", false, "freshness"));
     }
 
     @ParameterizedTest
     @MethodSource("parameters2")
     public void testStreamingReadDVTableWhenChangelogProducerIsInput(
-            String changelogProducer, boolean dvBitmap64) throws Exception {
+            String changelogProducer, boolean dvBitmap64, String dvReadMode) throws Exception {
         sql(
                 String.format(
                         "CREATE TABLE T (id INT PRIMARY KEY NOT ENFORCED, name STRING) "
                                 + "WITH ('deletion-vectors.enabled' = 'true', 'changelog-producer' = '%s', "
-                                + "'deletion-vectors.bitmap64' = '%s')",
-                        changelogProducer, dvBitmap64));
+                                + "'deletion-vectors.bitmap64' = '%s', "
+                                + "'deletion-vectors.read-mode' = '%s')",
+                        changelogProducer, dvBitmap64, dvReadMode));
 
         sql("INSERT INTO T VALUES (1, '111111111'), (2, '2'), (3, '3'), (4, '4')");
 
@@ -107,14 +116,15 @@ public class DeletionVectorITCase extends CatalogITCaseBase {
 
     @ParameterizedTest
     @MethodSource("parameters1")
-    public void testStreamingReadDVTable(String changelogProducer, boolean dvBitmap64)
-            throws Exception {
+    public void testStreamingReadDVTable(
+            String changelogProducer, boolean dvBitmap64, String dvReadMode) throws Exception {
         sql(
                 String.format(
                         "CREATE TABLE T (id INT PRIMARY KEY NOT ENFORCED, name STRING) "
                                 + "WITH ('deletion-vectors.enabled' = 'true', 'changelog-producer' = '%s', "
-                                + "'deletion-vectors.bitmap64' = '%s')",
-                        changelogProducer, dvBitmap64));
+                                + "'deletion-vectors.bitmap64' = '%s', "
+                                + "'deletion-vectors.read-mode' = '%s')",
+                        changelogProducer, dvBitmap64, dvReadMode));
 
         sql("INSERT INTO T VALUES (1, '111111111'), (2, '2'), (3, '3'), (4, '4')");
 
@@ -128,6 +138,17 @@ public class DeletionVectorITCase extends CatalogITCaseBase {
                         "SELECT * FROM T /*+ OPTIONS('scan.mode'='from-snapshot-full','scan.snapshot-id' = '3') */")) {
             if (changelogProducer.equals("none")) {
                 // the first two values will be merged
+                assertThat(iter.collect(8))
+                        .containsExactlyInAnyOrder(
+                                Row.ofKind(RowKind.INSERT, 1, "111111111"),
+                                Row.ofKind(RowKind.INSERT, 2, "2_1"),
+                                Row.ofKind(RowKind.INSERT, 3, "3_1"),
+                                Row.ofKind(RowKind.INSERT, 4, "4"),
+                                Row.ofKind(RowKind.UPDATE_BEFORE, 2, "2_1"),
+                                Row.ofKind(RowKind.UPDATE_AFTER, 2, "2_2"),
+                                Row.ofKind(RowKind.UPDATE_BEFORE, 4, "4"),
+                                Row.ofKind(RowKind.UPDATE_AFTER, 4, "4_1"));
+            } else if (dvReadMode.equals("freshness")) {
                 assertThat(iter.collect(8))
                         .containsExactlyInAnyOrder(
                                 Row.ofKind(RowKind.INSERT, 1, "111111111"),
@@ -175,13 +196,15 @@ public class DeletionVectorITCase extends CatalogITCaseBase {
 
     @ParameterizedTest
     @MethodSource("parameters1")
-    public void testBatchReadDVTable(String changelogProducer, boolean dvBitmap64) {
+    public void testBatchReadDVTable(
+            String changelogProducer, boolean dvBitmap64, String dvReadMode) {
         sql(
                 String.format(
                         "CREATE TABLE T (id INT PRIMARY KEY NOT ENFORCED, name STRING) "
                                 + "WITH ('deletion-vectors.enabled' = 'true', 'changelog-producer' = '%s', "
-                                + "'deletion-vectors.bitmap64' = '%s')",
-                        changelogProducer, dvBitmap64));
+                                + "'deletion-vectors.bitmap64' = '%s', "
+                                + "'deletion-vectors.read-mode' = '%s')",
+                        changelogProducer, dvBitmap64, dvReadMode));
 
         sql("INSERT INTO T VALUES (1, '111111111'), (2, '2'), (3, '3'), (4, '4')");
 
@@ -196,26 +219,101 @@ public class DeletionVectorITCase extends CatalogITCaseBase {
                         Row.of(3, "3_1"),
                         Row.of(4, "4_1"));
 
-        // batch read dv table will filter level 0 and there will be data delay
-        assertThat(batchSql("SELECT * FROM T /*+ OPTIONS('scan.snapshot-id'='3') */"))
-                .containsExactlyInAnyOrder(
-                        Row.of(1, "111111111"), Row.of(2, "2"), Row.of(3, "3"), Row.of(4, "4"));
+        if (dvReadMode.equals("freshness")) {
+            // freshness mode reads level-0 data, so snapshot 3 (APPEND) includes
+            // the second INSERT merged with the first INSERT's compacted data
+            assertThat(batchSql("SELECT * FROM T /*+ OPTIONS('scan.snapshot-id'='3') */"))
+                    .containsExactlyInAnyOrder(
+                            Row.of(1, "111111111"),
+                            Row.of(2, "2_1"),
+                            Row.of(3, "3_1"),
+                            Row.of(4, "4"));
+        } else {
+            // performance mode filters level 0 and there will be data delay
+            assertThat(batchSql("SELECT * FROM T /*+ OPTIONS('scan.snapshot-id'='3') */"))
+                    .containsExactlyInAnyOrder(
+                            Row.of(1, "111111111"), Row.of(2, "2"), Row.of(3, "3"), Row.of(4, "4"));
+        }
 
         assertThat(batchSql("SELECT * FROM T /*+ OPTIONS('scan.snapshot-id'='4') */"))
                 .containsExactlyInAnyOrder(
                         Row.of(1, "111111111"), Row.of(2, "2_1"), Row.of(3, "3_1"), Row.of(4, "4"));
     }
 
+    @Test
+    public void testFreshnessModeMergeDedup() {
+        // Core test for FRESHNESS mode: multiple writes to the same keys accumulate as
+        // L0 files with overlapping keys that must be correctly merged (deduplicated) on read.
+        // Compaction is suppressed via large triggers so L0 is guaranteed to persist,
+        // deterministically exercising the FRESHNESS merge-on-read path.
+        // num-levels is pinned explicitly because it defaults to
+        // num-sorted-run.compaction-trigger + 1 (see CoreOptions.numLevels()),
+        // so we must not leave the trigger to implicitly blow up the level list size.
+        sql(
+                "CREATE TABLE T_DEDUP (id INT PRIMARY KEY NOT ENFORCED, val STRING) "
+                        + "WITH ("
+                        + "'deletion-vectors.enabled' = 'true', "
+                        + "'deletion-vectors.read-mode' = 'freshness', "
+                        + "'bucket' = '1', "
+                        + "'num-levels' = '3', "
+                        + "'num-sorted-run.compaction-trigger' = '999', "
+                        + "'num-sorted-run.stop-trigger' = '999', "
+                        + "'compaction.max-size-amplification-percent' = '999')");
+
+        // Write the same keys multiple times to create L0 files with overlapping keys
+        sql("INSERT INTO T_DEDUP VALUES (1, 'v1'), (2, 'v1'), (3, 'v1')");
+        sql("INSERT INTO T_DEDUP VALUES (1, 'v2'), (2, 'v2')");
+        sql("INSERT INTO T_DEDUP VALUES (1, 'v3')");
+
+        // FRESHNESS mode must merge-dedup correctly: each key appears exactly once
+        // with its latest value
+        assertThat(batchSql("SELECT * FROM T_DEDUP"))
+                .containsExactlyInAnyOrder(Row.of(1, "v3"), Row.of(2, "v2"), Row.of(3, "v1"));
+    }
+
+    @Test
+    public void testFreshnessModeBatchWithPredicate() {
+        // Verify that FRESHNESS mode returns correct results when a WHERE predicate is pushed
+        // down and L0 files are present. Compaction is suppressed so all data stays in L0,
+        // ensuring predicate evaluation after merge-dedup is correct for FRESHNESS.
+        // (L1+ value-stats pruning correctness is covered by existing PERFORMANCE-mode tests.)
+        // See testFreshnessModeMergeDedup for why num-levels is pinned.
+        sql(
+                "CREATE TABLE T_PRED (id INT PRIMARY KEY NOT ENFORCED, val INT) "
+                        + "WITH ("
+                        + "'deletion-vectors.enabled' = 'true', "
+                        + "'deletion-vectors.read-mode' = 'freshness', "
+                        + "'bucket' = '1', "
+                        + "'num-levels' = '3', "
+                        + "'num-sorted-run.compaction-trigger' = '999', "
+                        + "'num-sorted-run.stop-trigger' = '999', "
+                        + "'compaction.max-size-amplification-percent' = '999')");
+
+        sql("INSERT INTO T_PRED VALUES (1, 100), (2, 200), (3, 300)");
+        sql("INSERT INTO T_PRED VALUES (1, 150), (2, 50)");
+
+        // Query with value predicate: val > 100
+        // Expected: id=1 (val=150), id=3 (val=300); id=2 excluded (val=50)
+        assertThat(batchSql("SELECT * FROM T_PRED WHERE val > 100"))
+                .containsExactlyInAnyOrder(Row.of(1, 150), Row.of(3, 300));
+
+        // Query with value predicate: val <= 100
+        // Expected: id=2 (val=50)
+        assertThat(batchSql("SELECT * FROM T_PRED WHERE val <= 100"))
+                .containsExactlyInAnyOrder(Row.of(2, 50));
+    }
+
     @ParameterizedTest
     @MethodSource("parameters1")
-    public void testDVTableWithAggregationMergeEngine(String changelogProducer, boolean dvBitmap64)
-            throws Exception {
+    public void testDVTableWithAggregationMergeEngine(
+            String changelogProducer, boolean dvBitmap64, String dvReadMode) throws Exception {
         sql(
                 String.format(
                         "CREATE TABLE T (id INT PRIMARY KEY NOT ENFORCED, v INT) "
                                 + "WITH ('deletion-vectors.enabled' = 'true', 'changelog-producer' = '%s', 'deletion-vectors.bitmap64' = '%s', "
+                                + "'deletion-vectors.read-mode' = '%s', "
                                 + "'merge-engine'='aggregation', 'fields.v.aggregate-function'='sum')",
-                        changelogProducer, dvBitmap64));
+                        changelogProducer, dvBitmap64, dvReadMode));
 
         sql("INSERT INTO T VALUES (1, 111111111), (2, 2), (3, 3), (4, 4)");
 
@@ -250,13 +348,15 @@ public class DeletionVectorITCase extends CatalogITCaseBase {
     @ParameterizedTest
     @MethodSource("parameters1")
     public void testDVTableWithPartialUpdateMergeEngine(
-            String changelogProducer, boolean dvBitmap64) throws Exception {
+            String changelogProducer, boolean dvBitmap64, String dvReadMode) throws Exception {
         sql(
                 String.format(
                         "CREATE TABLE T (id INT PRIMARY KEY NOT ENFORCED, v1 STRING, v2 STRING) "
                                 + "WITH ('deletion-vectors.enabled' = 'true', 'changelog-producer' = '%s', "
-                                + "'deletion-vectors.bitmap64' = '%s', 'merge-engine'='partial-update')",
-                        changelogProducer, dvBitmap64));
+                                + "'deletion-vectors.bitmap64' = '%s', "
+                                + "'deletion-vectors.read-mode' = '%s', "
+                                + "'merge-engine'='partial-update')",
+                        changelogProducer, dvBitmap64, dvReadMode));
 
         sql(
                 "INSERT INTO T VALUES (1, '111111111', '1'), (2, '2', CAST(NULL AS STRING)), (3, '3', '3'), (4, CAST(NULL AS STRING), '4')");
@@ -296,13 +396,14 @@ public class DeletionVectorITCase extends CatalogITCaseBase {
     @ParameterizedTest
     @MethodSource("parameters1")
     public void testBatchReadDVTableWithSequenceField(
-            String changelogProducer, boolean dvBitmap64) {
+            String changelogProducer, boolean dvBitmap64, String dvReadMode) {
         sql(
                 String.format(
                         "CREATE TABLE T (id INT PRIMARY KEY NOT ENFORCED, sequence INT, name STRING) "
                                 + "WITH ('deletion-vectors.enabled' = 'true', 'sequence.field' = 'sequence', 'changelog-producer' = '%s', "
-                                + "'deletion-vectors.bitmap64' = '%s')",
-                        changelogProducer, dvBitmap64));
+                                + "'deletion-vectors.bitmap64' = '%s', "
+                                + "'deletion-vectors.read-mode' = '%s')",
+                        changelogProducer, dvBitmap64, dvReadMode));
 
         sql("INSERT INTO T VALUES (1, 1, '1'), (2, 1, '2')");
         sql("INSERT INTO T VALUES (1, 2, '1_1'), (2, 2, '2_1')");

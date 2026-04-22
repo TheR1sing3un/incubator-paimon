@@ -233,6 +233,7 @@ public class KeyValueFileStore extends AbstractFileStore<KeyValue> {
                 manifestFileFactory(),
                 options.scanManifestParallelism(),
                 options.deletionVectorsEnabled(),
+                options.dvFreshnessReadEnabled(),
                 options.mergeEngine(),
                 options.changelogProducer(),
                 options.fileIndexReadEnabled() && options.deletionVectorsEnabled());

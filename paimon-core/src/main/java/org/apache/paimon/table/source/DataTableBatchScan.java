@@ -68,7 +68,13 @@ public class DataTableBatchScan extends AbstractDataTableScan {
             if (options.toConfiguration()
                     .get(CoreOptions.BATCH_SCAN_MODE)
                     .equals(CoreOptions.BatchScanMode.NONE)) {
-                snapshotReader.withLevelFilter(level -> level > 0).enableValueFilter();
+                if (options.dvFreshnessReadEnabled()) {
+                    // FRESHNESS: no level filter (L0 passes through), but keep value filter.
+                    // L0 files are guarded in KeyValueFileStoreScan.filterByStats by level check.
+                    snapshotReader.enableValueFilter();
+                } else {
+                    snapshotReader.withLevelFilter(level -> level > 0).enableValueFilter();
+                }
             }
         }
         if (options.bucket() == BucketMode.POSTPONE_BUCKET) {

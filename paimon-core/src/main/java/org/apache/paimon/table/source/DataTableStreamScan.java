@@ -156,10 +156,25 @@ public class DataTableStreamScan extends AbstractDataTableScan implements Stream
         if (scanMode == FILE_MONITOR) {
             result = startingScanner.scan(snapshotReader);
         } else if (options.changelogProducer().equals(LOOKUP)) {
-            // level0 data will be compacted to produce changelog in the future
-            result = startingScanner.scan(snapshotReader.withLevelFilter(level -> level > 0));
-            snapshotReader.withLevelFilter(Filter.alwaysTrue());
+            // LOOKUP streaming has two phases:
+            // 1. bootstrap: read a full snapshot as the starting state
+            // 2. follow-up: keep reading changelog snapshots
+            //
+            // dvReadMode only affects phase 1. In FRESHNESS mode we include L0 in the bootstrap
+            // snapshot so the starting state is closer to the snapshot's logical final view.
+            // Phase 2 still follows changelog snapshots as before.
+            if (options.dvFreshnessReadEnabled()) {
+                // DV table in FRESHNESS mode: include L0 in the initial full scan.
+                result = startingScanner.scan(snapshotReader);
+                snapshotReader.withLevelFilter(Filter.alwaysTrue());
+            } else {
+                result = startingScanner.scan(snapshotReader.withLevelFilter(level -> level > 0));
+                snapshotReader.withLevelFilter(Filter.alwaysTrue());
+            }
         } else if (options.changelogProducer().equals(FULL_COMPACTION)) {
+            // FULL_COMPACTION always reads only the highest level regardless of dvReadMode,
+            // because it relies on full compaction to produce correct changelog; reading L0
+            // would not help produce changelog and would break the FULL_COMPACTION contract.
             result =
                     startingScanner.scan(
                             snapshotReader.withLevelFilter(
@@ -174,6 +189,10 @@ public class DataTableStreamScan extends AbstractDataTableScan implements Stream
             currentWatermark = scannedResult.currentWatermark();
             long currentSnapshotId = scannedResult.currentSnapshotId();
             nextSnapshotId = currentSnapshotId + 1;
+            if (options.changelogProducer().equals(LOOKUP) && options.dvFreshnessReadEnabled()) {
+                nextSnapshotId =
+                        skipSameCommitCompactionSnapshots(currentSnapshotId, nextSnapshotId);
+            }
             isFullPhaseEnd =
                     boundedChecker.shouldEndInput(snapshotManager.snapshot(currentSnapshotId));
             LOG.debug(
@@ -192,6 +211,26 @@ public class DataTableStreamScan extends AbstractDataTableScan implements Stream
             LOG.debug("There is no starting snapshot and currently there is no next snapshot.");
         }
         return SnapshotNotExistPlan.INSTANCE;
+    }
+
+    // If the bootstrap already materialized an APPEND snapshot with L0 included, the following
+    // COMPACT snapshots only replay the same logical change as changelog (they compact the L0
+    // data that is already reflected in the bootstrap result). Skip consecutive COMPACT snapshots
+    // to avoid sending duplicate changes.
+    private long skipSameCommitCompactionSnapshots(long currentSnapshotId, long nextSnapshotId) {
+        Snapshot currentSnapshot = snapshotManager.snapshot(currentSnapshotId);
+        if (currentSnapshot.commitKind() != Snapshot.CommitKind.APPEND) {
+            return nextSnapshotId;
+        }
+
+        while (snapshotManager.snapshotExists(nextSnapshotId)) {
+            Snapshot nextSnapshot = snapshotManager.snapshot(nextSnapshotId);
+            if (nextSnapshot.commitKind() != Snapshot.CommitKind.COMPACT) {
+                break;
+            }
+            nextSnapshotId++;
+        }
+        return nextSnapshotId;
     }
 
     private Plan nextPlan() {

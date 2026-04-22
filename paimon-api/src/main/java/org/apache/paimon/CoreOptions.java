@@ -1873,6 +1873,17 @@ public class CoreOptions implements Serializable {
                     .withDescription(
                             "Enable 64 bit bitmap implementation. Note that only 64 bit bitmap implementation is compatible with Iceberg.");
 
+    public static final ConfigOption<DvReadMode> DV_READ_MODE =
+            key("deletion-vectors.read-mode")
+                    .enumType(DvReadMode.class)
+                    .defaultValue(DvReadMode.PERFORMANCE)
+                    .withDescription(
+                            "Read mode for deletion vector tables. "
+                                    + "PERFORMANCE: only read compacted data (level >= 1), best read performance. "
+                                    + "FRESHNESS: read all levels including level-0 for better data freshness, "
+                                    + "level-0 files will be merged on read with deletion vector pre-filtering. "
+                                    + "For LOOKUP streaming reads, this mainly affects the initial full snapshot.");
+
     public static final ConfigOption<Boolean> DELETION_FORCE_PRODUCE_CHANGELOG =
             key("delete.force-produce-changelog")
                     .booleanType()
@@ -3554,6 +3565,21 @@ public class CoreOptions implements Serializable {
         return options.get(DELETION_VECTORS_ENABLED);
     }
 
+    public DvReadMode dvReadMode() {
+        return options.get(DV_READ_MODE);
+    }
+
+    /**
+     * Whether L0 files are visible to readers. True only when deletion vectors are enabled and
+     * {@code deletion-vectors.read-mode} is {@link DvReadMode#FRESHNESS}. Under this mode the
+     * level&gt;0 filter in {@link org.apache.paimon.table.source.DataTableBatchScan} / {@link
+     * org.apache.paimon.table.source.DataTableStreamScan} is skipped, so L0 files flow into the
+     * read path and are merged on read with DV pre-filtering.
+     */
+    public boolean dvFreshnessReadEnabled() {
+        return deletionVectorsEnabled() && dvReadMode() == DvReadMode.FRESHNESS;
+    }
+
     public boolean forceLookup() {
         return options.get(FORCE_LOOKUP);
     }
@@ -4052,6 +4078,34 @@ public class CoreOptions implements Serializable {
 
         public String getValue() {
             return value;
+        }
+    }
+
+    /** Read mode for deletion vector tables. */
+    public enum DvReadMode implements DescribedEnum {
+        PERFORMANCE("performance", "Only read compacted data (level >= 1). Best read performance."),
+        FRESHNESS(
+                "freshness",
+                "Read all levels including level-0 for better data freshness. "
+                        + "Level-0 files will be merged on read with deletion vector pre-filtering. "
+                        + "For LOOKUP streaming reads, this mainly affects the initial full snapshot.");
+
+        private final String value;
+        private final String description;
+
+        DvReadMode(String value, String description) {
+            this.value = value;
+            this.description = description;
+        }
+
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        @Override
+        public InlineElement getDescription() {
+            return text(description);
         }
     }
 
