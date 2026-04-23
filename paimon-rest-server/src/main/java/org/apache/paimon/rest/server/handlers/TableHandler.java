@@ -100,9 +100,12 @@ public class TableHandler implements RouteRegistrar {
         router.get(
                 tableByIdPath,
                 (auth, vars, params, body) -> {
+                    String[] resolvedTableId = {""};
                     RESTResponse response =
                             MetricsHelper.wrapCatalogOp(
-                                    "get_table_by_id", () -> getTableById(vars.get("tableId")));
+                                    "get_table_by_id",
+                                    resolvedTableId,
+                                    () -> getTableById(vars.get("tableId"), resolvedTableId));
                     return new RouteResult(200, response);
                 });
         router.get(
@@ -301,7 +304,7 @@ public class TableHandler implements RouteRegistrar {
         return toGetTableResponse(identifier.getDatabaseName(), table);
     }
 
-    public RESTResponse getTableById(String tableId) throws Exception {
+    public RESTResponse getTableById(String tableId, String[] tableIdHolder) throws Exception {
         LOG.info("Getting table by id: {}", tableId);
         Table table = catalog.getTableById(tableId);
         String dbName = "";
@@ -309,6 +312,7 @@ public class TableHandler implements RouteRegistrar {
             Identifier id = ((FileStoreTable) table).catalogEnvironment().identifier();
             if (id != null) {
                 dbName = id.getDatabaseName();
+                tableIdHolder[0] = id.getFullName();
             }
         }
         return toGetTableResponse(dbName, table);

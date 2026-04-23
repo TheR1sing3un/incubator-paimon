@@ -76,6 +76,38 @@ public class MetricsHelper {
     }
 
     /**
+     * Wraps a catalog operation with metrics collection, using a lazily-resolved table identifier.
+     *
+     * <p>Use this when the table identifier is only known after the callable executes (e.g.,
+     * get_table_by_id resolves UUID to Identifier). The callable should populate {@code
+     * tableIdHolder[0]} during execution. If not populated, defaults to empty string.
+     *
+     * @param opName operation name used as subtag
+     * @param tableIdHolder single-element array; callable populates [0] with the resolved tableId
+     * @param callable the actual catalog call
+     * @return the result of the callable
+     */
+    public static <T> T wrapCatalogOp(String opName, String[] tableIdHolder, Callable<T> callable)
+            throws Exception {
+        long start = System.currentTimeMillis();
+        try {
+            T result = callable.call();
+            String tableId = tableIdHolder[0] != null ? tableIdHolder[0] : "";
+            long duration = System.currentTimeMillis() - start;
+            safePerf(() -> PerfUtil.perfCount(opName, tableId, "catalog_op_total"));
+            safePerf(() -> PerfUtil.perfValue(opName, tableId, "catalog_op_latency", duration));
+            return result;
+        } catch (Exception e) {
+            String tableId = tableIdHolder[0] != null ? tableIdHolder[0] : "";
+            long duration = System.currentTimeMillis() - start;
+            safePerf(() -> PerfUtil.perfCount(opName, tableId, "catalog_op_total"));
+            safePerf(() -> PerfUtil.perfCount(opName, tableId, "catalog_op_error"));
+            safePerf(() -> PerfUtil.perfValue(opName, tableId, "catalog_op_latency", duration));
+            throw e;
+        }
+    }
+
+    /**
      * Wraps a void catalog operation with metrics collection.
      *
      * @param opName operation name used as subtag
@@ -108,6 +140,18 @@ public class MetricsHelper {
     @FunctionalInterface
     public interface RunnableWithException {
         void run() throws Exception;
+    }
+
+    /**
+     * Report a single counter metric with table dimension. Wraps PerfUtil.perfCount with exception
+     * safety.
+     *
+     * @param opName operation name used as subtag
+     * @param tableId table identifier for per-table metrics
+     * @param metricKey metric key (e.g., "commit_conflict_total")
+     */
+    public static void reportCount(String opName, String tableId, String metricKey) {
+        safePerf(() -> PerfUtil.perfCount(opName, tableId, metricKey));
     }
 
     /** Safely execute a perf call, swallowing any exceptions to avoid breaking business logic. */

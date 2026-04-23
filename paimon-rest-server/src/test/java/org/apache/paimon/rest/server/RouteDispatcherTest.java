@@ -138,4 +138,51 @@ class RouteDispatcherTest {
         return new DefaultFullHttpRequest(
                 HttpVersion.HTTP_1_1, method, uri, Unpooled.wrappedBuffer(bytes));
     }
+
+    // ======================== buildRequestSummary tests ========================
+
+    @Test
+    void testBuildRequestSummaryWithJsonBody() {
+        String result =
+                RouteDispatcher.buildRequestSummary(
+                        "{\"name\":\"my_table\",\"options\":{}}", "application_123");
+        assertThat(result)
+                .isEqualTo("{\"appId\":\"application_123\",\"name\":\"my_table\",\"options\":{}}");
+    }
+
+    @Test
+    void testBuildRequestSummaryWithNullBody() {
+        String result = RouteDispatcher.buildRequestSummary(null, "application_123");
+        assertThat(result).isEqualTo("{\"appId\":\"application_123\"}");
+    }
+
+    @Test
+    void testBuildRequestSummaryWithEmptyBody() {
+        String result = RouteDispatcher.buildRequestSummary("", "application_123");
+        assertThat(result).isEqualTo("{\"appId\":\"application_123\"}");
+    }
+
+    @Test
+    void testBuildRequestSummaryWithNonJsonBody() {
+        String result = RouteDispatcher.buildRequestSummary("plain text", "app-001");
+        assertThat(result).isEqualTo("{\"appId\":\"app-001\",\"body\":plain text}");
+    }
+
+    @Test
+    void testBuildRequestSummaryEscapesAppIdWithQuotes() {
+        String result = RouteDispatcher.buildRequestSummary(null, "app\"inject");
+        assertThat(result).isEqualTo("{\"appId\":\"app\\\"inject\"}");
+    }
+
+    @Test
+    void testBuildRequestSummaryEscapesAppIdWithBackslash() {
+        String result = RouteDispatcher.buildRequestSummary(null, "app\\path");
+        assertThat(result).isEqualTo("{\"appId\":\"app\\\\path\"}");
+    }
+
+    @Test
+    void testBuildRequestSummaryUnknownAppId() {
+        String result = RouteDispatcher.buildRequestSummary("{\"name\":\"t\"}", "unknown");
+        assertThat(result).isEqualTo("{\"appId\":\"unknown\",\"name\":\"t\"}");
+    }
 }

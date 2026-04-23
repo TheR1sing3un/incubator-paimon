@@ -210,6 +210,10 @@ public class RESTApi {
                                     .merge(options.toMap()));
             baseHeaders.putAll(extractPrefixMap(options, HEADER_PREFIX));
         }
+        // Ensure client app-id always takes precedence over server /config overrides
+        if (appId != null && !appId.isEmpty()) {
+            baseHeaders.put(RESTCatalogOptions.APP_ID_HEADER, appId);
+        }
         this.restAuthFunction = new RESTAuthFunction(baseHeaders, authProvider);
         this.options = options;
         this.resourcePaths = ResourcePaths.forCatalogProperties(options);

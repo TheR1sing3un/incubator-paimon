@@ -23,6 +23,7 @@ import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.catalog.CatalogFactory;
 import org.apache.paimon.options.Options;
+import org.apache.paimon.rest.RESTCatalogOptions;
 import org.apache.paimon.spark.SparkTable;
 import org.apache.paimon.spark.catalog.SparkBaseCatalog;
 import org.apache.paimon.spark.dataset.model.ConfigResponse;
@@ -194,7 +195,19 @@ public class DatasetCatalog extends SparkBaseCatalog implements SupportsNamespac
         paimonOpts.putAll(userPaimonOpts);
         LOG.info("DatasetCatalog '{}' final paimon options: {}", name, paimonOpts);
 
-        // 3. Create internal Paimon Catalog for loading physical tables
+        // 3. Auto-inject Spark application ID for REST request tracking
+        if (!paimonOpts.containsKey(RESTCatalogOptions.APP_ID_KEY)) {
+            try {
+                String appId = sparkSession.sparkContext().applicationId();
+                if (appId != null && !appId.isEmpty()) {
+                    paimonOpts.put(RESTCatalogOptions.APP_ID_KEY, appId);
+                }
+            } catch (Exception e) {
+                LOG.debug("Failed to resolve Spark application ID for app-id header", e);
+            }
+        }
+
+        // 4. Create internal Paimon Catalog for loading physical tables
         CatalogContext ctx =
                 CatalogContext.create(
                         Options.fromMap(paimonOpts), sparkSession.sessionState().newHadoopConf());

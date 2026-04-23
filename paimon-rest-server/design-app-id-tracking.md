@@ -129,6 +129,7 @@ REST error:    POST /v1/prefix/databases/db/tables/t/commit status=500 ... appId
 | `paimon-api/.../rest/RESTCatalogOptions.java` | 新增内部 `APP_ID_KEY` 常量和 `APP_ID_HEADER` 常量 |
 | `paimon-api/.../rest/RESTApi.java` | 构造函数中将 `app-id` 转换为 `header.X-Paimon-App-Id` |
 | `paimon-spark/.../spark/SparkCatalog.java` | `initialize()` 中自动注入 Spark applicationId |
+| `paimon-spark/.../spark/dataset/DatasetCatalog.java` | `initialize()` 中自动注入 Spark applicationId |
 | `paimon-flink/.../flink/FlinkCatalogFactory.java` | `createCatalog()` 中多级探测 Flink App ID |
 | `paimon-rest-server/.../server/RouteDispatcher.java` | 解析 header，全链路日志、审计、metrics |
 | `paimon-core/.../rest/MockRESTCatalogTest.java` | 客户端 app-id header 注入测试 |

@@ -467,11 +467,12 @@ public class RouteDispatcher {
     private static final int MAX_ERROR_MESSAGE_LENGTH = 2048;
 
     @Nullable
-    private static String buildRequestSummary(@Nullable String body, String appId) {
-        // Inject appId into the request summary JSON
-        String appIdPrefix = "{\"appId\":\"" + appId + "\",";
+    static String buildRequestSummary(@Nullable String body, String appId) {
+        // Escape appId for safe JSON embedding
+        String escapedAppId = appId.replace("\\", "\\\\").replace("\"", "\\\"");
+        String appIdPrefix = "{\"appId\":\"" + escapedAppId + "\",";
         if (body == null || body.isEmpty()) {
-            return "{\"appId\":\"" + appId + "\"}";
+            return "{\"appId\":\"" + escapedAppId + "\"}";
         }
         // Merge appId into existing JSON object: replace leading '{' with '{"appId":"xxx",'
         String merged;

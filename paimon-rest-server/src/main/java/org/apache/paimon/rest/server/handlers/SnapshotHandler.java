@@ -34,7 +34,6 @@ import org.apache.paimon.rest.server.RouteRegistrar;
 import org.apache.paimon.rest.server.RouteResult;
 import org.apache.paimon.rest.server.Router;
 import org.apache.paimon.rest.server.utils.MetricsHelper;
-import org.apache.paimon.rest.server.utils.PerfUtil;
 import org.apache.paimon.table.TableSnapshot;
 import org.apache.paimon.utils.JsonSerdeUtil;
 import org.apache.paimon.utils.SnapshotNotExistException;
@@ -50,7 +49,6 @@ import java.util.Optional;
 
 import static org.apache.paimon.rest.server.handlers.HandlerUtils.parseMaxResults;
 import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
-import static org.apache.paimon.rest.server.utils.MetricsHelper.safePerf;
 
 /** Handler for snapshot-related REST endpoints. */
 public class SnapshotHandler implements RouteRegistrar {
@@ -166,7 +164,7 @@ public class SnapshotHandler implements RouteRegistrar {
         // Report commit conflict when success is false (indicates a conflict)
         if (!success) {
             String tableId = identifier.getFullName();
-            safePerf(() -> PerfUtil.perfCount(tableId, "", "commit_conflict_total"));
+            MetricsHelper.reportCount("commit_snapshot", tableId, "commit_conflict_total");
         }
         return new CommitTableResponse(success);
     }
