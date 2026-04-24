@@ -185,6 +185,18 @@ public interface ReadBuilder extends Serializable {
      */
     ReadBuilder withAccelerateIndexSearch(AccelerateIndexSearch search);
 
+    /**
+     * Plan splits for accelerate index search (vector or text).
+     *
+     * <p>Returns search-aware splits that can be serialized, cached, and distributed to executors.
+     * After calling this method, {@link #newRead()} will automatically create a search-aware reader
+     * that can process the returned splits.
+     *
+     * @param search the accelerate index search parameters
+     * @return list of search-aware splits ready for distribution
+     */
+    List<Split> planAccelerateIndexSearch(AccelerateIndexSearch search);
+
     /** Delete stats in scan plan result. */
     ReadBuilder dropStats();
 

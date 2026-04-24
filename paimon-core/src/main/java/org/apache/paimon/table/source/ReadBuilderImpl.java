@@ -196,6 +196,12 @@ public class ReadBuilderImpl implements ReadBuilder {
     }
 
     @Override
+    public List<Split> planAccelerateIndexSearch(AccelerateIndexSearch search) {
+        withAccelerateIndexSearch(search);
+        return newScan().plan().splits();
+    }
+
+    @Override
     public TableScan newScan() {
         InnerTableScan tableScan = configureScan(table.newScan());
         if (limit != null) {
