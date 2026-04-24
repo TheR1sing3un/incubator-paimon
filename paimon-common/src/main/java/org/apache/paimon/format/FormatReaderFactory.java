@@ -19,6 +19,7 @@
 package org.apache.paimon.format;
 
 import org.apache.paimon.data.InternalRow;
+import org.apache.paimon.data.columnar.VectorCFReaderContext;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.reader.FileRecordReader;
@@ -53,5 +54,11 @@ public interface FormatReaderFactory {
 
         @Nullable
         RoaringBitmap32 selection();
+
+        /** Context for resolving V2 VectorDescriptors. Null if no vector CF files. */
+        @Nullable
+        default VectorCFReaderContext vectorCFContext() {
+            return null;
+        }
     }
 }

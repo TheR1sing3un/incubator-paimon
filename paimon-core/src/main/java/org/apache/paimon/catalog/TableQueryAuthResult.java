@@ -37,8 +37,6 @@ import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.InternalRowUtils;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
-import org.apache.paimon.shade.org.apache.commons.lang3.StringUtils;
-
 import javax.annotation.Nullable;
 
 import java.io.Serializable;
@@ -90,7 +88,7 @@ public class TableQueryAuthResult implements Serializable {
         if (filter != null && !filter.isEmpty()) {
             List<Predicate> predicates = new ArrayList<>();
             for (String json : filter) {
-                if (StringUtils.isEmpty(json)) {
+                if (json == null || json.isEmpty()) {
                     continue;
                 }
                 Predicate predicate = JsonSerdeUtil.fromJson(json, Predicate.class);
@@ -113,7 +111,7 @@ public class TableQueryAuthResult implements Serializable {
             for (Map.Entry<String, String> e : columnMasking.entrySet()) {
                 String column = e.getKey();
                 String json = e.getValue();
-                if (StringUtils.isEmpty(column) || StringUtils.isEmpty(json)) {
+                if (column == null || column.isEmpty() || json == null || json.isEmpty()) {
                     continue;
                 }
                 Transform transform = JsonSerdeUtil.fromJson(json, Transform.class);

@@ -35,6 +35,8 @@ import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.types.RowKind;
 import org.apache.paimon.utils.UriReader;
 
+import javax.annotation.Nullable;
+
 import java.io.Serializable;
 
 /**
@@ -48,6 +50,7 @@ public final class ColumnarRow implements InternalRow, DataSetters, Serializable
     private RowKind rowKind = RowKind.INSERT;
     private VectorizedColumnBatch vectorizedColumnBatch;
     private FileIO fileIO;
+    @Nullable private VectorCFReaderContext vectorCFContext;
     private int rowId;
 
     public ColumnarRow() {}
@@ -68,6 +71,10 @@ public final class ColumnarRow implements InternalRow, DataSetters, Serializable
 
     public void setFileIO(FileIO fileIO) {
         this.fileIO = fileIO;
+    }
+
+    public void setVectorCFContext(@Nullable VectorCFReaderContext vectorCFContext) {
+        this.vectorCFContext = vectorCFContext;
     }
 
     public VectorizedColumnBatch batch() {
@@ -196,10 +203,32 @@ public final class ColumnarRow implements InternalRow, DataSetters, Serializable
             return null;
         }
         if (fileIO == null) {
-            throw new IllegalStateException("FileIO is null, cannot read vector data from file!");
+            // No FileIO available — return write-path VectorRef for passthrough
+            VectorDescriptor descriptor = VectorDescriptor.deserialize(bytes);
+            return new VectorRef(descriptor);
         }
         VectorDescriptor descriptor = VectorDescriptor.deserialize(bytes);
-        return VectorRef.fromDescriptor(fileIO, descriptor);
+        if (descriptor.bytesPerVector() > 0 && descriptor.dimension() > 0) {
+            // V1 descriptor — has full file path and config inline
+            return VectorRef.fromDescriptor(fileIO, descriptor);
+        }
+        // V2 descriptor — need resolution from VectorCFReaderContext
+        if (vectorCFContext == null) {
+            // No resolver available (e.g., compaction path). Return a write-path VectorRef
+            // that preserves the descriptor for serialization without resolving the vector data.
+            return new VectorRef(descriptor);
+        }
+        String filePath = vectorCFContext.resolveFilePath(descriptor.fileId());
+        if (filePath == null) {
+            throw new IllegalStateException(
+                    "Cannot resolve vector fileId "
+                            + descriptor.fileId()
+                            + ". No matching vector file found in the split.");
+        }
+        descriptor.withResolvedFilePath(filePath);
+        int bpv = vectorCFContext.bytesPerVector(pos);
+        int dim = vectorCFContext.dimension(pos);
+        return VectorRef.fromDescriptor(fileIO, descriptor, bpv, dim);
     }
 
     @Override
@@ -273,6 +302,7 @@ public final class ColumnarRow implements InternalRow, DataSetters, Serializable
         VectorizedColumnBatch vectorizedColumnBatchCopy = vectorizedColumnBatch.copy(vectors);
         ColumnarRow columnarRow = new ColumnarRow(vectorizedColumnBatchCopy, rowId);
         columnarRow.setFileIO(fileIO);
+        columnarRow.setVectorCFContext(vectorCFContext);
         columnarRow.setRowKind(rowKind);
         return columnarRow;
     }

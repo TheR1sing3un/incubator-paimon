@@ -32,9 +32,11 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -160,6 +162,195 @@ public class AccelerateIndexSearchSplitUtils {
                                 bucketPath,
                                 remainingMetas,
                                 remainingDVs);
+                result.add(new SearchUnit(split, null));
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Build VectorCFSearchSplits for a bucket. One split per vector file. No meta reads — the
+     * executor derives index/pkmap paths from vector file names at read time.
+     *
+     * @param vectorColumnName the target vector column name (for filtering by writeCols)
+     */
+    public static List<VectorCFSearchSplit> buildVectorCFSplitsForBucket(
+            long snapshotId,
+            BinaryRow partition,
+            int bucket,
+            String bucketPath,
+            List<DataFileMeta> bucketFiles,
+            Map<String, DeletionFile> dvMap,
+            AccelerateIndexSearch search,
+            int columnId,
+            String vectorColumnName) {
+
+        List<VectorCFSearchSplit> result = new ArrayList<>();
+
+        // Separate scalar files from vector files
+        List<DataFileMeta> scalarFiles = new ArrayList<>();
+        List<DeletionFile> scalarDVs = new ArrayList<>();
+        Set<String> seenVectors = new LinkedHashSet<>();
+
+        for (int i = 0; i < bucketFiles.size(); i++) {
+            DataFileMeta f = bucketFiles.get(i);
+            if (f.isVectorCFFile()
+                    && f.writeCols() != null
+                    && f.writeCols().contains(vectorColumnName)
+                    && seenVectors.add(f.fileName())) {
+                // Will create a split for this vector file below
+            } else if (!f.isVectorCFFile() && f.level() >= 1) {
+                // Only include L1+ scalar files — consistent with AccelerateIndex search which
+                // uses withLevelFilter(level -> level >= 1). L0 scalar files contain uncompacted
+                // data that may have stale/duplicate values for the same PK.
+                scalarFiles.add(f);
+                scalarDVs.add(dvMap.get(f.fileName()));
+            }
+        }
+
+        if (scalarFiles.isEmpty()) {
+            return result;
+        }
+
+        // One split per vector file. Use unmodifiable views since all splits share the same lists.
+        List<DataFileMeta> sharedScalarFiles = Collections.unmodifiableList(scalarFiles);
+        List<DeletionFile> dvList =
+                scalarDVs.stream().anyMatch(Objects::nonNull)
+                        ? Collections.unmodifiableList(scalarDVs)
+                        : null;
+        for (String vectorFileName : seenVectors) {
+            result.add(
+                    new VectorCFSearchSplit(
+                            vectorFileName,
+                            sharedScalarFiles,
+                            dvList,
+                            search,
+                            columnId,
+                            partition,
+                            bucket,
+                            bucketPath,
+                            snapshotId));
+        }
+
+        return result;
+    }
+
+    /**
+     * (identified by {@link DataFileMeta#isVectorCFFile()} with matching writeCols). The DataSplit
+     * in each SearchUnit contains only scalar files, while the entry's dataFiles reference vector
+     * files.
+     *
+     * @param vectorColumnName the target vector column name (for filtering by writeCols)
+     */
+    public static List<SearchUnit> buildSearchUnitsForBucketVectorCF(
+            long snapshotId,
+            BinaryRow partition,
+            int bucket,
+            String bucketPath,
+            List<DataFileMeta> bucketFiles,
+            Map<String, DeletionFile> dvMap,
+            FileIO fileIO,
+            int columnId,
+            String algorithm,
+            String vectorColumnName,
+            boolean emitUncoveredSplits)
+            throws Exception {
+
+        List<SearchUnit> result = new ArrayList<>();
+
+        // Separate scalar files from vector files
+        List<DataFileMeta> scalarFiles = new ArrayList<>();
+        Map<String, DataFileMeta> vectorFileMap = new LinkedHashMap<>();
+        for (DataFileMeta f : bucketFiles) {
+            if (f.isVectorCFFile()
+                    && f.writeCols() != null
+                    && f.writeCols().contains(vectorColumnName)) {
+                vectorFileMap.put(f.fileName(), f);
+            } else if (!f.isVectorCFFile() && f.level() >= 1) {
+                // Only include L1+ scalar files — consistent with AccelerateIndex search
+                scalarFiles.add(f);
+            }
+        }
+
+        if (scalarFiles.isEmpty()) {
+            return result;
+        }
+
+        // Read meta and find entries matching vector files
+        Path metaPath = new Path(bucketPath, AccelerateIndexConstants.META_FILE_NAME);
+        AccelerateIndexMeta meta = AccelerateIndexMetaIO.readOrEmpty(fileIO, metaPath);
+        List<AccelerateIndexEntry> readyEntries =
+                findAllReadyEntries(meta, columnId, algorithm, snapshotId);
+
+        Set<String> coveredVectorFiles = new HashSet<>();
+
+        // Build the scalar split (ALL scalar files + vector files for resolution)
+        List<DeletionFile> scalarDVs = new ArrayList<>();
+        for (DataFileMeta f : scalarFiles) {
+            scalarDVs.add(dvMap.get(f.fileName()));
+        }
+
+        // Include vector files in the split for VectorCFReaderContext resolution
+        List<DataFileMeta> allFilesForSplit = new ArrayList<>(scalarFiles);
+        allFilesForSplit.addAll(vectorFileMap.values());
+        List<DeletionFile> allDVs = new ArrayList<>(scalarDVs);
+        for (int i = 0; i < vectorFileMap.size(); i++) {
+            allDVs.add(null); // vector files have no DV
+        }
+
+        // Match entries to vector files
+        for (AccelerateIndexEntry entry : readyEntries) {
+            boolean allFound = true;
+            for (AccelerateIndexDataFileInfo info : entry.dataFiles()) {
+                if (!vectorFileMap.containsKey(info.file())
+                        || coveredVectorFiles.contains(info.file())) {
+                    allFound = false;
+                    break;
+                }
+            }
+
+            if (allFound) {
+                for (AccelerateIndexDataFileInfo info : entry.dataFiles()) {
+                    coveredVectorFiles.add(info.file());
+                }
+
+                DataSplit split =
+                        buildSplit(
+                                snapshotId,
+                                partition,
+                                bucket,
+                                bucketPath,
+                                allFilesForSplit,
+                                allDVs);
+                result.add(new SearchUnit(split, entry));
+            }
+        }
+
+        // Uncovered vector files → brute force
+        if (emitUncoveredSplits) {
+            List<DataFileMeta> uncoveredVectors = new ArrayList<>();
+            for (Map.Entry<String, DataFileMeta> e : vectorFileMap.entrySet()) {
+                if (!coveredVectorFiles.contains(e.getKey())) {
+                    uncoveredVectors.add(e.getValue());
+                }
+            }
+            if (!uncoveredVectors.isEmpty()) {
+                // Build split with scalar files + only uncovered vector files
+                List<DataFileMeta> uncoveredSplitFiles = new ArrayList<>(scalarFiles);
+                uncoveredSplitFiles.addAll(uncoveredVectors);
+                List<DeletionFile> uncoveredDVs = new ArrayList<>(scalarDVs);
+                for (int i = 0; i < uncoveredVectors.size(); i++) {
+                    uncoveredDVs.add(null);
+                }
+                DataSplit split =
+                        buildSplit(
+                                snapshotId,
+                                partition,
+                                bucket,
+                                bucketPath,
+                                uncoveredSplitFiles,
+                                uncoveredDVs);
                 result.add(new SearchUnit(split, null));
             }
         }

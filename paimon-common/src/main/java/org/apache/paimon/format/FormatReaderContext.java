@@ -18,6 +18,7 @@
 
 package org.apache.paimon.format;
 
+import org.apache.paimon.data.columnar.VectorCFReaderContext;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.reader.RecordReader;
@@ -32,6 +33,7 @@ public class FormatReaderContext implements FormatReaderFactory.Context {
     private final Path file;
     private final long fileSize;
     @Nullable private final RoaringBitmap32 selection;
+    @Nullable private VectorCFReaderContext vectorCFContext;
 
     public FormatReaderContext(FileIO fileIO, Path file, long fileSize) {
         this(fileIO, file, fileSize, null);
@@ -43,6 +45,12 @@ public class FormatReaderContext implements FormatReaderFactory.Context {
         this.file = file;
         this.fileSize = fileSize;
         this.selection = selection;
+    }
+
+    public FormatReaderContext withVectorCFContext(
+            @Nullable VectorCFReaderContext vectorCFContext) {
+        this.vectorCFContext = vectorCFContext;
+        return this;
     }
 
     @Override
@@ -64,5 +72,11 @@ public class FormatReaderContext implements FormatReaderFactory.Context {
     @Override
     public RoaringBitmap32 selection() {
         return selection;
+    }
+
+    @Nullable
+    @Override
+    public VectorCFReaderContext vectorCFContext() {
+        return vectorCFContext;
     }
 }

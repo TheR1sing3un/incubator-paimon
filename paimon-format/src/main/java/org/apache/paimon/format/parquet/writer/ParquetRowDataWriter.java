@@ -20,6 +20,7 @@ package org.apache.paimon.format.parquet.writer;
 
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.data.BinaryString;
+import org.apache.paimon.data.BinaryVector;
 import org.apache.paimon.data.Blob;
 import org.apache.paimon.data.BlobDescriptor;
 import org.apache.paimon.data.InternalArray;
@@ -27,6 +28,7 @@ import org.apache.paimon.data.InternalMap;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.data.InternalVector;
 import org.apache.paimon.data.Timestamp;
+import org.apache.paimon.data.VectorDescriptor;
 import org.apache.paimon.data.VectorRef;
 import org.apache.paimon.data.variant.GenericVariant;
 import org.apache.paimon.data.variant.PaimonShreddingUtils;
@@ -361,6 +363,19 @@ public class ParquetRowDataWriter {
             if (vec instanceof VectorRef) {
                 recordConsumer.addBinary(
                         Binary.fromReusedByteArray(((VectorRef) vec).toDescriptorBytes()));
+            } else if (vec instanceof BinaryVector) {
+                // Compaction path: BinaryRow.getVector() returns BinaryVector wrapping
+                // the VectorDescriptor bytes. Extract and pass through.
+                byte[] bytes = ((BinaryVector) vec).toBytes();
+                if (VectorDescriptor.isVectorDescriptor(bytes)) {
+                    recordConsumer.addBinary(Binary.fromReusedByteArray(bytes));
+                } else {
+                    throw new IllegalArgumentException(
+                            "vector-column-family requires vector field to contain a "
+                                    + "VectorDescriptor, but found raw BinaryVector data ("
+                                    + bytes.length
+                                    + " bytes)");
+                }
             } else {
                 throw new IllegalArgumentException(
                         "vector-column-family requires vector field to be a VectorRef, "

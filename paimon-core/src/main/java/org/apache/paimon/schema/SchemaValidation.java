@@ -681,11 +681,6 @@ public class SchemaValidation {
                         + "Either add VectorType columns or configure 'vector-column-family.columns'.");
 
         checkArgument(
-                vectorColumns.size() == 1,
-                "Vector column family currently supports only one vector column, but found %s.",
-                vectorColumns.size());
-
-        checkArgument(
                 options.dataFileExternalPaths() == null,
                 "Vector column family does not support external paths (data-file.external-paths).");
 

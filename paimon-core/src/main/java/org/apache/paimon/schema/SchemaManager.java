@@ -70,6 +70,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
 import java.util.function.Function;
@@ -547,6 +548,11 @@ public class SchemaManager implements Serializable {
             }
         }
 
+        // Auto-convert ArrayType columns to VectorType when configured as vector-field.
+        // This supports the ALTER TABLE flow: ADD COLUMN (ArrayType) + SET TBLPROPERTIES
+        // (vector-field) in either order.
+        resolveVectorFieldTypes(newFields, newOptions);
+
         // We change TableSchema to Schema, because we want to deal with primary-key and
         // partition in options.
         Schema newSchema =
@@ -567,6 +573,43 @@ public class SchemaManager implements Serializable {
                 newSchema.primaryKeys(),
                 newSchema.options(),
                 newSchema.comment());
+    }
+
+    /**
+     * Auto-convert ArrayType columns to VectorType when configured as vector-field. This supports
+     * the ALTER TABLE flow where ADD COLUMN creates ArrayType first, then SET TBLPROPERTIES marks
+     * it as a vector field.
+     */
+    private static void resolveVectorFieldTypes(
+            List<DataField> fields, Map<String, String> options) {
+        Set<String> vectorFields = CoreOptions.vectorField(options);
+        if (vectorFields.isEmpty()) {
+            return;
+        }
+        for (int i = 0; i < fields.size(); i++) {
+            DataField field = fields.get(i);
+            if (vectorFields.contains(field.name())
+                    && field.type() instanceof org.apache.paimon.types.ArrayType) {
+                String dimKey = String.format("field.%s.vector-dim", field.name());
+                String dimVal = options.get(dimKey);
+                if (dimVal != null && !dimVal.trim().isEmpty()) {
+                    try {
+                        int dim = Integer.parseInt(dimVal.trim());
+                        org.apache.paimon.types.DataType elementType =
+                                ((org.apache.paimon.types.ArrayType) field.type()).getElementType();
+                        org.apache.paimon.types.VectorType vectorType =
+                                new org.apache.paimon.types.VectorType(
+                                        field.type().isNullable(), dim, elementType);
+                        fields.set(
+                                i,
+                                new DataField(
+                                        field.id(), field.name(), vectorType, field.description()));
+                    } catch (NumberFormatException ignored) {
+                        // invalid dim, let validation catch it later
+                    }
+                }
+            }
+        }
     }
 
     // gets the rootType at the defined depth

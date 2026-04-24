@@ -47,6 +47,12 @@ public class ColumnarRowIterator extends RecyclableIterator<InternalRow>
 
     protected int num;
     protected int index;
+
+    /** Get the underlying ColumnarRow for context injection. */
+    public ColumnarRow getColumnarRow() {
+        return row;
+    }
+
     protected int returnedPositionIndex;
     protected long returnedPosition;
     protected LongIterator positionIterator;

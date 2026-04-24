@@ -552,8 +552,19 @@ public class FileStoreCommitImpl implements FileStoreCommit {
             }
         }
 
-        Map<Pair<BinaryRow, Integer>, List<ManifestEntry>> buckets = new HashMap<>();
+        // Separate vector CF files — they must not participate in key-range upgrade
+        List<ManifestEntry> vectorCFEntries = new ArrayList<>();
+        List<ManifestEntry> scalarEntries = new ArrayList<>();
         for (ManifestEntry entry : appendFiles) {
+            if (entry.file().isVectorCFFile()) {
+                vectorCFEntries.add(entry);
+            } else {
+                scalarEntries.add(entry);
+            }
+        }
+
+        Map<Pair<BinaryRow, Integer>, List<ManifestEntry>> buckets = new HashMap<>();
+        for (ManifestEntry entry : scalarEntries) {
             buckets.computeIfAbsent(
                             Pair.of(entry.partition(), entry.bucket()), k -> new ArrayList<>())
                     .add(entry);
@@ -579,6 +590,8 @@ public class FileStoreCommitImpl implements FileStoreCommit {
             }
         }
 
+        // Re-add vector CF entries (unchanged, not upgraded)
+        results.addAll(vectorCFEntries);
         return results;
     }
 

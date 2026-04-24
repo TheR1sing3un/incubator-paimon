@@ -2453,6 +2453,14 @@ public class CoreOptions implements Serializable {
                     .defaultValue(MemorySize.ofMebiBytes(128))
                     .withDescription("Target size of a vector column family file.");
 
+    public static final ConfigOption<Long> VECTOR_COLUMN_FAMILY_TARGET_FILE_ROWS =
+            key("vector-column-family.target-file-rows")
+                    .longType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Target row count of a vector column family file. "
+                                    + "When set, target-file-size is ignored.");
+
     private final Options options;
 
     public CoreOptions(Map<String, String> options) {
@@ -3845,7 +3853,15 @@ public class CoreOptions implements Serializable {
     }
 
     public long vectorColumnFamilyTargetFileSize() {
+        // When target-file-rows is set, size-based limit is disabled
+        if (options.getOptional(VECTOR_COLUMN_FAMILY_TARGET_FILE_ROWS).isPresent()) {
+            return -1;
+        }
         return options.get(VECTOR_COLUMN_FAMILY_TARGET_FILE_SIZE).getBytes();
+    }
+
+    public long vectorColumnFamilyTargetFileRows() {
+        return options.getOptional(VECTOR_COLUMN_FAMILY_TARGET_FILE_ROWS).orElse(-1L);
     }
 
     /** Specifies the merge engine for table with primary key. */

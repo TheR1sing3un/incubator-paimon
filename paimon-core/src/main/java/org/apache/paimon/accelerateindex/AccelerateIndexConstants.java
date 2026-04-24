@@ -32,7 +32,23 @@ public final class AccelerateIndexConstants {
     /** Pattern for index file name: {@code <prefix>.aix.c<columnId>.<algorithm>.aindex}. */
     public static final String INDEX_FILE_PATTERN = ".aix.c%d.%s.aindex";
 
+    public static final String PKMAP_FILE_SUFFIX = ".pkmap";
+
+    /** Pattern for pkmap file name: {@code <prefix>.aix.c<columnId>.<algorithm>.pkmap}. */
+    public static final String PKMAP_FILE_PATTERN = ".aix.c%d.%s.pkmap";
+
+    public static final String PKMAP_TEMP_SUFFIX = ".pkmap.tmp.";
+
     public static String indexFileName(String prefix, int columnId, String algorithm) {
         return prefix + String.format(INDEX_FILE_PATTERN, columnId, algorithm);
+    }
+
+    public static String pkmapFileName(String prefix, int columnId, String algorithm) {
+        return prefix + String.format(PKMAP_FILE_PATTERN, columnId, algorithm);
+    }
+
+    /** Pkmap sidecar file name for sync-written pkmap (vector file → .pkmap). */
+    public static String pkmapSidecarName(String vectorFileName) {
+        return vectorFileName + ".pkmap";
     }
 }

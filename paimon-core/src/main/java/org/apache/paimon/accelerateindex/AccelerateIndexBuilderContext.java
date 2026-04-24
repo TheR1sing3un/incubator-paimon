@@ -20,6 +20,8 @@ package org.apache.paimon.accelerateindex;
 
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
+import org.apache.paimon.io.DataFileMeta;
+import org.apache.paimon.types.RowType;
 
 import javax.annotation.Nullable;
 
@@ -44,6 +46,8 @@ public class AccelerateIndexBuilderContext {
     @Nullable private final ArrayColumnReader.Factory arrayReaderFactory;
     private final int minValidRows;
     private final double minValidRatio;
+    @Nullable private final RowType pkRowType;
+    @Nullable private final java.util.List<DataFileMeta> scalarFiles;
 
     /**
      * Generic constructor for all algorithms. Algorithm-specific parameters (metric, dim, field
@@ -68,6 +72,8 @@ public class AccelerateIndexBuilderContext {
         this.arrayReaderFactory = arrayReaderFactory;
         this.minValidRows = minValidRows;
         this.minValidRatio = minValidRatio;
+        this.pkRowType = null;
+        this.scalarFiles = null;
     }
 
     /**
@@ -182,6 +188,53 @@ public class AccelerateIndexBuilderContext {
     /** Minimum ratio of valid rows to total rows required to build the index. Default: 0.0. */
     public double minValidRatio() {
         return minValidRatio;
+    }
+
+    /** PK row type for pkmap generation. Null for non-vector-cf builds. */
+    @Nullable
+    public RowType pkRowType() {
+        return pkRowType;
+    }
+
+    /** Scalar files for pkmap generation. Null for non-vector-cf builds. */
+    @Nullable
+    public java.util.List<DataFileMeta> scalarFiles() {
+        return scalarFiles;
+    }
+
+    /** Create a copy with pkRowType and scalarFiles set (for vector-cf pkmap generation). */
+    public AccelerateIndexBuilderContext withPkMap(
+            RowType pkRowType, java.util.List<DataFileMeta> scalarFiles) {
+        AccelerateIndexBuilderContext copy =
+                new AccelerateIndexBuilderContext(
+                        fileIO,
+                        bucketPath,
+                        columnId,
+                        dataFiles,
+                        options,
+                        vectorReaderFactory,
+                        arrayReaderFactory,
+                        minValidRows,
+                        minValidRatio);
+        return new AccelerateIndexBuilderContext(copy, pkRowType, scalarFiles);
+    }
+
+    /** Internal constructor with pkMap fields. */
+    private AccelerateIndexBuilderContext(
+            AccelerateIndexBuilderContext base,
+            @Nullable RowType pkRowType,
+            @Nullable java.util.List<DataFileMeta> scalarFiles) {
+        this.fileIO = base.fileIO;
+        this.bucketPath = base.bucketPath;
+        this.columnId = base.columnId;
+        this.dataFiles = base.dataFiles;
+        this.options = base.options;
+        this.vectorReaderFactory = base.vectorReaderFactory;
+        this.arrayReaderFactory = base.arrayReaderFactory;
+        this.minValidRows = base.minValidRows;
+        this.minValidRatio = base.minValidRatio;
+        this.pkRowType = pkRowType;
+        this.scalarFiles = scalarFiles;
     }
 
     @Override

@@ -18,168 +18,214 @@
 
 package org.apache.paimon.data;
 
+import javax.annotation.Nullable;
+
 import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
-import static java.nio.charset.StandardCharsets.UTF_8;
-
 /**
  * Descriptor that points to vector data stored in a separate Vector column family file.
  *
- * <p>Used in PK tables with vector column family separation. The main scalar file stores this
- * descriptor in the column instead of the actual vector data, while the vector data is written to
- * an append-only vector file as raw bytes.
+ * <p>Supports two serialization versions:
  *
- * <p>The vector file is a flat binary file containing concatenated raw vector bytes with no header.
- * Each vector occupies exactly {@code bytesPerVector} bytes. Random access formula: {@code
- * seek(rowIndex * bytesPerVector)}, {@code read(bytesPerVector)}.
- *
- * <p>Memory Layout Description: All multi-byte numerical values (int/long) are stored using Little
- * Endian byte order.
- *
- * <pre>
- * | Offset | Field Name      | Type      | Size |
- * |--------|-----------------|-----------|------|
- * | 0      | version         | byte      | 1    |
- * | 1      | magicNumber     | long      | 8    |
- * | 9      | filePathLength  | int       | 4    |
- * | 13     | filePathBytes   | byte[N]   | N    |
- * | 13 + N | rowIndex        | long      | 8    |
- * | 21 + N | bytesPerVector  | int       | 4    |
- * | 25 + N | dimension       | int       | 4    |
- * </pre>
+ * <ul>
+ *   <li><b>V1 (legacy)</b>: stores full file path string — {@code version(1) + magic(8) +
+ *       filePathLen(4) + filePath(N) + rowIndex(8) + bytesPerVector(4) + dimension(4)} = 29+N bytes
+ *   <li><b>V2 (compact)</b>: stores fileId (fileName hashCode) — {@code version(1) + magic(8) +
+ *       fileId(4) + rowIndex(8)} = 21 bytes. {@code bytesPerVector} and {@code dimension} are
+ *       table-level config, not stored per row.
+ * </ul>
  */
 public class VectorDescriptor implements Serializable {
 
-    private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 2L;
     private static final long MAGIC = 0x5645435F50545200L;
-    private static final byte CURRENT_VERSION = 1;
+    private static final byte VERSION_1 = 1;
+    private static final byte VERSION_2 = 2;
+    private static final byte CURRENT_VERSION = VERSION_2;
 
-    private final byte version;
-    private final String filePath;
+    /** V2 field: hashCode of the vector file name. */
+    private final int fileId;
+
+    /** Row index within the vector file. */
     private final long rowIndex;
+
+    /**
+     * Resolved file path. Set during write (known at creation) or during read (resolved from
+     * manifest via fileId). Null if not yet resolved (V2 deserialized without resolver).
+     */
+    @Nullable private transient String resolvedFilePath;
+
+    // V1 legacy fields (only populated when deserializing V1 format)
     private final int bytesPerVector;
     private final int dimension;
 
-    public VectorDescriptor(String filePath, long rowIndex, int bytesPerVector, int dimension) {
-        this(CURRENT_VERSION, filePath, rowIndex, bytesPerVector, dimension);
+    /** V2 constructor: compact format with fileId. */
+    public VectorDescriptor(int fileId, long rowIndex) {
+        this.fileId = fileId;
+        this.rowIndex = rowIndex;
+        this.resolvedFilePath = null;
+        this.bytesPerVector = 0;
+        this.dimension = 0;
     }
 
+    /** Create from full file path (computes fileId from fileName, stores resolved path). */
+    public static VectorDescriptor fromFilePath(
+            String filePath, long rowIndex, int bytesPerVector, int dimension) {
+        String fileName = filePath.substring(filePath.lastIndexOf('/') + 1);
+        return new VectorDescriptor(
+                fileName.hashCode(), rowIndex, filePath, bytesPerVector, dimension);
+    }
+
+    /** Internal constructor with all fields. */
     private VectorDescriptor(
-            byte version, String filePath, long rowIndex, int bytesPerVector, int dimension) {
-        this.version = version;
-        this.filePath = filePath;
+            int fileId,
+            long rowIndex,
+            @Nullable String resolvedFilePath,
+            int bytesPerVector,
+            int dimension) {
+        this.fileId = fileId;
         this.rowIndex = rowIndex;
+        this.resolvedFilePath = resolvedFilePath;
         this.bytesPerVector = bytesPerVector;
         this.dimension = dimension;
     }
 
-    public String filePath() {
-        return filePath;
+    /** V1 legacy constructor for backward compatibility. */
+    public VectorDescriptor(String filePath, long rowIndex, int bytesPerVector, int dimension) {
+        String fileName = filePath.substring(filePath.lastIndexOf('/') + 1);
+        this.fileId = fileName.hashCode();
+        this.rowIndex = rowIndex;
+        this.resolvedFilePath = filePath;
+        this.bytesPerVector = bytesPerVector;
+        this.dimension = dimension;
+    }
+
+    public int fileId() {
+        return fileId;
     }
 
     public long rowIndex() {
         return rowIndex;
     }
 
+    /**
+     * Get the resolved file path. Must be set via {@link #withResolvedFilePath} for V2 descriptors
+     * deserialized without a resolver.
+     */
+    public String filePath() {
+        if (resolvedFilePath == null) {
+            throw new IllegalStateException(
+                    "VectorDescriptor filePath not resolved. Call withResolvedFilePath() first. fileId="
+                            + fileId);
+        }
+        return resolvedFilePath;
+    }
+
+    /** V1 legacy: bytes per vector. For V2, this comes from table config. */
     public int bytesPerVector() {
         return bytesPerVector;
     }
 
+    /** V1 legacy: vector dimension. For V2, this comes from table config. */
     public int dimension() {
         return dimension;
     }
 
-    @Override
-    public boolean equals(Object o) {
-        if (o == null || getClass() != o.getClass()) {
-            return false;
-        }
-        VectorDescriptor that = (VectorDescriptor) o;
-        return version == that.version
-                && rowIndex == that.rowIndex
-                && bytesPerVector == that.bytesPerVector
-                && dimension == that.dimension
-                && Objects.equals(filePath, that.filePath);
+    /** Set the resolved file path (for V2 read path). Returns this for chaining. */
+    public VectorDescriptor withResolvedFilePath(String filePath) {
+        this.resolvedFilePath = filePath;
+        return this;
     }
 
-    @Override
-    public int hashCode() {
-        return Objects.hash(version, filePath, rowIndex, bytesPerVector, dimension);
-    }
-
-    @Override
-    public String toString() {
-        return "VectorDescriptor{"
-                + "version="
-                + version
-                + ", filePath='"
-                + filePath
-                + '\''
-                + ", rowIndex="
-                + rowIndex
-                + ", bytesPerVector="
-                + bytesPerVector
-                + ", dimension="
-                + dimension
-                + '}';
-    }
+    // ---- Serialization: V2 format (compact, 21 bytes) ----
 
     public byte[] serialize() {
-        byte[] filePathBytes = filePath.getBytes(UTF_8);
-        int filePathLength = filePathBytes.length;
-
-        // 1 + 8 + 4 + N + 8 + 4 + 4 = 29 + N
-        int totalSize = 1 + 8 + 4 + filePathLength + 8 + 4 + 4;
-        ByteBuffer buffer = ByteBuffer.allocate(totalSize);
+        // V2: version(1) + magic(8) + fileId(4) + rowIndex(8) = 21 bytes
+        ByteBuffer buffer = ByteBuffer.allocate(21);
         buffer.order(ByteOrder.LITTLE_ENDIAN);
-
-        buffer.put(version);
+        buffer.put(CURRENT_VERSION);
         buffer.putLong(MAGIC);
-        buffer.putInt(filePathLength);
-        buffer.put(filePathBytes);
+        buffer.putInt(fileId);
         buffer.putLong(rowIndex);
-        buffer.putInt(bytesPerVector);
-        buffer.putInt(dimension);
-
         return buffer.array();
     }
 
+    /**
+     * Deserialize from bytes. Supports both V1 (full path) and V2 (fileId) formats. For V2, the
+     * filePath is not resolved — call {@link #withResolvedFilePath} before accessing {@link
+     * #filePath()}.
+     */
     public static VectorDescriptor deserialize(byte[] bytes) {
         ByteBuffer buffer = ByteBuffer.wrap(bytes);
         buffer.order(ByteOrder.LITTLE_ENDIAN);
 
         byte version = buffer.get();
-        if (version > CURRENT_VERSION) {
-            throw new UnsupportedOperationException(
-                    "Expecting VectorDescriptor version to be less than or equal to "
-                            + CURRENT_VERSION
-                            + ", but found "
-                            + version
-                            + ".");
-        }
-
         long magic = buffer.getLong();
         if (MAGIC != magic) {
             throw new IllegalArgumentException(
-                    "Invalid VectorDescriptor: missing magic header. Expected magic: "
+                    "Invalid VectorDescriptor: missing magic header. Expected: "
                             + MAGIC
-                            + ", but found: "
+                            + ", found: "
                             + magic);
         }
 
-        int filePathLength = buffer.getInt();
-        byte[] filePathBytes = new byte[filePathLength];
-        buffer.get(filePathBytes);
-        String filePath = new String(filePathBytes, StandardCharsets.UTF_8);
+        if (version == VERSION_1) {
+            // V1: filePathLen(4) + filePath(N) + rowIndex(8) + bytesPerVector(4) + dimension(4)
+            int filePathLength = buffer.getInt();
+            byte[] filePathBytes = new byte[filePathLength];
+            buffer.get(filePathBytes);
+            String filePath = new String(filePathBytes, StandardCharsets.UTF_8);
+            long rowIndex = buffer.getLong();
+            int bytesPerVector = buffer.getInt();
+            int dimension = buffer.getInt();
+            return new VectorDescriptor(filePath, rowIndex, bytesPerVector, dimension);
+        } else if (version == VERSION_2) {
+            // V2: fileId(4) + rowIndex(8)
+            int fileId = buffer.getInt();
+            long rowIndex = buffer.getLong();
+            return new VectorDescriptor(fileId, rowIndex);
+        } else {
+            throw new UnsupportedOperationException(
+                    "Unsupported VectorDescriptor version: " + version);
+        }
+    }
 
-        long rowIndex = buffer.getLong();
-        int bytesPerVector = buffer.getInt();
-        int dimension = buffer.getInt();
-        return new VectorDescriptor(version, filePath, rowIndex, bytesPerVector, dimension);
+    /** Extract fileId from serialized bytes without full deserialization. */
+    public static int extractFileId(byte[] bytes) {
+        ByteBuffer buffer = ByteBuffer.wrap(bytes);
+        buffer.order(ByteOrder.LITTLE_ENDIAN);
+        byte version = buffer.get();
+        buffer.getLong(); // skip magic
+        if (version == VERSION_1) {
+            int filePathLength = buffer.getInt();
+            byte[] filePathBytes = new byte[filePathLength];
+            buffer.get(filePathBytes);
+            String filePath = new String(filePathBytes, StandardCharsets.UTF_8);
+            String fileName = filePath.substring(filePath.lastIndexOf('/') + 1);
+            return fileName.hashCode();
+        } else {
+            return buffer.getInt();
+        }
+    }
+
+    /** Extract rowIndex from serialized bytes without full deserialization. */
+    public static long extractRowIndex(byte[] bytes) {
+        ByteBuffer buffer = ByteBuffer.wrap(bytes);
+        buffer.order(ByteOrder.LITTLE_ENDIAN);
+        byte version = buffer.get();
+        buffer.getLong(); // skip magic
+        if (version == VERSION_1) {
+            int filePathLength = buffer.getInt();
+            buffer.position(buffer.position() + filePathLength); // skip filePath
+            return buffer.getLong();
+        } else {
+            buffer.getInt(); // skip fileId
+            return buffer.getLong();
+        }
     }
 
     public static boolean isVectorDescriptor(byte[] bytes) {
@@ -188,11 +234,36 @@ public class VectorDescriptor implements Serializable {
         }
         ByteBuffer buffer = ByteBuffer.wrap(bytes);
         buffer.order(ByteOrder.LITTLE_ENDIAN);
-
         byte version = buffer.get();
-        if (version > CURRENT_VERSION) {
+        if (version < VERSION_1 || version > CURRENT_VERSION) {
             return false;
         }
         return MAGIC == buffer.getLong();
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+        VectorDescriptor that = (VectorDescriptor) o;
+        return fileId == that.fileId && rowIndex == that.rowIndex;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(fileId, rowIndex);
+    }
+
+    @Override
+    public String toString() {
+        return "VectorDescriptor{"
+                + "fileId="
+                + fileId
+                + ", rowIndex="
+                + rowIndex
+                + ", resolvedFilePath="
+                + resolvedFilePath
+                + '}';
     }
 }

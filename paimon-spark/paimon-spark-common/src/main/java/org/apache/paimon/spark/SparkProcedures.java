@@ -21,6 +21,7 @@ package org.apache.paimon.spark;
 import org.apache.paimon.spark.procedure.AlterFunctionProcedure;
 import org.apache.paimon.spark.procedure.AlterViewDialectProcedure;
 import org.apache.paimon.spark.procedure.BuildAccelerateIndexProcedure;
+import org.apache.paimon.spark.procedure.BuildPkMapProcedure;
 import org.apache.paimon.spark.procedure.ClearConsumersProcedure;
 import org.apache.paimon.spark.procedure.CompactDatabaseProcedure;
 import org.apache.paimon.spark.procedure.CompactManifestProcedure;
@@ -129,6 +130,7 @@ public class SparkProcedures {
         procedureBuilders.put("rewrite_file_index", RewriteFileIndexProcedure::builder);
         procedureBuilders.put("copy", CopyFilesProcedure::builder);
         procedureBuilders.put("build_accelerate_index", BuildAccelerateIndexProcedure::builder);
+        procedureBuilders.put("build_pkmap", BuildPkMapProcedure::builder);
         procedureBuilders.put("search_accelerate_index", SearchAccelerateIndexProcedure::builder);
         procedureBuilders.put("search_text_index", SearchTextIndexProcedure::builder);
         procedureBuilders.put(

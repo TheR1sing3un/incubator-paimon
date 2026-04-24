@@ -19,7 +19,9 @@
 package org.apache.paimon.table.source.snapshot;
 
 import org.apache.paimon.Snapshot;
+import org.apache.paimon.accelerateindex.AccelerateIndexSearch;
 import org.apache.paimon.accelerateindex.AccelerateIndexSearchSplitUtils.SearchUnit;
+import org.apache.paimon.accelerateindex.VectorCFSearchSplit;
 import org.apache.paimon.consumer.ConsumerManager;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.manifest.BucketEntry;
@@ -152,6 +154,16 @@ public interface SnapshotReader {
             int columnId, String algorithm, boolean emitUncoveredSplits) throws Exception {
         throw new UnsupportedOperationException(
                 "readForAccelerateIndex is not supported by this SnapshotReader implementation");
+    }
+
+    /**
+     * Read vector-cf search splits. No meta file reads — one split per vector file. The executor
+     * derives index/pkmap paths from vector file names.
+     */
+    default List<VectorCFSearchSplit> readForVectorCFSearch(
+            AccelerateIndexSearch search, int columnId, String vectorColumnName) throws Exception {
+        throw new UnsupportedOperationException(
+                "readForVectorCFSearch is not supported by this SnapshotReader implementation");
     }
 
     /** Result plan of this scan. */

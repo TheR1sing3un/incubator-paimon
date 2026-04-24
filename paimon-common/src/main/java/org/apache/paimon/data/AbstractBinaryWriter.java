@@ -95,8 +95,15 @@ abstract class AbstractBinaryWriter implements BinaryWriter {
     @Override
     public void writeVector(int pos, InternalVector input, InternalVectorSerializer serializer) {
         if (input instanceof VectorRef) {
+            // VCF mode: wrap descriptor bytes as a BinaryVector so that BinaryRow.getVector()
+            // can read them back correctly via readVectorData() format [numElements][bytes].
+            // We use size=0 as a sentinel — readVectorData will create a BinaryVector(0)
+            // which toBytes() returns the raw descriptor bytes.
             byte[] descBytes = ((VectorRef) input).toDescriptorBytes();
-            writeBinary(pos, descBytes, 0, descBytes.length);
+            BinaryVector wrapper = new BinaryVector(0);
+            wrapper.pointTo(
+                    org.apache.paimon.memory.MemorySegment.wrap(descBytes), 0, descBytes.length);
+            writeVectorToVarLenPart(pos, wrapper);
         } else {
             BinaryVector binary = serializer.toBinaryVector(input);
             writeVectorToVarLenPart(pos, binary);

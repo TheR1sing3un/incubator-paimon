@@ -49,22 +49,43 @@ public class VectorRef implements InternalVector {
 
     private final VectorDescriptor descriptor;
     @Nullable private final FileIO fileIO;
+    private final int bytesPerVector;
+    private final int dimension;
     private transient BinaryVector resolved;
 
     /** Write-path constructor: descriptor placeholder, data access throws. */
     public VectorRef(VectorDescriptor descriptor) {
         this.descriptor = descriptor;
         this.fileIO = null;
+        this.bytesPerVector = descriptor.bytesPerVector();
+        this.dimension = descriptor.dimension();
     }
 
-    private VectorRef(VectorDescriptor descriptor, FileIO fileIO) {
+    private VectorRef(
+            VectorDescriptor descriptor, FileIO fileIO, int bytesPerVector, int dimension) {
         this.descriptor = descriptor;
         this.fileIO = fileIO;
+        this.bytesPerVector = bytesPerVector;
+        this.dimension = dimension;
     }
 
-    /** Read-path factory: analogous to {@code Blob.fromDescriptor(reader, desc)}. */
+    /**
+     * Read-path factory. For V1 descriptors, bytesPerVector/dimension come from the descriptor. For
+     * V2, they must be passed explicitly (from table config).
+     */
+    public static VectorRef fromDescriptor(
+            FileIO fileIO, VectorDescriptor descriptor, int bytesPerVector, int dimension) {
+        return new VectorRef(descriptor, fileIO, bytesPerVector, dimension);
+    }
+
+    /** Read-path factory for V1 descriptors (bytesPerVector/dimension from descriptor). */
     public static VectorRef fromDescriptor(FileIO fileIO, VectorDescriptor descriptor) {
-        return new VectorRef(descriptor, fileIO);
+        if (descriptor.bytesPerVector() <= 0 || descriptor.dimension() <= 0) {
+            throw new IllegalArgumentException(
+                    "V2 descriptors require explicit bytesPerVector/dimension. Use the 4-arg fromDescriptor().");
+        }
+        return new VectorRef(
+                descriptor, fileIO, descriptor.bytesPerVector(), descriptor.dimension());
     }
 
     public VectorDescriptor descriptor() {
@@ -82,14 +103,14 @@ public class VectorRef implements InternalVector {
         if (fileIO == null) {
             throw new UnsupportedOperationException(
                     "VectorRef is a write-path placeholder and does not hold vector data. "
-                            + "Use VectorRef.fromDescriptor(fileIO, descriptor) for read path.");
+                            + "Use VectorRef.fromDescriptor(fileIO, descriptor, ...) for read path.");
         }
         try (SeekableInputStream stream = fileIO.newInputStream(new Path(descriptor.filePath()))) {
-            long byteOffset = descriptor.rowIndex() * descriptor.bytesPerVector();
+            long byteOffset = descriptor.rowIndex() * bytesPerVector;
             stream.seek(byteOffset);
-            byte[] data = new byte[descriptor.bytesPerVector()];
+            byte[] data = new byte[bytesPerVector];
             IOUtils.readFully(stream, data);
-            resolved = new BinaryVector(descriptor.dimension());
+            resolved = new BinaryVector(dimension);
             resolved.pointTo(MemorySegment.wrap(data), 0, data.length);
             return resolved;
         } catch (IOException e) {

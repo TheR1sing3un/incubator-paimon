@@ -148,7 +148,54 @@ AccelerateIndexProvider (SPI: "lumina")
 Lumina JNI (DiskANN / PQ / SQ8 / RawF32)
 ```
 
-- **Index files**: `<bucket-path>/.aix.c<columnId>.lumina.aindex`
+### Standard Mode (ARRAY\<FLOAT\> columns)
+
+- **Index files**: `<bucket-path>/<dataFile>.aix.c<columnId>.lumina.aindex`
 - **Meta file**: `<bucket-path>/__accelerate_index_meta.json`
-- **Build granularity**: per-bucket (one index per bucket per column)
-- **Score**: converted from distance based on metric (see table above)
+- **Build granularity**: per-bucket, may span multiple data files
+- **Search**: scanner returns positions directly in data files
+
+### Vector Column Family Mode (VectorType columns + `vector-column-family.enabled`)
+
+When the target column is a VectorType with `vector-column-family.enabled = true`, the entire
+build and search path changes:
+
+- **Build**: reads vectors directly from `.vector.bin` files (not Parquet), enforces **1 vector file = 1 index**
+- **Index files**: `<bucket-path>/<vectorFile>.aix.c<columnId>.lumina.aindex`
+- **PK map**: two naming conventions (search prefers sidecar, falls back to index-style):
+  - Sidecar (sync-written during flush): `<vectorFile>.pkmap`
+  - Index-style (built during index build): `<vectorFile>.aix.c<columnId>.lumina.pkmap`
+- **PK map sync write**: flush 时 `DefaultVectorFileWriter.bufferPk()` 同步构建 sidecar pkmap
+- **PK map backfill**: `CALL sys.build_pkmap(table => '...')` 为老数据补建 sidecar pkmap
+- **Search driver**: zero per-bucket I/O — creates one `VectorCFSearchSplit` per vector file from manifest only. Scalar files filtered to **L1+ only** for consistency with standard search.
+- **Search executor**: derives index/pkmap paths from vector file name → try-open → indexed search (pkmap + PK IN batch query) or brute-force fallback
+- **DV handling**: DV applied on L1+ scalar files via Paimon's standard ReadBuilder (merge engine handles DV)
+
+```
+VectorCFSearchSplit (per vector file)
+    |
+    v
+VectorCFSearchHelper.createReader()
+    |
+    +-- [index exists] --> LuminaScanner.scan()
+    |       --> PkMapReader (sidecar > index-style)
+    |       --> table.newReadBuilder().withFilter(PK IN topK).newRead()
+    |       --> verify VecDesc still points to this vector file
+    |       --> [no pkmap] --> fallback two-pass scalar scan
+    |
+    +-- [no index] --> brute-force: read .vector.bin → topK heap
+            --> PkMapReader → PK IN batch query
+            --> [no pkmap] --> fallback two-pass scalar scan
+```
+
+Key differences from standard mode:
+
+| Aspect | Standard | Vector-CF |
+|--------|----------|-----------|
+| Build source | L1+ Parquet data files | sealed `.vector.bin` files |
+| Index granularity | may span multiple files | 1 vector file = 1 index |
+| Extra sidecar | none | `.pkmap` (rowIndex → PK) — sync-written or backfilled |
+| Search reverse-lookup | positions map directly to data rows | pkmap → PK → batch query (O(topK)) |
+| Scalar level filter | `withLevelFilter(level >= 1)` | split 构建时 `f.level() >= 1` |
+| Idempotent key | sorted data file names | single vector file name |
+| Score | converted from distance based on metric (see table above)

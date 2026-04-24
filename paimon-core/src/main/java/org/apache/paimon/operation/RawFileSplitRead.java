@@ -21,6 +21,7 @@ package org.apache.paimon.operation;
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.data.InternalRow;
+import org.apache.paimon.data.columnar.VectorCFReaderContext;
 import org.apache.paimon.deletionvectors.ApplyDeletionVectorReader;
 import org.apache.paimon.deletionvectors.DeletionVector;
 import org.apache.paimon.disk.IOManager;
@@ -192,6 +193,12 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
             throws IOException {
         DataFilePathFactory dataFilePathFactory =
                 pathFactory.createDataFilePathFactory(partition, bucket);
+
+        // Build vector CF resolver and filter out vector CF files from reading
+        VectorCFReaderContext vectorCFContext =
+                VectorCFReaderContextBuilder.build(files, dataFilePathFactory, readRowType);
+        List<DataFileMeta> scalarFiles = VectorCFReaderContextBuilder.filterScalarFiles(files);
+
         List<ReaderSupplier<InternalRow>> suppliers = new ArrayList<>();
 
         Builder formatReaderMappingBuilder =
@@ -211,14 +218,15 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
                         topN,
                         limit);
 
-        for (DataFileMeta file : files) {
+        for (DataFileMeta file : scalarFiles) {
             suppliers.add(
                     createFileReader(
                             partition,
                             dataFilePathFactory,
                             file,
                             formatReaderMappingBuilder,
-                            dvFactories));
+                            dvFactories,
+                            vectorCFContext));
         }
 
         return ConcatRecordReader.create(suppliers);
@@ -229,7 +237,8 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
             DataFilePathFactory dataFilePathFactory,
             DataFileMeta file,
             Builder formatBuilder,
-            @Nullable Map<String, IOExceptionSupplier<DeletionVector>> dvFactories) {
+            @Nullable Map<String, IOExceptionSupplier<DeletionVector>> dvFactories,
+            @Nullable VectorCFReaderContext vectorCFContext) {
         String formatIdentifier = DataFilePathFactory.formatIdentifier(file.fileName());
         long schemaId = file.schemaId();
 
@@ -248,7 +257,12 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
                 dvFactories == null ? null : dvFactories.get(file.fileName());
         return () ->
                 createFileReader(
-                        partition, file, dataFilePathFactory, formatReaderMapping, dvFactory);
+                        partition,
+                        file,
+                        dataFilePathFactory,
+                        formatReaderMapping,
+                        dvFactory,
+                        vectorCFContext);
     }
 
     private FileRecordReader<InternalRow> createFileReader(
@@ -256,7 +270,8 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
             DataFileMeta file,
             DataFilePathFactory dataFilePathFactory,
             FormatReaderMapping formatReaderMapping,
-            IOExceptionSupplier<DeletionVector> dvFactory)
+            IOExceptionSupplier<DeletionVector> dvFactory,
+            @Nullable VectorCFReaderContext vectorCFContext)
             throws IOException {
         FileIndexResult fileIndexResult = null;
         DeletionVector deletionVector = dvFactory == null ? null : dvFactory.get();
@@ -284,6 +299,7 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
         FormatReaderContext formatReaderContext =
                 new FormatReaderContext(
                         fileIO, dataFilePathFactory.toPath(file), file.fileSize(), selection);
+        formatReaderContext.withVectorCFContext(vectorCFContext);
         FileRecordReader<InternalRow> fileRecordReader =
                 new DataFileRecordReader(
                         schema.logicalRowType(),

@@ -92,6 +92,9 @@ public class AccelerateIndexTableRead implements TableRead {
 
     @Override
     public RecordReader<InternalRow> createReader(Split split) throws IOException {
+        if (split instanceof VectorCFSearchSplit) {
+            return VectorCFSearchHelper.createReader((VectorCFSearchSplit) split, table);
+        }
         if (split instanceof AccelerateIndexSplit) {
             AccelerateIndexSplit aiSplit = (AccelerateIndexSplit) split;
             if (aiSplit.isUncovered()) {
@@ -106,11 +109,9 @@ public class AccelerateIndexTableRead implements TableRead {
             throws IOException {
         AccelerateIndexSearch search = aiSplit.search();
         if (search.queryVector() == null) {
-            // Text search has no brute force fallback — return empty
-            return new org.apache.paimon.reader.EmptyRecordReader<>();
+            return new EmptyRecordReader<>();
         }
 
-        // Resolve vector column index in the projected schema
         int vectorColumnIndex = table.schema().fieldNames().indexOf(search.columnName());
 
         RecordReader<InternalRow> innerReader = innerRead.createReader(aiSplit.dataSplit());
@@ -124,6 +125,11 @@ public class AccelerateIndexTableRead implements TableRead {
     }
 
     private RecordReader<InternalRow> createSearchReader(AccelerateIndexSplit aiSplit)
+            throws IOException {
+        return createNormalSearchReader(aiSplit);
+    }
+
+    private RecordReader<InternalRow> createNormalSearchReader(AccelerateIndexSplit aiSplit)
             throws IOException {
         DataSplit dataSplit = aiSplit.dataSplit();
         AccelerateIndexEntry indexEntry = aiSplit.indexEntry();

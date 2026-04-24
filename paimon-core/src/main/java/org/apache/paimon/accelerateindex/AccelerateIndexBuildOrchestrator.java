@@ -18,9 +18,15 @@
 
 package org.apache.paimon.accelerateindex;
 
+import org.apache.paimon.CoreOptions;
+import org.apache.paimon.data.BinaryRow;
+import org.apache.paimon.data.BinaryRowWriter;
+import org.apache.paimon.data.BinaryVector;
+import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.io.DataFileMeta;
+import org.apache.paimon.reader.RecordReader;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.source.DataSplit;
 import org.apache.paimon.table.source.DeletionFile;
@@ -34,6 +40,7 @@ import org.apache.paimon.types.FloatType;
 import org.apache.paimon.types.IntType;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.types.VarCharType;
+import org.apache.paimon.types.VectorType;
 import org.apache.paimon.utils.StringUtils;
 
 import org.slf4j.Logger;
@@ -49,6 +56,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -158,7 +166,7 @@ public class AccelerateIndexBuildOrchestrator {
      * executors.
      */
     public static class SplitBuildContext implements Serializable {
-        private static final long serialVersionUID = 1L;
+        private static final long serialVersionUID = 2L;
 
         private final FileStoreTable table;
         private final int columnId;
@@ -171,6 +179,12 @@ public class AccelerateIndexBuildOrchestrator {
         private final double minValidRatio;
         private final long maxRowsPerIndex;
         private final long snapshotId;
+        // Vector Column Family fields
+        private final boolean vectorCF;
+        private final String vectorColumnName;
+        private final int bytesPerVector;
+        private final long vectorCFTargetFileSize;
+        private final long vectorCFTargetFileRows;
 
         public SplitBuildContext(
                 FileStoreTable table,
@@ -184,6 +198,42 @@ public class AccelerateIndexBuildOrchestrator {
                 double minValidRatio,
                 long maxRowsPerIndex,
                 long snapshotId) {
+            this(
+                    table,
+                    columnId,
+                    vectorColumnIndex,
+                    dim,
+                    algorithm,
+                    metric,
+                    buildOptions,
+                    minValidRows,
+                    minValidRatio,
+                    maxRowsPerIndex,
+                    snapshotId,
+                    false,
+                    null,
+                    0,
+                    0,
+                    -1);
+        }
+
+        public SplitBuildContext(
+                FileStoreTable table,
+                int columnId,
+                int vectorColumnIndex,
+                int dim,
+                String algorithm,
+                String metric,
+                Map<String, String> buildOptions,
+                int minValidRows,
+                double minValidRatio,
+                long maxRowsPerIndex,
+                long snapshotId,
+                boolean vectorCF,
+                String vectorColumnName,
+                int bytesPerVector,
+                long vectorCFTargetFileSize,
+                long vectorCFTargetFileRows) {
             this.table = table;
             this.columnId = columnId;
             this.vectorColumnIndex = vectorColumnIndex;
@@ -195,6 +245,11 @@ public class AccelerateIndexBuildOrchestrator {
             this.minValidRatio = minValidRatio;
             this.maxRowsPerIndex = maxRowsPerIndex;
             this.snapshotId = snapshotId;
+            this.vectorCF = vectorCF;
+            this.vectorColumnName = vectorColumnName;
+            this.bytesPerVector = bytesPerVector;
+            this.vectorCFTargetFileSize = vectorCFTargetFileSize;
+            this.vectorCFTargetFileRows = vectorCFTargetFileRows;
         }
 
         public FileStoreTable table() {
@@ -239,6 +294,27 @@ public class AccelerateIndexBuildOrchestrator {
 
         public long snapshotId() {
             return snapshotId;
+        }
+
+        public boolean vectorCF() {
+            return vectorCF;
+        }
+
+        @Nullable
+        public String vectorColumnName() {
+            return vectorColumnName;
+        }
+
+        public int bytesPerVector() {
+            return bytesPerVector;
+        }
+
+        public long vectorCFTargetFileSize() {
+            return vectorCFTargetFileSize;
+        }
+
+        public long vectorCFTargetFileRows() {
+            return vectorCFTargetFileRows;
         }
     }
 
@@ -313,6 +389,30 @@ public class AccelerateIndexBuildOrchestrator {
             populateLuceneOptions(buildOptions, field, column);
         }
 
+        // Detect vector-cf mode
+        CoreOptions coreOptions = table.coreOptions();
+        boolean vectorCF = false;
+        String vectorColumnName = column;
+        int bytesPerVector = 0;
+        long vectorCFTargetFileSize = 0;
+        long vectorCFTargetFileRows = -1;
+        if (coreOptions.vectorColumnFamilyEnabled()) {
+            java.util.Set<String> vcfColumns = coreOptions.vectorColumnFamilyColumns();
+            if (vcfColumns.isEmpty()) {
+                vcfColumns =
+                        VectorType.fieldNamesInVectorFile(table.schema().logicalRowType(), true);
+            }
+            if (vcfColumns.contains(column) && field.type() instanceof VectorType) {
+                vectorCF = true;
+                VectorType vectorType = (VectorType) field.type();
+                int dimension = vectorType.getLength();
+                int elementSize = BinaryVector.getPrimitiveElementSize(vectorType.getElementType());
+                bytesPerVector = ((dimension * elementSize + 7) / 8) * 8;
+                vectorCFTargetFileSize = coreOptions.vectorColumnFamilyTargetFileSize();
+                vectorCFTargetFileRows = coreOptions.vectorColumnFamilyTargetFileRows();
+            }
+        }
+
         Long snapshotId = request.snapshotId();
         if (snapshotId == null) {
             snapshotId = table.snapshotManager().latestSnapshotId();
@@ -322,7 +422,9 @@ public class AccelerateIndexBuildOrchestrator {
         }
 
         List<List<DataSplit>> bucketGroups =
-                getSplitsByBucket(table, request.partitions(), snapshotId);
+                vectorCF
+                        ? getVectorCFSplitsByBucket(table, request.partitions(), snapshotId)
+                        : getSplitsByBucket(table, request.partitions(), snapshotId);
         if (bucketGroups.isEmpty()) {
             return null;
         }
@@ -349,7 +451,12 @@ public class AccelerateIndexBuildOrchestrator {
                         request.minValidRows(),
                         request.minValidRatio(),
                         request.maxRowsPerIndex(),
-                        snapshotId);
+                        snapshotId,
+                        vectorCF,
+                        vectorColumnName,
+                        bytesPerVector,
+                        vectorCFTargetFileSize,
+                        vectorCFTargetFileRows);
         return new ResolvedBuild(ctx, mergedSplits, bucketGroups);
     }
 
@@ -423,6 +530,542 @@ public class AccelerateIndexBuildOrchestrator {
             return new BuildResult(0, 0, 0);
         }
 
+        if (ctx.vectorCF()) {
+            return buildBucketVectorCF(ctx, splitsInBucket);
+        }
+        return buildBucketNormal(ctx, splitsInBucket);
+    }
+
+    /**
+     * Build indexes for vector-cf mode: 1 vector file = 1 index + 1 pkmap. For each sealed vector
+     * file, builds a DiskANN index from the .vector.bin file and generates a .pkmap sidecar by
+     * scanning scalar files to extract the rowIndex→PK mapping.
+     */
+    private static BuildResult buildBucketVectorCF(
+            SplitBuildContext ctx, List<DataSplit> splitsInBucket) throws Exception {
+        FileStoreTable table = ctx.table();
+        FileIO fileIO = table.fileIO();
+        int columnId = ctx.columnId();
+        String algorithm = ctx.algorithm();
+        String metric = ctx.metric();
+        int dim = ctx.dim();
+        long snapshotId = ctx.snapshotId();
+        String targetColumn = ctx.vectorColumnName();
+        int bytesPerVector = ctx.bytesPerVector();
+        long targetFileSize = ctx.vectorCFTargetFileSize();
+        long targetFileRows = ctx.vectorCFTargetFileRows();
+
+        AccelerateIndexProvider provider = AccelerateIndexProviderUtils.load(algorithm);
+
+        DataSplit firstSplit = splitsInBucket.get(0);
+        Path bucketPath = new Path(firstSplit.bucketPath());
+        Path metaPath = new Path(bucketPath, AccelerateIndexConstants.META_FILE_NAME);
+
+        AccelerateIndexMeta meta = AccelerateIndexMetaIO.readOrEmpty(fileIO, metaPath);
+
+        // Collect sealed vector CF files matching the target column
+        List<Map.Entry<DataFileMeta, Long>> vectorFilesWithSize =
+                collectVectorCFFiles(
+                        splitsInBucket,
+                        targetColumn,
+                        fileIO,
+                        bucketPath,
+                        targetFileSize,
+                        targetFileRows,
+                        bytesPerVector);
+        if (vectorFilesWithSize.isEmpty()) {
+            return new BuildResult(0, 0, 0);
+        }
+
+        // Extract scalar files from splits (for pkmap generation)
+        List<DataFileMeta> scalarFiles = new ArrayList<>();
+        Set<String> seenScalar = new java.util.HashSet<>();
+        for (DataSplit split : splitsInBucket) {
+            for (DataFileMeta f : split.dataFiles()) {
+                if (!f.isVectorCFFile() && seenScalar.add(f.fileName())) {
+                    scalarFiles.add(f);
+                }
+            }
+        }
+
+        // Resolve PK row type for pkmap
+        RowType pkRowType = table.schema().logicalTrimmedPrimaryKeysType();
+
+        VectorCFColumnReaderFactory readerFactory =
+                new VectorCFColumnReaderFactory(fileIO, bucketPath.toString(), dim, bytesPerVector);
+
+        int built = 0;
+        int skipped = 0;
+        int failed = 0;
+
+        // 1:1 — each sealed vector file gets its own index + pkmap
+        for (Map.Entry<DataFileMeta, Long> entry : vectorFilesWithSize) {
+            DataFileMeta vectorFileMeta = entry.getKey();
+            long actualRowCount = entry.getValue() / bytesPerVector;
+
+            List<AccelerateIndexDataFileInfo> singleFileInfo =
+                    Collections.singletonList(
+                            new AccelerateIndexDataFileInfo(
+                                    vectorFileMeta.fileName(), actualRowCount, 0));
+
+            // Idempotent check
+            AccelerateIndexEntry coveredEntry =
+                    findCoveredEntry(meta, singleFileInfo, columnId, algorithm, snapshotId);
+            if (coveredEntry != null && coveredEntry.buildSnapshotId() <= snapshotId) {
+                skipped++;
+                continue;
+            }
+
+            long startTime = System.currentTimeMillis();
+            String idempotentKey = buildIdempotentKey(singleFileInfo, columnId, algorithm);
+            AccelerateIndexEntry previousFailed = findFailedEntry(meta, idempotentKey);
+            int previousRetryCount = previousFailed != null ? previousFailed.retryCount() : 0;
+
+            try {
+                // Build .aindex
+                AccelerateIndexBuilderContext context =
+                        new AccelerateIndexBuilderContext(
+                                        fileIO,
+                                        bucketPath,
+                                        columnId,
+                                        metric,
+                                        dim,
+                                        singleFileInfo,
+                                        ctx.buildOptions(),
+                                        readerFactory,
+                                        ctx.minValidRows(),
+                                        ctx.minValidRatio())
+                                .withPkMap(pkRowType, scalarFiles);
+
+                AccelerateIndexBuildResult result;
+                try (AccelerateIndexBuilder builder = provider.createBuilder()) {
+                    result = builder.build(context);
+                }
+
+                // Build .pkmap (scan scalar files to find rowIndex→PK mapping)
+                if (!result.isSkipped()) {
+                    Path pkMapPath =
+                            buildPkMap(
+                                    fileIO,
+                                    table,
+                                    bucketPath,
+                                    vectorFileMeta.fileName(),
+                                    columnId,
+                                    algorithm,
+                                    actualRowCount,
+                                    scalarFiles,
+                                    ctx.vectorColumnIndex(),
+                                    pkRowType,
+                                    firstSplit.partition(),
+                                    firstSplit.bucket(),
+                                    snapshotId);
+                    result = result.withPkMapFilePath(pkMapPath);
+                }
+
+                long buildTimeMs = System.currentTimeMillis() - startTime;
+                AccelerateIndexEntry metaEntry;
+
+                if (result.isSkipped()) {
+                    metaEntry =
+                            new AccelerateIndexEntry(
+                                    UUID.randomUUID().toString(),
+                                    columnId,
+                                    algorithm,
+                                    metric,
+                                    dim,
+                                    AccelerateIndexState.SKIPPED,
+                                    null,
+                                    singleFileInfo,
+                                    result.totalRows(),
+                                    result.nullVectorRows(),
+                                    null,
+                                    snapshotId,
+                                    buildTimeMs,
+                                    0,
+                                    null,
+                                    result.skipReason(),
+                                    null,
+                                    0);
+                    skipped++;
+                } else {
+                    metaEntry =
+                            new AccelerateIndexEntry(
+                                    UUID.randomUUID().toString(),
+                                    columnId,
+                                    algorithm,
+                                    metric,
+                                    dim,
+                                    AccelerateIndexState.READY,
+                                    result.indexFilePath().getName(),
+                                    singleFileInfo,
+                                    result.totalRows(),
+                                    result.nullVectorRows(),
+                                    null,
+                                    snapshotId,
+                                    buildTimeMs,
+                                    result.indexFileSize(),
+                                    null,
+                                    null,
+                                    null,
+                                    0);
+                    built++;
+                }
+
+                meta = casAddEntry(fileIO, metaPath, metaEntry, idempotentKey);
+            } catch (Exception e) {
+                long buildTimeMs = System.currentTimeMillis() - startTime;
+                AccelerateIndexEntry failedEntry =
+                        new AccelerateIndexEntry(
+                                UUID.randomUUID().toString(),
+                                columnId,
+                                algorithm,
+                                metric,
+                                dim,
+                                AccelerateIndexState.FAILED,
+                                null,
+                                singleFileInfo,
+                                0,
+                                0,
+                                null,
+                                snapshotId,
+                                buildTimeMs,
+                                0,
+                                null,
+                                null,
+                                formatErrorWithStackTrace(e),
+                                previousRetryCount + 1);
+                try {
+                    meta = casAddEntry(fileIO, metaPath, failedEntry, idempotentKey);
+                } catch (Exception metaEx) {
+                    LOG.warn("Failed to write FAILED entry to meta", metaEx);
+                }
+                failed++;
+            }
+        }
+
+        return new BuildResult(built, skipped, failed);
+    }
+
+    /**
+     * Build a .pkmap sidecar (index-style naming) by scanning scalar files to find which rows have
+     * VectorDescriptors pointing to the target vector file, then mapping rowIndex to PK.
+     */
+    private static Path buildPkMap(
+            FileIO fileIO,
+            FileStoreTable table,
+            Path bucketPath,
+            String vectorFileName,
+            int columnId,
+            String algorithm,
+            long vectorRowCount,
+            List<DataFileMeta> scalarFiles,
+            int vectorColumnIndex,
+            RowType pkRowType,
+            BinaryRow partition,
+            int bucket,
+            long snapshotId)
+            throws Exception {
+        String pkmapFileName =
+                AccelerateIndexConstants.pkmapFileName(vectorFileName, columnId, algorithm);
+        return buildPkMapInternal(
+                fileIO,
+                table,
+                bucketPath,
+                vectorFileName,
+                pkmapFileName,
+                vectorRowCount,
+                scalarFiles,
+                vectorColumnIndex,
+                pkRowType,
+                partition,
+                bucket,
+                snapshotId);
+    }
+
+    /**
+     * Build a .pkmap sidecar file (vectorFile.pkmap naming) for old vector files that were written
+     * before sync pkmap write was implemented.
+     */
+    public static Path buildPkMapSidecar(
+            FileIO fileIO,
+            FileStoreTable table,
+            Path bucketPath,
+            String vectorFileName,
+            long vectorRowCount,
+            List<DataFileMeta> scalarFiles,
+            int vectorColumnIndex,
+            RowType pkRowType,
+            BinaryRow partition,
+            int bucket,
+            long snapshotId)
+            throws Exception {
+        String pkmapFileName = AccelerateIndexConstants.pkmapSidecarName(vectorFileName);
+        return buildPkMapInternal(
+                fileIO,
+                table,
+                bucketPath,
+                vectorFileName,
+                pkmapFileName,
+                vectorRowCount,
+                scalarFiles,
+                vectorColumnIndex,
+                pkRowType,
+                partition,
+                bucket,
+                snapshotId);
+    }
+
+    /** Core pkmap building logic shared by index-style and sidecar-style naming. */
+    private static Path buildPkMapInternal(
+            FileIO fileIO,
+            FileStoreTable table,
+            Path bucketPath,
+            String vectorFileName,
+            String pkmapFileName,
+            long vectorRowCount,
+            List<DataFileMeta> scalarFiles,
+            int vectorColumnIndex,
+            RowType pkRowType,
+            BinaryRow partition,
+            int bucket,
+            long snapshotId)
+            throws Exception {
+        int targetFileId = vectorFileName.hashCode();
+        int pkArity = pkRowType.getFieldCount();
+
+        // Collect rowIndex→PK by scanning scalar files
+        Map<Long, BinaryRow> rowIndexToPk = new HashMap<>();
+
+        // Determine PK column indices in the full schema
+        List<String> pkNames = table.schema().trimmedPrimaryKeys();
+        List<String> allFieldNames = table.schema().fieldNames();
+        int[] pkIndices = new int[pkNames.size()];
+        for (int i = 0; i < pkNames.size(); i++) {
+            pkIndices[i] = allFieldNames.indexOf(pkNames.get(i));
+        }
+
+        // Project to vectorCol + PK columns
+        int[] projection = new int[1 + pkIndices.length];
+        projection[0] = vectorColumnIndex;
+        System.arraycopy(pkIndices, 0, projection, 1, pkIndices.length);
+
+        for (DataFileMeta scalarFile : scalarFiles) {
+            DataSplit singleSplit =
+                    DataSplit.builder()
+                            .withSnapshot(snapshotId)
+                            .withPartition(partition)
+                            .withBucket(bucket)
+                            .withBucketPath(bucketPath.toString())
+                            .withDataFiles(Collections.singletonList(scalarFile))
+                            .build();
+
+            try (RecordReader<InternalRow> reader =
+                    table.newReadBuilder()
+                            .withProjection(projection)
+                            .newRead()
+                            .createReader(singleSplit)) {
+                RecordReader.RecordIterator<InternalRow> batch;
+                while ((batch = reader.readBatch()) != null) {
+                    InternalRow row;
+                    while ((row = batch.next()) != null) {
+                        if (row.isNullAt(0)) {
+                            continue;
+                        }
+                        byte[] descBytes = row.getBinary(0);
+                        if (!org.apache.paimon.data.VectorDescriptor.isVectorDescriptor(
+                                descBytes)) {
+                            continue;
+                        }
+                        int fileId =
+                                org.apache.paimon.data.VectorDescriptor.extractFileId(descBytes);
+                        if (fileId != targetFileId) {
+                            continue;
+                        }
+                        long rowIndex =
+                                org.apache.paimon.data.VectorDescriptor.extractRowIndex(descBytes);
+
+                        // Extract PK values from projected row (cols 1..N are PK cols)
+                        BinaryRow pkRow = new BinaryRow(pkArity);
+                        BinaryRowWriter pkWriter = new BinaryRowWriter(pkRow);
+                        for (int i = 0; i < pkArity; i++) {
+                            if (row.isNullAt(1 + i)) {
+                                pkWriter.setNullAt(i);
+                            } else {
+                                writePkField(pkWriter, i, row, 1 + i, pkRowType.getTypeAt(i));
+                            }
+                        }
+                        pkWriter.complete();
+                        rowIndexToPk.put(rowIndex, pkRow);
+                    }
+                    batch.releaseBatch();
+                }
+            }
+        }
+
+        // Write pkmap file (entries in rowIndex order, empty for unmapped)
+        try (PkMapWriter writer =
+                new PkMapWriter(fileIO, bucketPath, pkmapFileName, pkArity, vectorRowCount)) {
+            for (long i = 0; i < vectorRowCount; i++) {
+                BinaryRow pk = rowIndexToPk.get(i);
+                if (pk != null) {
+                    writer.writePk(pk);
+                } else {
+                    writer.writeEmpty();
+                }
+            }
+            return writer.finish();
+        }
+    }
+
+    /** Write a single PK field from a projected row to a BinaryRowWriter. */
+    private static void writePkField(
+            BinaryRowWriter writer,
+            int writerIdx,
+            InternalRow row,
+            int rowIdx,
+            org.apache.paimon.types.DataType type) {
+        switch (type.getTypeRoot()) {
+            case BOOLEAN:
+                writer.writeBoolean(writerIdx, row.getBoolean(rowIdx));
+                break;
+            case TINYINT:
+                writer.writeByte(writerIdx, row.getByte(rowIdx));
+                break;
+            case SMALLINT:
+                writer.writeShort(writerIdx, row.getShort(rowIdx));
+                break;
+            case INTEGER:
+            case DATE:
+                writer.writeInt(writerIdx, row.getInt(rowIdx));
+                break;
+            case BIGINT:
+                writer.writeLong(writerIdx, row.getLong(rowIdx));
+                break;
+            case FLOAT:
+                writer.writeFloat(writerIdx, row.getFloat(rowIdx));
+                break;
+            case DOUBLE:
+                writer.writeDouble(writerIdx, row.getDouble(rowIdx));
+                break;
+            case CHAR:
+            case VARCHAR:
+                writer.writeString(writerIdx, row.getString(rowIdx));
+                break;
+            case BINARY:
+            case VARBINARY:
+                byte[] bytes = row.getBinary(rowIdx);
+                writer.writeBinary(writerIdx, bytes, 0, bytes.length);
+                break;
+            case DECIMAL:
+                org.apache.paimon.types.DecimalType dt = (org.apache.paimon.types.DecimalType) type;
+                writer.writeDecimal(
+                        writerIdx,
+                        row.getDecimal(rowIdx, dt.getPrecision(), dt.getScale()),
+                        dt.getPrecision());
+                break;
+            case TIMESTAMP_WITHOUT_TIME_ZONE:
+                org.apache.paimon.types.TimestampType tt =
+                        (org.apache.paimon.types.TimestampType) type;
+                writer.writeTimestamp(
+                        writerIdx, row.getTimestamp(rowIdx, tt.getPrecision()), tt.getPrecision());
+                break;
+            case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
+                org.apache.paimon.types.LocalZonedTimestampType lzt =
+                        (org.apache.paimon.types.LocalZonedTimestampType) type;
+                writer.writeTimestamp(
+                        writerIdx,
+                        row.getTimestamp(rowIdx, lzt.getPrecision()),
+                        lzt.getPrecision());
+                break;
+            default:
+                throw new UnsupportedOperationException("Unsupported PK type for pkmap: " + type);
+        }
+    }
+
+    /**
+     * Collect vector CF files from splits that match the target column and are sealed (actual file
+     * size >= targetFileSize). Returns pairs of (DataFileMeta, actualFileSize).
+     */
+    static List<Map.Entry<DataFileMeta, Long>> collectVectorCFFiles(
+            List<DataSplit> splits,
+            String targetColumn,
+            FileIO fileIO,
+            Path bucketPath,
+            long targetFileSize,
+            long targetFileRows,
+            int bytesPerVector) {
+        // Deduplicate vector files (same file appears in every DataSplit)
+        Map<String, DataFileMeta> seen = new LinkedHashMap<>();
+        for (DataSplit split : splits) {
+            for (DataFileMeta file : split.dataFiles()) {
+                if (file.isVectorCFFile()
+                        && file.writeCols() != null
+                        && file.writeCols().contains(targetColumn)
+                        && !seen.containsKey(file.fileName())) {
+                    seen.put(file.fileName(), file);
+                }
+            }
+        }
+
+        // Filter for sealed files (check actual file size on filesystem)
+        List<Map.Entry<DataFileMeta, Long>> sealed = new ArrayList<>();
+        for (DataFileMeta meta : seen.values()) {
+            try {
+                Path filePath = new Path(bucketPath, meta.fileName());
+                long actualSize = fileIO.getFileSize(filePath);
+                long actualRows = bytesPerVector > 0 ? actualSize / bytesPerVector : 0;
+                boolean noLimit = targetFileSize <= 0 && targetFileRows <= 0;
+                boolean sealedBySize = targetFileSize > 0 && actualSize >= targetFileSize;
+                boolean sealedByRows = targetFileRows > 0 && actualRows >= targetFileRows;
+                if (noLimit || sealedBySize || sealedByRows) {
+                    sealed.add(new java.util.AbstractMap.SimpleEntry<>(meta, actualSize));
+                }
+            } catch (IOException e) {
+                LOG.warn("Cannot check file size for {}, skipping", meta.fileName(), e);
+            }
+        }
+        return sealed;
+    }
+
+    /**
+     * Chunk vector CF files by maxRowsPerIndex. Uses pre-computed file sizes (from {@link
+     * #collectVectorCFFiles}) to derive actual row counts.
+     */
+    static List<List<AccelerateIndexDataFileInfo>> chunkVectorCFFiles(
+            List<Map.Entry<DataFileMeta, Long>> vectorFilesWithSize,
+            long maxRowsPerIndex,
+            int bytesPerVector) {
+        List<List<AccelerateIndexDataFileInfo>> chunks = new ArrayList<>();
+        List<AccelerateIndexDataFileInfo> current = new ArrayList<>();
+        long currentRows = 0;
+        long offset = 0;
+
+        for (Map.Entry<DataFileMeta, Long> entry : vectorFilesWithSize) {
+            long actualRowCount = entry.getValue() / bytesPerVector;
+
+            if (maxRowsPerIndex > 0
+                    && currentRows > 0
+                    && currentRows + actualRowCount > maxRowsPerIndex) {
+                chunks.add(current);
+                current = new ArrayList<>();
+                currentRows = 0;
+                offset = 0;
+            }
+            current.add(
+                    new AccelerateIndexDataFileInfo(
+                            entry.getKey().fileName(), actualRowCount, offset));
+            offset += actualRowCount;
+            currentRows += actualRowCount;
+        }
+        if (!current.isEmpty()) {
+            chunks.add(current);
+        }
+        return chunks;
+    }
+
+    /** Normal (non-vector-cf) build path for a single bucket. */
+    private static BuildResult buildBucketNormal(
+            SplitBuildContext ctx, List<DataSplit> splitsInBucket) throws Exception {
         FileStoreTable table = ctx.table();
         FileIO fileIO = table.fileIO();
         int columnId = ctx.columnId();
@@ -903,6 +1546,27 @@ public class AccelerateIndexBuildOrchestrator {
                 });
         // Return a meta with the updated entries, avoiding an extra readOrEmpty round-trip
         return new AccelerateIndexMeta(0, System.currentTimeMillis(), updatedEntries.get());
+    }
+
+    /**
+     * Get splits containing vector CF files, grouped by bucket. Reads WITHOUT level filter so that
+     * vector CF files (level=0) are included in the manifest scan.
+     */
+    public static List<List<DataSplit>> getVectorCFSplitsByBucket(
+            FileStoreTable table, @Nullable String partitions, long snapshotId) {
+        SnapshotReader reader = table.newSnapshotReader().withSnapshot(snapshotId);
+
+        if (!StringUtils.isNullOrWhitespaceOnly(partitions)) {
+            List<Map<String, String>> partitionList = getPartitions(partitions.split(";"));
+            reader = reader.withPartitionsFilter(partitionList);
+        }
+
+        List<DataSplit> rawSplits = reader.read().dataSplits();
+        Map<String, List<DataSplit>> grouped = new LinkedHashMap<>();
+        for (DataSplit split : rawSplits) {
+            grouped.computeIfAbsent(split.bucketPath(), k -> new ArrayList<>()).add(split);
+        }
+        return new ArrayList<>(grouped.values());
     }
 
     /**

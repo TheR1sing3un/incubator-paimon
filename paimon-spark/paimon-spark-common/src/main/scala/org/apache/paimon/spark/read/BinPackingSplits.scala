@@ -160,13 +160,15 @@ case class BinPackingSplits(coreOptions: CoreOptions, readRowSizeRatio: Double =
       split: DataSplit,
       dataFiles: Seq[DataFileMeta],
       deletionFiles: Seq[DeletionFile]): DataSplit = {
+    // Re-attach vector CF files to the new split for VectorCFReaderContext resolution
+    val allFiles = dataFiles ++ vectorCFFiles(split)
     val builder = DataSplit
       .builder()
       .withSnapshot(split.snapshotId())
       .withPartition(split.partition())
       .withBucket(split.bucket())
       .withTotalBuckets(split.totalBuckets())
-      .withDataFiles(dataFiles.toList.asJava)
+      .withDataFiles(allFiles.toList.asJava)
       .rawConvertible(split.rawConvertible)
       .withBucketPath(split.bucketPath)
     if (deletionVectors) {
@@ -180,12 +182,27 @@ case class BinPackingSplits(coreOptions: CoreOptions, readRowSizeRatio: Double =
   }
 
   private def dataFileAndDeletionFiles(split: DataSplit): Array[(DataFileMeta, DeletionFile)] = {
+    // Exclude vector CF files from bin-packing — they are tiny metadata files that should
+    // stay with their corresponding scalar files, not be reshuffled independently.
+    val nonVectorFiles = split.dataFiles().asScala.filter(!_.isVectorCFFile())
     if (deletionVectors && split.deletionFiles().isPresent) {
       val deletionFiles = split.deletionFiles().get().asScala
-      split.dataFiles().asScala.zip(deletionFiles).toArray
+      // Deletion files correspond to non-vector data files; filter both consistently
+      val nonVectorIndices = split
+        .dataFiles()
+        .asScala
+        .zipWithIndex
+        .filter(!_._1.isVectorCFFile())
+        .map(_._2)
+      nonVectorFiles.zip(nonVectorIndices.map(deletionFiles)).toArray
     } else {
-      split.dataFiles().asScala.map((_, null)).toArray
+      nonVectorFiles.map((_, null)).toArray
     }
+  }
+
+  /** Extract vector CF files from a DataSplit (for re-attachment after reshuffling). */
+  private def vectorCFFiles(split: DataSplit): Seq[DataFileMeta] = {
+    split.dataFiles().asScala.filter(_.isVectorCFFile())
   }
 
   private def computeMaxSplitBytes(dataSplits: Seq[DataSplit]): Long = {

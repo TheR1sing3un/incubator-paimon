@@ -554,31 +554,6 @@ class SchemaValidationTest {
     }
 
     @Test
-    public void testVectorCfOnlySingleVectorColumn() {
-        Map<String, String> options = new HashMap<>();
-        options.put(CoreOptions.VECTOR_COLUMN_FAMILY_ENABLED.key(), "true");
-        options.put(CoreOptions.MERGE_ENGINE.key(), "partial-update");
-        List<DataField> fields =
-                Arrays.asList(
-                        new DataField(0, "f0", DataTypes.INT()),
-                        new DataField(
-                                1,
-                                "emb1",
-                                new org.apache.paimon.types.VectorType(
-                                        true, 128, org.apache.paimon.types.DataTypes.FLOAT())),
-                        new DataField(
-                                2,
-                                "emb2",
-                                new org.apache.paimon.types.VectorType(
-                                        true, 64, org.apache.paimon.types.DataTypes.FLOAT())));
-        assertThatThrownBy(
-                        () ->
-                                validateVectorColumnFamilySchema(
-                                        options, fields, emptyList(), singletonList("f0")))
-                .hasMessageContaining("only one vector column");
-    }
-
-    @Test
     public void testVectorCfRejectsExternalPaths() {
         Map<String, String> options = new HashMap<>();
         options.put(CoreOptions.VECTOR_COLUMN_FAMILY_ENABLED.key(), "true");

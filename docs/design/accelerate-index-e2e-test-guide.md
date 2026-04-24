@@ -20,7 +20,7 @@
 
 ```sql
 CREATE TABLE test_accel_idx (
-  pt INT, pk INT, tag INT, category STRING,
+  pt INT, pk BIGINT, tag INT, category STRING,
   vec ARRAY<FLOAT>,           -- 聚类向量 dim=8, Lumina
   vec_perf ARRAY<FLOAT>,      -- 随机向量 dim=2048, Lumina 性能
   docs ARRAY<ROW<content STRING, label STRING, score INT>>,  -- Lucene
@@ -575,3 +575,152 @@ flink run -c org.apache.paimon.flink.PaimonSqlStreamer paimon-flink-1.18.jar \
 flink run -c org.apache.paimon.flink.PaimonSqlStreamer paimon-flink-1.18.jar \
   --rows 20000000 --dimPerf 2048 --bucket 100 --parallelism 4 --updateEnd 6000000
 ```
+
+---
+
+## 七、Vector Column Family (vector-cf) 模式
+
+### 概述
+
+当表启用 `vector-column-family.enabled = true` 时，向量列从 Parquet 数据文件分离到独立 `.vector.bin` 文件。AccelerateIndex 在此模式下的行为与标准模式有显著差异：
+
+| 维度 | 标准模式 | vector-cf 模式 |
+|---|---|---|
+| 向量存储 | 内嵌在 Parquet 数据文件 | 独立 `.vector.bin` flat binary |
+| 索引构建 | 从 L1+ Parquet 读向量 | 直接读 `.vector.bin` |
+| 索引粒度 | 可多文件合一 index | **1 vector file = 1 index** |
+| 反查标量 | scanner 位置直接对应数据行 | **pkmap + PK IN 批量查** |
+| 额外产物 | `.aindex` | `.aindex` + `.pkmap` |
+
+### 表创建
+
+```sql
+-- Flink SQL（用 ARRAY<FLOAT> + vector-field 属性声明 VectorType）
+CREATE TABLE test_accel_idx_vcf (
+  pt INT, pk BIGINT, tag INT, category STRING,
+  embedding ARRAY<FLOAT>,
+  docs ARRAY<ROW<content STRING, label STRING, score INT>>,
+  PRIMARY KEY (pt, pk) NOT ENFORCED
+) PARTITIONED BY (pt)
+WITH (
+  'bucket' = '1',
+  'deletion-vectors.enabled' = 'true',
+  'file.format' = 'parquet',
+  'merge-engine' = 'partial-update',
+  'vector-field' = 'embedding',
+  'field.embedding.vector-dim' = '2048',
+  'vector-column-family.enabled' = 'true',
+  'vector-column-family.target-file-rows' = '200000'
+);
+```
+
+注意：Flink SQL 不支持 `VECTOR(FLOAT, N)` 语法，需用 `ARRAY<FLOAT>` + `vector-field` 表属性。Spark SQL 可直接使用 `VECTOR(FLOAT, N)`。
+
+### 索引构建
+
+通过 Spark Procedure 构建。构建流程自动检测 vector-cf 模式。不指定 `snapshot_id` 时默认使用最新 snapshot，读取其 manifest 中所有 committed 的 vector 文件，只对 sealed 文件构建索引（unsealed 文件跳过）。
+
+```sql
+-- 构建索引（默认最新 snapshot，只构建 sealed vector 文件）
+CALL sys.build_accelerate_index(
+  table => 'ks_hdp.test_accel_idx_vcf',
+  column => 'embedding',
+  dim => 2048,
+  algorithm => 'lumina',
+  metric => 'l2',
+  options => 'encoding.type=rawf32;diskann.build.thread_count=4',
+  partitions => 'pt=1'
+);
+-- 期望: Built N（N = sealed vector 文件数）
+-- snapshot_id 可选，不指定默认最新。指定时用于时间旅行构建。
+
+-- compact 后重建（旧索引因 idempotentKey 匹配自动跳过，新 vector 文件自动构建）
+CALL sys.build_accelerate_index(
+  table => 'ks_hdp.test_accel_idx_vcf',
+  column => 'embedding',
+  dim => 2048,
+  algorithm => 'lumina',
+  metric => 'l2',
+  options => 'encoding.type=rawf32;diskann.build.thread_count=4',
+  partitions => 'pt=1'
+);
+```
+
+### 搜索
+
+不指定 `snapshot_id` 时默认使用最新 snapshot。搜索覆盖该 snapshot manifest 中所有 committed 的 vector 文件（sealed + unsealed），有 index 的走索引搜索，无 index 的走暴搜。
+
+```sql
+CALL sys.search_accelerate_index(
+  table => 'ks_hdp.test_accel_idx_vcf',
+  column => 'embedding',
+  query_vector => '10.0,0.0,0.0,...,0.0',  -- 2048 维
+  top_k => 10,
+  dim => 2048,
+  metric => 'l2',
+  partitions => 'pt=1'
+);
+-- 期望: pk ∈ [0, 200)（cluster 0），score > 0
+-- snapshot_id 可选，不指定默认最新。
+```
+
+构建产物（per vector file）：
+- `<vectorFile>.aix.c<colId>.lumina.aindex` — DiskANN 索引
+- `<vectorFile>.aix.c<colId>.lumina.pkmap` — rowIndex → PK 映射表（index build 产出）
+- `<vectorFile>.pkmap` — rowIndex → PK 映射表（flush 时同步写入的 sidecar，或 `build_pkmap` procedure 补建）
+
+### pkmap 补建（老数据）
+
+```sql
+-- 为没有 .pkmap 的老向量文件补建 sidecar pkmap
+CALL sys.build_pkmap(table => 'db.user_embeddings');
+-- 期望: "Built N pkmap files, skipped M (already exist), failed 0."
+```
+
+### 检索流程
+
+**Driver 侧**（plan）：
+1. 读 manifest（零 per-bucket I/O，不读 meta JSON）
+2. 每个 vector 文件 → 一个 `VectorCFSearchSplit`
+3. Split 包含：vectorFileName + scalarFiles(**仅 L1+**) + DV info + search params
+
+**Executor 侧**（read）：
+1. 从 vectorFileName 推导 `.aindex` 路径 → try-open
+2. 若存在：加载索引 → search → 加载 `.pkmap`（sidecar 优先 > index-style fallback） → PK IN 批量查 → VecDesc 验证
+3. 若不存在：暴搜（直接读 `.vector.bin` → 全量距离计算 → topK → pkmap PK IN → fallback 两遍 scalar 扫描）
+
+### 验证要点
+
+| 场景 | 验证方法 |
+|---|---|
+| 索引文件命名 | 检查 bucket 目录下 `.aindex` 和 `.pkmap` 文件名格式正确 |
+| 1:1 对应 | meta entry 的 dataFiles 恰好 1 个 `.vector.bin` 文件 |
+| pkmap 存在 | sidecar `.pkmap` 或 index-style `.pkmap` 至少存在一个 |
+| L1+ 一致性 | 搜索结果只包含 L1+ 数据，与纯标量查询对齐 |
+| 搜索正确性 | query cluster 0 center → top-5 pk ∈ [0, clusterSize) |
+| DV 过滤 | 删除 pk 后搜索 → 已删 pk 不在结果中 |
+| 暴搜回退 | 无索引时仍可搜索 |
+| idempotent | 同数据二次构建 → skip |
+
+### PaimonSqlStreamer vector-cf 模式
+
+```bash
+# vector-cf 模式（2048 维聚类向量，vector 文件按 20 万行 seal）
+# Phase 1: 建表 + 写数据
+flink run -c org.apache.paimon.flink.PaimonSqlStreamer paimon-flink-1.18.jar \
+  --vcf --phase 1 --rows 1000 --table test_accel_idx_vcf
+
+# Phase 1c: Compact → Snapshot S1
+flink run -c org.apache.paimon.flink.PaimonSqlStreamer paimon-flink-1.18.jar \
+  --vcf --phase 1c --table test_accel_idx_vcf
+
+# Phase 2: Partial update pk [0,300) → Snapshot S2 (DV)
+flink run -c org.apache.paimon.flink.PaimonSqlStreamer paimon-flink-1.18.jar \
+  --vcf --phase 2 --table test_accel_idx_vcf --updateStart 0 --updateEnd 300
+
+# Phase 3: Compact 合并 DV → Snapshot S3
+flink run -c org.apache.paimon.flink.PaimonSqlStreamer paimon-flink-1.18.jar \
+  --vcf --phase 3 --table test_accel_idx_vcf
+```
+
+VCF 模式默认：dim=2048，`vector-column-family.target-file-rows=200000`，cluster_size=200。1000 行 / 200000 行限制 → 1 个未 sealed 的 vector 文件（需更多数据才 seal）。大规模测试用 `--rows 1000000` 以产出多个 sealed 文件。

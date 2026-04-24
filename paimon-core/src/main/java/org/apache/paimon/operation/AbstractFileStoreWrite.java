@@ -88,6 +88,12 @@ public abstract class AbstractFileStoreWrite<T> implements FileStoreWrite<T> {
     private boolean ignorePreviousFiles = false;
     private boolean ignoreNumBucketCheck = false;
 
+    /**
+     * Vector CF files from the last writer restore. Used by the vector writer factory to discover
+     * unfilled vector files for append. Reset on each createWriterContainer() call.
+     */
+    protected volatile List<DataFileMeta> lastRestoredVectorCFFiles = new ArrayList<>();
+
     protected CompactionMetrics compactionMetrics = null;
     protected final String tableName;
     private final boolean legacyPartitionName;
@@ -451,6 +457,18 @@ public abstract class AbstractFileStoreWrite<T> implements FileStoreWrite<T> {
         if (restoreFiles == null) {
             restoreFiles = new ArrayList<>();
         }
+        // Separate vector column family files — they should not enter Levels/compaction
+        List<DataFileMeta> vectorCFFiles = new ArrayList<>();
+        Iterator<DataFileMeta> iter = restoreFiles.iterator();
+        while (iter.hasNext()) {
+            DataFileMeta f = iter.next();
+            if (f.isVectorCFFile()) {
+                vectorCFFiles.add(f);
+                iter.remove();
+            }
+        }
+        // Store for potential cross-Job append discovery (P0.5, TODO)
+        this.lastRestoredVectorCFFiles = vectorCFFiles;
         RecordWriter<T> writer =
                 createWriter(
                         partition.copy(),

@@ -425,6 +425,523 @@ class AccelerateIndexSearchSplitUtilsTest {
         assertThat(result).isEmpty();
     }
 
+    // ---- buildVectorCFSplitsForBucket tests ----
+
+    @Test
+    void testBuildVectorCFSplitsBasic() {
+        // 2 scalar files + 2 vector files for "embedding" column
+        List<DataFileMeta> bucketFiles = new ArrayList<>();
+        bucketFiles.add(scalarFile("data-1.parquet", 100));
+        bucketFiles.add(scalarFile("data-2.parquet", 200));
+        bucketFiles.add(vectorFile("f1.vector.bin", "embedding", 50));
+        bucketFiles.add(vectorFile("f2.vector.bin", "embedding", 80));
+
+        BinaryRow partition = binaryRow(1);
+        AccelerateIndexSearch search =
+                new AccelerateIndexSearch("embedding", new float[] {1.0f}, 10, "lumina");
+
+        List<VectorCFSearchSplit> splits =
+                AccelerateIndexSearchSplitUtils.buildVectorCFSplitsForBucket(
+                        1L,
+                        partition,
+                        0,
+                        "/bucket-0",
+                        bucketFiles,
+                        Collections.emptyMap(),
+                        search,
+                        2,
+                        "embedding");
+
+        // Should produce 2 splits (one per vector file)
+        assertThat(splits).hasSize(2);
+
+        // Each split should contain all scalar files
+        for (VectorCFSearchSplit split : splits) {
+            assertThat(split.scalarFiles()).hasSize(2);
+            assertThat(split.partition()).isEqualTo(partition);
+            assertThat(split.bucket()).isEqualTo(0);
+            assertThat(split.bucketPath()).isEqualTo("/bucket-0");
+            assertThat(split.snapshotId()).isEqualTo(1L);
+            assertThat(split.columnId()).isEqualTo(2);
+            assertThat(split.search()).isSameAs(search);
+        }
+
+        // Vector file names should match (LinkedHashSet preserves insertion order)
+        assertThat(splits.get(0).vectorFileName()).isEqualTo("f1.vector.bin");
+        assertThat(splits.get(1).vectorFileName()).isEqualTo("f2.vector.bin");
+    }
+
+    @Test
+    void testBuildVectorCFSplitsFiltersOtherColumns() {
+        // Vector files for different columns
+        List<DataFileMeta> bucketFiles = new ArrayList<>();
+        bucketFiles.add(scalarFile("data.parquet", 100));
+        bucketFiles.add(vectorFile("emb.vector.bin", "embedding", 50));
+        bucketFiles.add(vectorFile("img.vector.bin", "image_vec", 60));
+
+        AccelerateIndexSearch search =
+                new AccelerateIndexSearch("embedding", new float[] {1.0f}, 10, "lumina");
+
+        List<VectorCFSearchSplit> splits =
+                AccelerateIndexSearchSplitUtils.buildVectorCFSplitsForBucket(
+                        1L,
+                        binaryRow(1),
+                        0,
+                        "/bucket-0",
+                        bucketFiles,
+                        Collections.emptyMap(),
+                        search,
+                        2,
+                        "embedding");
+
+        // Only the "embedding" vector file should produce a split
+        assertThat(splits).hasSize(1);
+        assertThat(splits.get(0).vectorFileName()).isEqualTo("emb.vector.bin");
+    }
+
+    @Test
+    void testBuildVectorCFSplitsNoScalarFiles() {
+        // Only vector files, no scalar files
+        List<DataFileMeta> bucketFiles = new ArrayList<>();
+        bucketFiles.add(vectorFile("f1.vector.bin", "embedding", 50));
+
+        List<VectorCFSearchSplit> splits =
+                AccelerateIndexSearchSplitUtils.buildVectorCFSplitsForBucket(
+                        1L,
+                        binaryRow(1),
+                        0,
+                        "/bucket-0",
+                        bucketFiles,
+                        Collections.emptyMap(),
+                        new AccelerateIndexSearch("embedding", new float[] {1.0f}, 10, "lumina"),
+                        2,
+                        "embedding");
+
+        // No scalar files → no splits
+        assertThat(splits).isEmpty();
+    }
+
+    @Test
+    void testBuildVectorCFSplitsWithDV() {
+        List<DataFileMeta> bucketFiles = new ArrayList<>();
+        bucketFiles.add(scalarFile("data-1.parquet", 100));
+        bucketFiles.add(scalarFile("data-2.parquet", 200));
+        bucketFiles.add(vectorFile("f1.vector.bin", "embedding", 50));
+
+        Map<String, DeletionFile> dvMap = new HashMap<>();
+        dvMap.put("data-1.parquet", new DeletionFile("dv-path", 0, 10, null));
+
+        List<VectorCFSearchSplit> splits =
+                AccelerateIndexSearchSplitUtils.buildVectorCFSplitsForBucket(
+                        1L,
+                        binaryRow(1),
+                        0,
+                        "/bucket-0",
+                        bucketFiles,
+                        dvMap,
+                        new AccelerateIndexSearch("embedding", new float[] {1.0f}, 10, "lumina"),
+                        2,
+                        "embedding");
+
+        assertThat(splits).hasSize(1);
+        // DV should be present (data-1 has DV, data-2 does not)
+        assertThat(splits.get(0).deletionFiles()).isPresent();
+        List<DeletionFile> dvList = splits.get(0).deletionFiles().get();
+        assertThat(dvList).hasSize(2);
+        assertThat(dvList.get(0)).isNotNull(); // data-1.parquet has DV
+        assertThat(dvList.get(1)).isNull(); // data-2.parquet has no DV
+    }
+
+    @Test
+    void testBuildVectorCFSplitsNoDV() {
+        List<DataFileMeta> bucketFiles = new ArrayList<>();
+        bucketFiles.add(scalarFile("data.parquet", 100));
+        bucketFiles.add(vectorFile("f1.vector.bin", "embedding", 50));
+
+        List<VectorCFSearchSplit> splits =
+                AccelerateIndexSearchSplitUtils.buildVectorCFSplitsForBucket(
+                        1L,
+                        binaryRow(1),
+                        0,
+                        "/bucket-0",
+                        bucketFiles,
+                        Collections.emptyMap(),
+                        new AccelerateIndexSearch("embedding", new float[] {1.0f}, 10, "lumina"),
+                        2,
+                        "embedding");
+
+        assertThat(splits).hasSize(1);
+        // No DV → Optional.empty()
+        assertThat(splits.get(0).deletionFiles()).isEmpty();
+    }
+
+    @Test
+    void testBuildVectorCFSplitsDeduplicatesVectorFiles() {
+        // Same vector file name appears twice in manifest (shouldn't happen, but test dedup)
+        List<DataFileMeta> bucketFiles = new ArrayList<>();
+        bucketFiles.add(scalarFile("data.parquet", 100));
+        bucketFiles.add(vectorFile("f1.vector.bin", "embedding", 50));
+        bucketFiles.add(vectorFile("f1.vector.bin", "embedding", 50));
+
+        List<VectorCFSearchSplit> splits =
+                AccelerateIndexSearchSplitUtils.buildVectorCFSplitsForBucket(
+                        1L,
+                        binaryRow(1),
+                        0,
+                        "/bucket-0",
+                        bucketFiles,
+                        Collections.emptyMap(),
+                        new AccelerateIndexSearch("embedding", new float[] {1.0f}, 10, "lumina"),
+                        2,
+                        "embedding");
+
+        // Dedup: only 1 split
+        assertThat(splits).hasSize(1);
+    }
+
+    @Test
+    void testBuildVectorCFSplitsSharedScalarFilesAreUnmodifiable() {
+        List<DataFileMeta> bucketFiles = new ArrayList<>();
+        bucketFiles.add(scalarFile("data.parquet", 100));
+        bucketFiles.add(vectorFile("f1.vector.bin", "embedding", 50));
+        bucketFiles.add(vectorFile("f2.vector.bin", "embedding", 80));
+
+        List<VectorCFSearchSplit> splits =
+                AccelerateIndexSearchSplitUtils.buildVectorCFSplitsForBucket(
+                        1L,
+                        binaryRow(1),
+                        0,
+                        "/bucket-0",
+                        bucketFiles,
+                        Collections.emptyMap(),
+                        new AccelerateIndexSearch("embedding", new float[] {1.0f}, 10, "lumina"),
+                        2,
+                        "embedding");
+
+        assertThat(splits).hasSize(2);
+        // Both splits share the same unmodifiable list
+        assertThat(splits.get(0).scalarFiles()).isSameAs(splits.get(1).scalarFiles());
+        // Verify unmodifiable
+        try {
+            splits.get(0).scalarFiles().add(scalarFile("extra.parquet", 10));
+            throw new AssertionError("Expected UnsupportedOperationException");
+        } catch (UnsupportedOperationException e) {
+            // expected
+        }
+    }
+
+    @Test
+    void testBuildVectorCFSplitsFiltersL0ScalarFiles() {
+        // Mix of L0 and L1 scalar files — only L1 should be included
+        DataFileMeta l0Scalar =
+                DataFileMeta.forAppend(
+                        "l0-data.parquet",
+                        1024,
+                        100,
+                        org.apache.paimon.stats.SimpleStats.EMPTY_STATS,
+                        0,
+                        99,
+                        0,
+                        Collections.emptyList(),
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null); // level = 0 (DUMMY_LEVEL)
+        DataFileMeta l1Scalar = scalarFile("l1-data.parquet", 200); // level = 1
+
+        List<DataFileMeta> bucketFiles = new ArrayList<>();
+        bucketFiles.add(l0Scalar);
+        bucketFiles.add(l1Scalar);
+        bucketFiles.add(vectorFile("f1.vector.bin", "embedding", 50));
+
+        List<VectorCFSearchSplit> splits =
+                AccelerateIndexSearchSplitUtils.buildVectorCFSplitsForBucket(
+                        1L,
+                        binaryRow(1),
+                        0,
+                        "/bucket-0",
+                        bucketFiles,
+                        Collections.emptyMap(),
+                        new AccelerateIndexSearch("embedding", new float[] {1.0f}, 10, "lumina"),
+                        2,
+                        "embedding");
+
+        assertThat(splits).hasSize(1);
+        // Only L1 scalar file should be in the split
+        assertThat(splits.get(0).scalarFiles()).hasSize(1);
+        assertThat(splits.get(0).scalarFiles().get(0).fileName()).isEqualTo("l1-data.parquet");
+    }
+
+    @Test
+    void testBuildVectorCFSplitsAllL0ScalarFilesProducesNoSplits() {
+        // All scalar files are L0 — no splits should be produced
+        DataFileMeta l0Scalar =
+                DataFileMeta.forAppend(
+                        "l0-only.parquet",
+                        1024,
+                        100,
+                        org.apache.paimon.stats.SimpleStats.EMPTY_STATS,
+                        0,
+                        99,
+                        0,
+                        Collections.emptyList(),
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null); // level = 0
+
+        List<DataFileMeta> bucketFiles = new ArrayList<>();
+        bucketFiles.add(l0Scalar);
+        bucketFiles.add(vectorFile("f1.vector.bin", "embedding", 50));
+
+        List<VectorCFSearchSplit> splits =
+                AccelerateIndexSearchSplitUtils.buildVectorCFSplitsForBucket(
+                        1L,
+                        binaryRow(1),
+                        0,
+                        "/bucket-0",
+                        bucketFiles,
+                        Collections.emptyMap(),
+                        new AccelerateIndexSearch("embedding", new float[] {1.0f}, 10, "lumina"),
+                        2,
+                        "embedding");
+
+        // No L1+ scalar files → no splits
+        assertThat(splits).isEmpty();
+    }
+
+    @Test
+    void testBuildVectorCFSplitsForBucketWithIndexFiltersL0() throws Exception {
+        // Use the buildVectorCFSplitsForBucketWithIndex method — verify L0 scalar files excluded
+        FileStoreTable table = createTable("t_vcf_l0_idx", false, true);
+        writeInsertBatch(table, 0, 10);
+
+        // Construct mixed L0 and L1 scalar + vector files
+        DataFileMeta l0Scalar =
+                DataFileMeta.forAppend(
+                        "l0-data.parquet",
+                        1024,
+                        100,
+                        org.apache.paimon.stats.SimpleStats.EMPTY_STATS,
+                        0,
+                        99,
+                        0,
+                        Collections.emptyList(),
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null); // level = 0
+        DataFileMeta l1Scalar = scalarFile("l1-data.parquet", 200);
+        DataFileMeta vectorMeta = vectorFile("v1.vector.bin", "embedding", 50);
+
+        List<DataFileMeta> bucketFiles = new ArrayList<>();
+        bucketFiles.add(l0Scalar);
+        bucketFiles.add(l1Scalar);
+        bucketFiles.add(vectorMeta);
+
+        // Write meta with a READY entry for the vector file
+        Path metaPath =
+                new Path(
+                        tempDir.toString() + "/default.db/t_vcf_l0_idx/pt=1/bucket-0",
+                        AccelerateIndexConstants.META_FILE_NAME);
+        fileIO.mkdirs(metaPath.getParent());
+        AccelerateIndexEntry entry =
+                createTestEntry(
+                        "idx-vcf",
+                        "lumina",
+                        AccelerateIndexState.READY,
+                        1,
+                        Collections.singletonList(
+                                new AccelerateIndexDataFileInfo("v1.vector.bin", 50, 0)));
+        AccelerateIndexMetaIO.casUpdate(
+                fileIO,
+                metaPath,
+                current -> {
+                    List<AccelerateIndexEntry> entries = new ArrayList<>(current.entries());
+                    entries.add(entry);
+                    return entries;
+                });
+
+        List<AccelerateIndexSearchSplitUtils.SearchUnit> units =
+                AccelerateIndexSearchSplitUtils.buildSearchUnitsForBucketVectorCF(
+                        1L,
+                        binaryRow(1),
+                        0,
+                        metaPath.getParent().toString(),
+                        bucketFiles,
+                        Collections.emptyMap(),
+                        fileIO,
+                        2,
+                        "lumina",
+                        "embedding",
+                        true);
+
+        // At least one unit should be returned, and scalar files should only contain L1
+        assertThat(units).isNotEmpty();
+        for (AccelerateIndexSearchSplitUtils.SearchUnit unit : units) {
+            for (DataFileMeta f : unit.split().dataFiles()) {
+                if (!f.isVectorCFFile()) {
+                    assertThat(f.level()).as("Scalar file should be L1+").isGreaterThanOrEqualTo(1);
+                }
+            }
+        }
+    }
+
+    // ---- VectorCFSearchSplit serialization tests ----
+
+    @Test
+    void testVectorCFSearchSplitSerializeDeserialize() throws Exception {
+        List<DataFileMeta> scalarFiles = new ArrayList<>();
+        scalarFiles.add(scalarFile("data-1.parquet", 100));
+        scalarFiles.add(scalarFile("data-2.parquet", 200));
+
+        AccelerateIndexSearch search =
+                new AccelerateIndexSearch(
+                        "embedding",
+                        new float[] {1.0f, 2.0f, 3.0f},
+                        10,
+                        "lumina",
+                        "l2",
+                        3,
+                        Collections.singletonMap("nprobe", "32"),
+                        42L);
+
+        VectorCFSearchSplit original =
+                new VectorCFSearchSplit(
+                        "f1.vector.bin",
+                        scalarFiles,
+                        null, // no deletion files
+                        search,
+                        5,
+                        binaryRow(1),
+                        3,
+                        "/warehouse/db/table/pt=1/bucket-3",
+                        42L);
+
+        byte[] bytes = original.serialize();
+        VectorCFSearchSplit deserialized = VectorCFSearchSplit.deserialize(bytes);
+
+        assertThat(deserialized.vectorFileName()).isEqualTo("f1.vector.bin");
+        assertThat(deserialized.snapshotId()).isEqualTo(42L);
+        assertThat(deserialized.bucket()).isEqualTo(3);
+        assertThat(deserialized.bucketPath()).isEqualTo("/warehouse/db/table/pt=1/bucket-3");
+        assertThat(deserialized.columnId()).isEqualTo(5);
+        assertThat(deserialized.scalarFiles()).hasSize(2);
+        assertThat(deserialized.scalarFiles().get(0).fileName()).isEqualTo("data-1.parquet");
+        assertThat(deserialized.scalarFiles().get(1).fileName()).isEqualTo("data-2.parquet");
+        assertThat(deserialized.deletionFiles()).isEmpty();
+
+        // Verify search fields
+        AccelerateIndexSearch dSearch = deserialized.search();
+        assertThat(dSearch.columnName()).isEqualTo("embedding");
+        assertThat(dSearch.queryVector()).containsExactly(1.0f, 2.0f, 3.0f);
+        assertThat(dSearch.topK()).isEqualTo(10);
+        assertThat(dSearch.algorithm()).isEqualTo("lumina");
+        assertThat(dSearch.metric()).isEqualTo("l2");
+        assertThat(dSearch.dim()).isEqualTo(3);
+        assertThat(dSearch.snapshotId()).isEqualTo(42L);
+        assertThat(dSearch.options()).containsEntry("nprobe", "32");
+    }
+
+    @Test
+    void testVectorCFSearchSplitSerializeWithDeletionFiles() throws Exception {
+        List<DataFileMeta> scalarFiles = new ArrayList<>();
+        scalarFiles.add(scalarFile("data.parquet", 100));
+
+        List<DeletionFile> dvFiles = new ArrayList<>();
+        dvFiles.add(new DeletionFile("dv-file.bin", 0, 128, 5L));
+
+        VectorCFSearchSplit original =
+                new VectorCFSearchSplit(
+                        "v.vector.bin",
+                        scalarFiles,
+                        dvFiles,
+                        new AccelerateIndexSearch("embedding", new float[] {1.0f}, 5, "lumina"),
+                        2,
+                        binaryRow(1),
+                        0,
+                        "/bucket-0",
+                        1L);
+
+        byte[] bytes = original.serialize();
+        VectorCFSearchSplit deserialized = VectorCFSearchSplit.deserialize(bytes);
+
+        assertThat(deserialized.deletionFiles()).isPresent();
+        List<DeletionFile> deserializedDvs = deserialized.deletionFiles().get();
+        assertThat(deserializedDvs).hasSize(1);
+        assertThat(deserializedDvs.get(0).path()).isEqualTo("dv-file.bin");
+        assertThat(deserializedDvs.get(0).offset()).isEqualTo(0);
+        assertThat(deserializedDvs.get(0).length()).isEqualTo(128);
+    }
+
+    @Test
+    void testVectorCFSearchSplitSerializePreservesPartition() throws Exception {
+        BinaryRow partition = binaryRow(42);
+        VectorCFSearchSplit original =
+                new VectorCFSearchSplit(
+                        "v.vector.bin",
+                        Collections.singletonList(scalarFile("data.parquet", 10)),
+                        null,
+                        new AccelerateIndexSearch("embedding", new float[] {1.0f}, 5, "lumina"),
+                        2,
+                        partition,
+                        0,
+                        "/bucket-0",
+                        1L);
+
+        byte[] bytes = original.serialize();
+        VectorCFSearchSplit deserialized = VectorCFSearchSplit.deserialize(bytes);
+
+        assertThat(deserialized.partition().getFieldCount()).isEqualTo(partition.getFieldCount());
+        assertThat(deserialized.partition().getInt(0)).isEqualTo(42);
+    }
+
+    // ---- VCF test helpers ----
+
+    private DataFileMeta scalarFile(String name, long rowCount) {
+        // Level 1 to match the L1+ filter in buildVectorCFSplitsForBucket
+        return DataFileMeta.forAppend(
+                        name,
+                        1024,
+                        rowCount,
+                        org.apache.paimon.stats.SimpleStats.EMPTY_STATS,
+                        0,
+                        rowCount - 1,
+                        0,
+                        Collections.emptyList(),
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null) // writeCols = null → not a VCF file
+                .upgrade(1);
+    }
+
+    private DataFileMeta vectorFile(String name, String columnName, long rowCount) {
+        return DataFileMeta.forAppend(
+                name,
+                2048,
+                rowCount,
+                org.apache.paimon.stats.SimpleStats.EMPTY_STATS,
+                0,
+                rowCount - 1,
+                0,
+                Collections.emptyList(),
+                null,
+                null,
+                null,
+                null,
+                null,
+                Collections.singletonList(columnName)); // writeCols set → VCF file
+    }
+
     // ---- helpers ----
 
     private FileStoreTable createTable(String name, boolean dvEnabled, boolean noCompaction)

@@ -20,8 +20,10 @@ package org.apache.paimon.table.source.snapshot;
 
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.Snapshot;
+import org.apache.paimon.accelerateindex.AccelerateIndexSearch;
 import org.apache.paimon.accelerateindex.AccelerateIndexSearchSplitUtils;
 import org.apache.paimon.accelerateindex.AccelerateIndexSearchSplitUtils.SearchUnit;
+import org.apache.paimon.accelerateindex.VectorCFSearchSplit;
 import org.apache.paimon.codegen.CodeGenUtils;
 import org.apache.paimon.codegen.RecordComparator;
 import org.apache.paimon.consumer.ConsumerManager;
@@ -405,10 +407,19 @@ public class SnapshotReaderImpl implements SnapshotReader {
             Map<Integer, List<ManifestEntry>> buckets = entry.getValue();
             for (Map.Entry<Integer, List<ManifestEntry>> bucketEntry : buckets.entrySet()) {
                 int bucket = bucketEntry.getKey();
-                List<DataFileMeta> bucketFiles =
-                        bucketEntry.getValue().stream()
-                                .map(ManifestEntry::file)
-                                .collect(Collectors.toList());
+                // Separate vector CF files from scalar files:
+                // - Scalar files go through split generator (key-range partitioning)
+                // - Vector CF files are appended to each resulting DataSplit (for resolver)
+                List<DataFileMeta> scalarFiles = new ArrayList<>();
+                List<DataFileMeta> vectorCFFiles = new ArrayList<>();
+                for (ManifestEntry me : bucketEntry.getValue()) {
+                    DataFileMeta f = me.file();
+                    if (f.isVectorCFFile()) {
+                        vectorCFFiles.add(f);
+                    } else {
+                        scalarFiles.add(f);
+                    }
+                }
                 DataSplit.Builder builder =
                         DataSplit.builder()
                                 .withSnapshot(
@@ -419,13 +430,20 @@ public class SnapshotReaderImpl implements SnapshotReader {
                                 .isStreaming(isStreaming);
                 List<SplitGenerator.SplitGroup> splitGroups =
                         isStreaming
-                                ? splitGenerator.splitForStreaming(bucketFiles)
-                                : splitGenerator.splitForBatch(bucketFiles);
+                                ? splitGenerator.splitForStreaming(scalarFiles)
+                                : splitGenerator.splitForBatch(scalarFiles);
 
                 // Calculate bucketPath once per bucket to avoid repeated computation
                 String bucketPath = pathFactory.bucketPath(partition, bucket).toString();
                 for (SplitGenerator.SplitGroup splitGroup : splitGroups) {
-                    List<DataFileMeta> dataFiles = splitGroup.files;
+                    // Include vector CF files in each split for fileId→filePath resolution
+                    List<DataFileMeta> dataFiles;
+                    if (vectorCFFiles.isEmpty()) {
+                        dataFiles = splitGroup.files;
+                    } else {
+                        dataFiles = new ArrayList<>(splitGroup.files);
+                        dataFiles.addAll(vectorCFFiles);
+                    }
                     builder.withDataFiles(dataFiles)
                             .rawConvertible(splitGroup.rawConvertible)
                             .withBucketPath(bucketPath);
@@ -477,6 +495,57 @@ public class SnapshotReaderImpl implements SnapshotReader {
                 snapshot, grouped, columnId, algorithm, emitUncoveredSplits);
     }
 
+    @Override
+    public List<VectorCFSearchSplit> readForVectorCFSearch(
+            AccelerateIndexSearch search, int columnId, String vectorColumnName) throws Exception {
+        FileStoreScan.Plan plan = scan.plan();
+
+        @Nullable Snapshot snapshot = plan.snapshot();
+        long snapshotId = snapshot == null ? FIRST_SNAPSHOT_ID - 1 : snapshot.id();
+
+        Map<BinaryRow, Map<Integer, List<ManifestEntry>>> grouped =
+                groupByPartFiles(plan.files(FileKind.ADD));
+
+        // Read DV index once for all buckets
+        Map<Pair<BinaryRow, Integer>, Map<String, DeletionFile>> deletionFilesMap =
+                deletionVectors && snapshot != null
+                        ? scanDvIndex(snapshot, toPartBuckets(grouped))
+                        : Collections.emptyMap();
+
+        List<VectorCFSearchSplit> result = new ArrayList<>();
+
+        for (Map.Entry<BinaryRow, Map<Integer, List<ManifestEntry>>> partEntry :
+                grouped.entrySet()) {
+            BinaryRow partition = partEntry.getKey();
+            for (Map.Entry<Integer, List<ManifestEntry>> bucketEntry :
+                    partEntry.getValue().entrySet()) {
+                int bucket = bucketEntry.getKey();
+                List<DataFileMeta> bucketFiles =
+                        bucketEntry.getValue().stream()
+                                .map(ManifestEntry::file)
+                                .collect(Collectors.toList());
+                String bucketPath = pathFactory.bucketPath(partition, bucket).toString();
+                Map<String, DeletionFile> dvMap =
+                        deletionFilesMap.getOrDefault(
+                                Pair.of(partition, bucket), Collections.emptyMap());
+
+                result.addAll(
+                        AccelerateIndexSearchSplitUtils.buildVectorCFSplitsForBucket(
+                                snapshotId,
+                                partition,
+                                bucket,
+                                bucketPath,
+                                bucketFiles,
+                                dvMap,
+                                search,
+                                columnId,
+                                vectorColumnName));
+            }
+        }
+
+        return result;
+    }
+
     private List<SearchUnit> generateIndexAwareSplits(
             @Nullable Snapshot snapshot,
             Map<BinaryRow, Map<Integer, List<ManifestEntry>>> entries,
@@ -524,6 +593,7 @@ public class SnapshotReaderImpl implements SnapshotReader {
                                 emitUncoveredSplits));
             }
         }
+
         return result;
     }
 
@@ -598,9 +668,13 @@ public class SnapshotReaderImpl implements SnapshotReader {
                 List<DataFileMeta> before =
                         beforeEntries.stream()
                                 .map(ManifestEntry::file)
+                                .filter(f -> !f.isVectorCFFile())
                                 .collect(Collectors.toList());
                 List<DataFileMeta> after =
-                        dataEntries.stream().map(ManifestEntry::file).collect(Collectors.toList());
+                        dataEntries.stream()
+                                .map(ManifestEntry::file)
+                                .filter(f -> !f.isVectorCFFile())
+                                .collect(Collectors.toList());
 
                 List<DeletionFile> beforeDeletionFiles = null;
                 if (deletionVectors && beforeDeletionFilesMap != null) {

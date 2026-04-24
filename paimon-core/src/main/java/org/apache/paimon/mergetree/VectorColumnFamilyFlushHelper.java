@@ -25,10 +25,12 @@ import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.data.InternalVector;
 import org.apache.paimon.data.VectorDescriptor;
 import org.apache.paimon.data.VectorRef;
+import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.types.RowType;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
@@ -47,6 +49,9 @@ import java.util.stream.IntStream;
  * unchanged — the merge function preserves the old descriptor bytes via its null-skip logic.
  */
 public class VectorColumnFamilyFlushHelper implements Closeable {
+
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(VectorColumnFamilyFlushHelper.class);
 
     /** Maps column index → writer index, or -1 if not a vector column. */
     private final int[] columnToWriterIndex;
@@ -102,6 +107,17 @@ public class VectorColumnFamilyFlushHelper implements Closeable {
             return kv;
         }
 
+        // Extract PK row for pkmap sync writing (kv.key() is the trimmed PK)
+        org.apache.paimon.data.BinaryRow pkRow = null;
+        InternalRow key = kv.key();
+        if (key instanceof org.apache.paimon.data.BinaryRow) {
+            pkRow = (org.apache.paimon.data.BinaryRow) key;
+        } else if (key != null) {
+            LOG.warn(
+                    "kv.key() is {} instead of BinaryRow, pkmap entry will be empty",
+                    key.getClass().getSimpleName());
+        }
+
         // Populate override row: only vector positions, scalar positions stay null (fallback)
         overrideRow.setRowKind(value.getRowKind());
         for (int i = 0; i < fieldCount; i++) {
@@ -112,6 +128,10 @@ public class VectorColumnFamilyFlushHelper implements Closeable {
             } else if (value.isNullAt(i)) {
                 overrideRow.setField(i, null);
             } else {
+                // Buffer PK for pkmap before writing vector
+                if (vectorFileWriters[wIdx] instanceof DefaultVectorFileWriter) {
+                    ((DefaultVectorFileWriter) vectorFileWriters[wIdx]).bufferPk(pkRow);
+                }
                 InternalVector vec = value.getVector(i);
                 VectorDescriptor desc = vectorFileWriters[wIdx].writeVector(vec);
                 overrideRow.setField(i, new VectorRef(desc));
@@ -121,24 +141,53 @@ public class VectorColumnFamilyFlushHelper implements Closeable {
         return kv.replaceValue(resultRow.replace(overrideRow, value));
     }
 
+    /** Return the underlying writers (for persistent writer lifecycle management). */
+    public VectorFileWriter[] getWriters() {
+        return vectorFileWriters;
+    }
+
     @Override
     public void close() throws IOException {
-        for (VectorFileWriter writer : vectorFileWriters) {
+        // Helper does NOT close writers — writers are persistent across flushes
+        // and closed by MergeTreeWriter.close()
+    }
+
+    /** Close the underlying persistent writers. Called by MergeTreeWriter on shutdown. */
+    public static void closeWriters(VectorFileWriter[] writers) throws IOException {
+        for (VectorFileWriter writer : writers) {
             writer.close();
         }
     }
 
     /**
-     * Writes vector data to separate files. Vector files are not tracked in the manifest — they are
-     * referenced only through {@link VectorDescriptor} embedded in the main data file.
+     * Collect DataFileMeta entries for vector files produced during this flush cycle. Must be
+     * called after {@link #close()}.
+     */
+    public List<DataFileMeta> collectVectorFileMetas() {
+        List<DataFileMeta> result = new ArrayList<>();
+        for (VectorFileWriter writer : vectorFileWriters) {
+            result.addAll(writer.result());
+        }
+        return result;
+    }
+
+    /**
+     * Writes vector data to separate files. Vector files are tracked in the manifest via {@link
+     * DataFileMeta} entries with {@code writeCols} set to the vector column name.
      */
     public interface VectorFileWriter extends Closeable {
         VectorDescriptor writeVector(InternalVector vector) throws IOException;
+
+        /** Return DataFileMeta entries for completed vector files. Call after close(). */
+        List<DataFileMeta> result();
     }
 
-    /** Factory for creating a new helper per flush cycle. */
-    @FunctionalInterface
+    /** Factory for creating helpers. Creates new writers on first call, reuses them after. */
     public interface Factory {
+        /** Create a new helper with fresh writers (first flush). */
         VectorColumnFamilyFlushHelper create() throws IOException;
+
+        /** Create a helper wrapping existing persistent writers (subsequent flushes). */
+        VectorColumnFamilyFlushHelper createWithWriters(VectorFileWriter[] writers);
     }
 }

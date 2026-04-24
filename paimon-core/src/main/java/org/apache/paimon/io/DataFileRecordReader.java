@@ -25,7 +25,9 @@ import org.apache.paimon.casting.FallbackMappingRow;
 import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.data.PartitionInfo;
+import org.apache.paimon.data.columnar.ColumnarRow;
 import org.apache.paimon.data.columnar.ColumnarRowIterator;
+import org.apache.paimon.data.columnar.VectorCFReaderContext;
 import org.apache.paimon.format.FormatReaderFactory;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.reader.FileRecordIterator;
@@ -60,6 +62,7 @@ public class DataFileRecordReader implements FileRecordReader<InternalRow> {
     private final long maxSequenceNumber;
     private final Map<String, Integer> systemFields;
     @Nullable private final RoaringBitmap32 selection;
+    @Nullable private final VectorCFReaderContext vectorCFContext;
 
     public DataFileRecordReader(
             RowType tableRowType,
@@ -88,7 +91,8 @@ public class DataFileRecordReader implements FileRecordReader<InternalRow> {
                 maxSequenceNumber,
                 systemFields,
                 context.selection(),
-                context.filePath());
+                context.filePath(),
+                context.vectorCFContext());
     }
 
     public DataFileRecordReader(
@@ -105,6 +109,38 @@ public class DataFileRecordReader implements FileRecordReader<InternalRow> {
             Map<String, Integer> systemFields,
             @Nullable RoaringBitmap32 selection,
             Path filePath) {
+        this(
+                tableRowType,
+                reader,
+                ignoreCorruptFiles,
+                ignoreLostFiles,
+                indexMapping,
+                castMapping,
+                partitionInfo,
+                rowTrackingEnabled,
+                firstRowId,
+                maxSequenceNumber,
+                systemFields,
+                selection,
+                filePath,
+                null);
+    }
+
+    public DataFileRecordReader(
+            RowType tableRowType,
+            FileRecordReader<InternalRow> reader,
+            boolean ignoreCorruptFiles,
+            boolean ignoreLostFiles,
+            @Nullable int[] indexMapping,
+            @Nullable CastFieldGetter[] castMapping,
+            @Nullable PartitionInfo partitionInfo,
+            boolean rowTrackingEnabled,
+            @Nullable Long firstRowId,
+            long maxSequenceNumber,
+            Map<String, Integer> systemFields,
+            @Nullable RoaringBitmap32 selection,
+            Path filePath,
+            @Nullable VectorCFReaderContext vectorCFContext) {
         this.tableRowType = tableRowType;
         this.reader = reader;
         this.ignoreCorruptFiles = ignoreCorruptFiles;
@@ -117,6 +153,7 @@ public class DataFileRecordReader implements FileRecordReader<InternalRow> {
         this.systemFields = systemFields;
         this.selection = selection;
         this.filePath = filePath;
+        this.vectorCFContext = vectorCFContext;
     }
 
     private static FileRecordReader<InternalRow> createReader(
@@ -178,6 +215,13 @@ public class DataFileRecordReader implements FileRecordReader<InternalRow> {
         }
 
         if (iterator instanceof ColumnarRowIterator) {
+            // Set VectorCFReaderContext on the underlying ColumnarRow for V2 descriptor resolution
+            if (vectorCFContext != null) {
+                ColumnarRow columnarRow = ((ColumnarRowIterator) iterator).getColumnarRow();
+                if (columnarRow != null) {
+                    columnarRow.setVectorCFContext(vectorCFContext);
+                }
+            }
             iterator = ((ColumnarRowIterator) iterator).mapping(partitionInfo, indexMapping);
             if (rowTrackingEnabled) {
                 iterator =

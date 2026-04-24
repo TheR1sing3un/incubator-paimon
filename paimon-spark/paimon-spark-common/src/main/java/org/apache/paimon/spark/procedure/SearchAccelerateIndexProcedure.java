@@ -23,8 +23,11 @@ import org.apache.paimon.accelerateindex.AccelerateIndexProviderUtils;
 import org.apache.paimon.accelerateindex.AccelerateIndexScanResult;
 import org.apache.paimon.accelerateindex.AccelerateIndexScanner;
 import org.apache.paimon.accelerateindex.AccelerateIndexScannerContext;
+import org.apache.paimon.accelerateindex.AccelerateIndexSearch;
 import org.apache.paimon.accelerateindex.AccelerateIndexSearchSplitUtils;
 import org.apache.paimon.accelerateindex.AccelerateIndexSearchSplitUtils.SearchUnit;
+import org.apache.paimon.accelerateindex.VectorCFSearchHelper;
+import org.apache.paimon.accelerateindex.VectorCFSearchSplit;
 import org.apache.paimon.accelerateindex.VectorDistanceUtils;
 import org.apache.paimon.data.InternalArray;
 import org.apache.paimon.fs.FileIO;
@@ -243,7 +246,248 @@ public class SearchAccelerateIndexProcedure extends BaseProcedure {
             }
         }
 
-        // Build search units
+        // Build splits and distribute search
+        boolean isVectorCF = table.coreOptions().vectorColumnFamilyEnabled();
+
+        List<String[]> collectedResults;
+        if (isVectorCF) {
+            collectedResults =
+                    doSearchVectorCF(
+                            table,
+                            columnId,
+                            column,
+                            queryVector,
+                            topK,
+                            dim,
+                            algorithm,
+                            metric,
+                            searchOptions,
+                            pkNames,
+                            resultProjection,
+                            vectorPosInProjection,
+                            partitions,
+                            snapshotId);
+        } else {
+            collectedResults =
+                    doSearchAccelerateIndex(
+                            table,
+                            columnId,
+                            algorithm,
+                            queryVector,
+                            topK,
+                            dim,
+                            metric,
+                            searchOptions,
+                            resultProjection,
+                            pkNames,
+                            vectorPosInProjection,
+                            partitions,
+                            snapshotId,
+                            keyPredicate,
+                            valuePredicate,
+                            projectedPredicate);
+        }
+
+        // Parse results and global top-K merge
+        List<SearchResultRow> allResults = new ArrayList<>();
+        for (String[] row : collectedResults) {
+            allResults.add(new SearchResultRow(row[0], row[1], Float.parseFloat(row[2])));
+        }
+
+        // Global sort by score descending, take topK
+        allResults.sort((a, b) -> Float.compare(b.score, a.score));
+        if (allResults.size() > topK) {
+            allResults = allResults.subList(0, topK);
+        }
+
+        if (allResults.isEmpty()) {
+            return new InternalRow[] {newInternalRow(UTF8String.fromString("No results found"))};
+        }
+
+        InternalRow[] result = new InternalRow[allResults.size()];
+        for (int i = 0; i < allResults.size(); i++) {
+            result[i] = newInternalRow(UTF8String.fromString(allResults.get(i).format()));
+        }
+        return result;
+    }
+
+    /**
+     * Vector Column Family optimized search path. No per-bucket meta reads — uses
+     * readForVectorCFSearch to build lightweight VectorCFSearchSplits, then distributes search via
+     * VectorCFSearchHelper.
+     */
+    private List<String[]> doSearchVectorCF(
+            FileStoreTable table,
+            int columnId,
+            String columnName,
+            float[] queryVector,
+            int topK,
+            int dim,
+            String algorithm,
+            String metric,
+            Map<String, String> searchOptions,
+            List<String> pkNames,
+            int[] resultProjection,
+            int vectorPosInProjection,
+            String partitions,
+            @Nullable Long snapshotId)
+            throws Exception {
+        // Build VectorCFSearchSplits — one manifest read, zero per-bucket meta reads
+        AccelerateIndexSearch search =
+                new AccelerateIndexSearch(
+                        columnName,
+                        queryVector,
+                        topK,
+                        algorithm,
+                        metric,
+                        dim,
+                        searchOptions,
+                        snapshotId);
+        SnapshotReader reader = table.newSnapshotReader();
+        if (snapshotId != null) {
+            reader.withSnapshot(snapshotId);
+        }
+        if (!StringUtils.isNullOrWhitespaceOnly(partitions)) {
+            List<Map<String, String>> partitionList = getPartitions(partitions.split(";"));
+            reader = reader.withPartitionsFilter(partitionList);
+        }
+
+        List<VectorCFSearchSplit> vcfSplits =
+                reader.readForVectorCFSearch(search, columnId, columnName);
+        if (vcfSplits.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        // Serialize for Spark distribution
+        List<byte[]> serializedSplits = new ArrayList<>();
+        for (VectorCFSearchSplit split : vcfSplits) {
+            serializedSplits.add(split.serialize());
+        }
+
+        org.apache.spark.api.java.JavaSparkContext jsc =
+                new org.apache.spark.api.java.JavaSparkContext(spark().sparkContext());
+        int parallelism =
+                org.apache.paimon.spark.utils.SparkProcedureUtils.readParallelism(
+                        serializedSplits, spark());
+
+        // Build PK field getters for the VCF non-vector projection
+        // VCF projection: all fields except vector column
+        int vectorColumnIndex = table.schema().fieldNames().indexOf(columnName);
+        List<String> fieldNames = table.schema().fieldNames();
+        List<Integer> nonVecIndices = new ArrayList<>();
+        for (int i = 0; i < fieldNames.size(); i++) {
+            if (i != vectorColumnIndex) {
+                nonVecIndices.add(i);
+            }
+        }
+        // Map PK names to their positions in the non-vector projection
+        int[] pkPositionsInProjection = new int[pkNames.size()];
+        for (int i = 0; i < pkNames.size(); i++) {
+            int fieldIdx = fieldNames.indexOf(pkNames.get(i));
+            pkPositionsInProjection[i] = nonVecIndices.indexOf(fieldIdx);
+        }
+
+        // Capture closure context
+        final FileStoreTable finalTable = table;
+        final List<String> finalPkNames = pkNames;
+        final int finalTopK = topK;
+        final int[] finalPkPositions = pkPositionsInProjection;
+
+        return jsc.parallelize(serializedSplits, parallelism)
+                .flatMap(
+                        bytes -> {
+                            VectorCFSearchSplit split = VectorCFSearchSplit.deserialize(bytes);
+                            List<String[]> results = new ArrayList<>();
+
+                            // Build field getters for PK extraction on executor
+                            RowType fullRowType = finalTable.schema().logicalRowType();
+                            List<org.apache.paimon.types.DataField> projFields = new ArrayList<>();
+                            List<String> fNames = finalTable.schema().fieldNames();
+                            int vecIdx = fNames.indexOf(split.search().columnName());
+                            for (int i = 0; i < fNames.size(); i++) {
+                                if (i != vecIdx) {
+                                    projFields.add(fullRowType.getFields().get(i));
+                                }
+                            }
+                            RowType projRowType = new RowType(projFields);
+                            org.apache.paimon.data.InternalRow.FieldGetter[] pkGetters =
+                                    new org.apache.paimon.data.InternalRow.FieldGetter
+                                            [finalPkNames.size()];
+                            for (int i = 0; i < finalPkNames.size(); i++) {
+                                pkGetters[i] =
+                                        org.apache.paimon.data.InternalRow.createFieldGetter(
+                                                projRowType.getTypeAt(finalPkPositions[i]),
+                                                finalPkPositions[i]);
+                            }
+
+                            try (RecordReader<org.apache.paimon.data.InternalRow> rr =
+                                    VectorCFSearchHelper.createReader(split, finalTable)) {
+                                RecordReader.RecordIterator<org.apache.paimon.data.InternalRow>
+                                        batch;
+                                while ((batch = rr.readBatch()) != null) {
+                                    org.apache.paimon.data.InternalRow row;
+                                    while ((row = batch.next()) != null) {
+                                        float score = 0f;
+                                        if (batch
+                                                instanceof
+                                                org.apache.paimon.reader.ScoreRecordIterator) {
+                                            score =
+                                                    ((org.apache.paimon.reader.ScoreRecordIterator<
+                                                                            ?>)
+                                                                    batch)
+                                                            .returnedScore();
+                                        }
+                                        StringBuilder pkSb = new StringBuilder();
+                                        for (int i = 0; i < finalPkNames.size(); i++) {
+                                            if (i > 0) {
+                                                pkSb.append(", ");
+                                            }
+                                            Object val = pkGetters[i].getFieldOrNull(row);
+                                            pkSb.append(finalPkNames.get(i))
+                                                    .append("=")
+                                                    .append(val);
+                                        }
+                                        results.add(
+                                                new String[] {
+                                                    pkSb.toString(), "N/A", String.valueOf(score)
+                                                });
+                                    }
+                                    batch.releaseBatch();
+                                }
+                            }
+                            // Local topK per split
+                            results.sort(
+                                    (a, b) ->
+                                            Float.compare(
+                                                    Float.parseFloat(b[2]),
+                                                    Float.parseFloat(a[2])));
+                            if (results.size() > finalTopK) {
+                                results = results.subList(0, finalTopK);
+                            }
+                            return results.iterator();
+                        })
+                .collect();
+    }
+
+    /** Standard accelerate index search path with per-bucket meta reads. */
+    private List<String[]> doSearchAccelerateIndex(
+            FileStoreTable table,
+            int columnId,
+            String algorithm,
+            float[] queryVector,
+            int topK,
+            int dim,
+            String metric,
+            Map<String, String> searchOptions,
+            int[] resultProjection,
+            List<String> pkNames,
+            int vectorPosInProjection,
+            String partitions,
+            @Nullable Long snapshotId,
+            @Nullable Predicate keyPredicate,
+            @Nullable Predicate valuePredicate,
+            @Nullable Predicate projectedPredicate)
+            throws Exception {
         SnapshotReader reader = table.newSnapshotReader().withLevelFilter(level -> level >= 1);
         if (snapshotId != null) {
             reader.withSnapshot(snapshotId);
@@ -261,7 +505,7 @@ public class SearchAccelerateIndexProcedure extends BaseProcedure {
         }
 
         if (serializedUnits.isEmpty()) {
-            return new InternalRow[] {newInternalRow(UTF8String.fromString("No results found"))};
+            return Collections.emptyList();
         }
 
         // Distribute search to executors
@@ -286,86 +530,63 @@ public class SearchAccelerateIndexProcedure extends BaseProcedure {
         final Predicate finalValuePredicate = valuePredicate;
         final Predicate finalProjectedPredicate = projectedPredicate;
 
-        List<String[]> collectedResults =
-                jsc.parallelize(serializedUnits, parallelism)
-                        .flatMap(
-                                bytes -> {
-                                    SearchUnit unit = SearchUnit.deserialize(bytes);
-                                    List<String[]> results = new ArrayList<>();
-                                    FileIO execFileIO = finalTable.fileIO();
+        return jsc.parallelize(serializedUnits, parallelism)
+                .flatMap(
+                        bytes -> {
+                            SearchUnit unit = SearchUnit.deserialize(bytes);
+                            List<String[]> results = new ArrayList<>();
+                            FileIO execFileIO = finalTable.fileIO();
 
-                                    if (unit.entry() != null) {
-                                        long[] filterIds =
-                                                AccelerateIndexSearchSplitUtils.buildFilterIds(
-                                                        execFileIO,
-                                                        unit.split(),
-                                                        finalKeyPredicate,
-                                                        finalValuePredicate);
-                                        AccelerateIndexScannerContext scanContext =
-                                                new AccelerateIndexScannerContext(
-                                                        execFileIO,
-                                                        new Path(unit.split().bucketPath()),
-                                                        unit.entry(),
-                                                        finalQueryVector,
-                                                        finalTopK,
-                                                        filterIds,
-                                                        finalSearchOptions);
-                                        AccelerateIndexProvider execProvider =
-                                                AccelerateIndexProviderUtils.load(finalAlgorithm);
-                                        AccelerateIndexScanResult scanResult;
-                                        try (AccelerateIndexScanner scanner =
-                                                execProvider.createScanner()) {
-                                            scanResult = scanner.scan(scanContext);
-                                        }
-                                        collectMatchedRows(
-                                                finalTable,
+                            if (unit.entry() != null) {
+                                long[] filterIds =
+                                        AccelerateIndexSearchSplitUtils.buildFilterIds(
+                                                execFileIO,
                                                 unit.split(),
-                                                scanResult,
-                                                finalResultProjection,
-                                                finalPkNames,
-                                                finalVectorPosInProjection,
-                                                finalDim,
-                                                finalProjectedPredicate,
-                                                results);
-                                    } else {
-                                        collectBruteForceRows(
-                                                finalTable,
-                                                unit.split(),
+                                                finalKeyPredicate,
+                                                finalValuePredicate);
+                                AccelerateIndexScannerContext scanContext =
+                                        new AccelerateIndexScannerContext(
+                                                execFileIO,
+                                                new Path(unit.split().bucketPath()),
+                                                unit.entry(),
                                                 finalQueryVector,
-                                                finalDim,
-                                                finalMetric,
                                                 finalTopK,
-                                                finalResultProjection,
-                                                finalPkNames,
-                                                finalVectorPosInProjection,
-                                                finalProjectedPredicate,
-                                                results);
-                                    }
-                                    return results.iterator();
-                                })
-                        .collect();
-
-        // Parse results and global top-K merge
-        List<SearchResultRow> allResults = new ArrayList<>();
-        for (String[] row : collectedResults) {
-            allResults.add(new SearchResultRow(row[0], row[1], Float.parseFloat(row[2])));
-        }
-
-        // Global sort by score descending, take topK
-        allResults.sort((a, b) -> Float.compare(b.score, a.score));
-        if (allResults.size() > topK) {
-            allResults = allResults.subList(0, topK);
-        }
-
-        if (allResults.isEmpty()) {
-            return new InternalRow[] {newInternalRow(UTF8String.fromString("No results found"))};
-        }
-
-        InternalRow[] result = new InternalRow[allResults.size()];
-        for (int i = 0; i < allResults.size(); i++) {
-            result[i] = newInternalRow(UTF8String.fromString(allResults.get(i).format()));
-        }
-        return result;
+                                                filterIds,
+                                                finalSearchOptions);
+                                AccelerateIndexProvider execProvider =
+                                        AccelerateIndexProviderUtils.load(finalAlgorithm);
+                                AccelerateIndexScanResult scanResult;
+                                try (AccelerateIndexScanner scanner =
+                                        execProvider.createScanner()) {
+                                    scanResult = scanner.scan(scanContext);
+                                }
+                                collectMatchedRows(
+                                        finalTable,
+                                        unit.split(),
+                                        scanResult,
+                                        finalResultProjection,
+                                        finalPkNames,
+                                        finalVectorPosInProjection,
+                                        finalDim,
+                                        finalProjectedPredicate,
+                                        results);
+                            } else {
+                                collectBruteForceRows(
+                                        finalTable,
+                                        unit.split(),
+                                        finalQueryVector,
+                                        finalDim,
+                                        finalMetric,
+                                        finalTopK,
+                                        finalResultProjection,
+                                        finalPkNames,
+                                        finalVectorPosInProjection,
+                                        finalProjectedPredicate,
+                                        results);
+                            }
+                            return results.iterator();
+                        })
+                .collect();
     }
 
     // ---- Index search: read matched rows ----

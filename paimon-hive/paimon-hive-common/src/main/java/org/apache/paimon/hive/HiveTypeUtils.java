@@ -236,6 +236,12 @@ public class HiveTypeUtils {
         }
 
         @Override
+        public TypeInfo visit(org.apache.paimon.types.VectorType vectorType) {
+            // Hive has no VECTOR type; map to ARRAY<elementType>
+            return TypeInfoFactory.getListTypeInfo(vectorType.getElementType().accept(this));
+        }
+
+        @Override
         protected TypeInfo defaultMethod(org.apache.paimon.types.DataType dataType) {
             throw new UnsupportedOperationException("Unsupported type: " + dataType);
         }

@@ -36,10 +36,11 @@ public class AccelerateIndexBuildResult {
     private final long totalRows;
     private final boolean skipped;
     @Nullable private final String skipReason;
+    @Nullable private final Path pkMapFilePath;
 
     public AccelerateIndexBuildResult(
             Path indexFilePath, long indexFileSize, long nullVectorRows, long totalRows) {
-        this(indexFilePath, indexFileSize, nullVectorRows, totalRows, false, null);
+        this(indexFilePath, indexFileSize, nullVectorRows, totalRows, false, null, null);
     }
 
     private AccelerateIndexBuildResult(
@@ -48,19 +49,22 @@ public class AccelerateIndexBuildResult {
             long nullVectorRows,
             long totalRows,
             boolean skipped,
-            @Nullable String skipReason) {
+            @Nullable String skipReason,
+            @Nullable Path pkMapFilePath) {
         this.indexFilePath = indexFilePath;
         this.indexFileSize = indexFileSize;
         this.nullVectorRows = nullVectorRows;
         this.totalRows = totalRows;
         this.skipped = skipped;
         this.skipReason = skipReason;
+        this.pkMapFilePath = pkMapFilePath;
     }
 
     /** Creates a skipped result when no valid vectors are found. */
     public static AccelerateIndexBuildResult skipped(
             long nullVectorRows, long totalRows, String skipReason) {
-        return new AccelerateIndexBuildResult(null, 0, nullVectorRows, totalRows, true, skipReason);
+        return new AccelerateIndexBuildResult(
+                null, 0, nullVectorRows, totalRows, true, skipReason, null);
     }
 
     /** Path to the built index file. Null if skipped. */
@@ -93,6 +97,24 @@ public class AccelerateIndexBuildResult {
     @Nullable
     public String skipReason() {
         return skipReason;
+    }
+
+    /** Path to the pkmap sidecar file, or null if not generated. */
+    @Nullable
+    public Path pkMapFilePath() {
+        return pkMapFilePath;
+    }
+
+    /** Create a copy with the pkmap file path set. */
+    public AccelerateIndexBuildResult withPkMapFilePath(Path pkMapFilePath) {
+        return new AccelerateIndexBuildResult(
+                indexFilePath,
+                indexFileSize,
+                nullVectorRows,
+                totalRows,
+                skipped,
+                skipReason,
+                pkMapFilePath);
     }
 
     @Override

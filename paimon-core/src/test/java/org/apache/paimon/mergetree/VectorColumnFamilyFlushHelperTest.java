@@ -25,6 +25,7 @@ import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.data.InternalVector;
 import org.apache.paimon.data.VectorDescriptor;
 import org.apache.paimon.data.VectorRef;
+import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.types.RowKind;
@@ -238,6 +239,11 @@ public class VectorColumnFamilyFlushHelperTest {
                     new VectorDescriptor("/tmp/" + filePrefix + ".vector.bin", writeCount, 16, 4);
             writeCount++;
             return desc;
+        }
+
+        @Override
+        public List<DataFileMeta> result() {
+            return java.util.Collections.emptyList();
         }
 
         @Override

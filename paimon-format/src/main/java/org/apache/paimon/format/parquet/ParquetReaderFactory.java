@@ -125,7 +125,8 @@ public class ParquetReaderFactory implements FormatReaderFactory {
                 fields,
                 writableVectors,
                 batchSize,
-                context.fileIO());
+                context.fileIO(),
+                context.vectorCFContext());
     }
 
     /** Clips `parquetSchema` according to `fieldNames`. */

@@ -156,7 +156,7 @@ public class VectorFileGarbageCollectorTest {
                 new HashSet<>(Arrays.asList("data-001.vector.avro", "data-003.vector.avro"));
 
         VectorFileGarbageCollector gc = new VectorFileGarbageCollector(table);
-        int deleted = gc.deleteUnreferenced(allVectorFiles, referencedNames);
+        int deleted = gc.deleteUnreferenced(allVectorFiles, referencedNames, 0);
 
         assertThat(deleted).isEqualTo(1);
         assertThat(fileIO.exists(file1)).isTrue();
@@ -176,7 +176,7 @@ public class VectorFileGarbageCollectorTest {
         Set<String> referencedNames = Collections.singleton("data-001.vector.avro");
 
         VectorFileGarbageCollector gc = new VectorFileGarbageCollector(table);
-        int deleted = gc.deleteUnreferenced(allVectorFiles, referencedNames);
+        int deleted = gc.deleteUnreferenced(allVectorFiles, referencedNames, 0);
 
         assertThat(deleted).isEqualTo(0);
         assertThat(fileIO.exists(file1)).isTrue();
@@ -196,7 +196,7 @@ public class VectorFileGarbageCollectorTest {
         Set<String> referencedNames = Collections.emptySet();
 
         VectorFileGarbageCollector gc = new VectorFileGarbageCollector(table);
-        int deleted = gc.deleteUnreferenced(allVectorFiles, referencedNames);
+        int deleted = gc.deleteUnreferenced(allVectorFiles, referencedNames, 0);
 
         assertThat(deleted).isEqualTo(2);
         assertThat(fileIO.exists(file1)).isFalse();
@@ -205,12 +205,18 @@ public class VectorFileGarbageCollectorTest {
 
     @Test
     public void testExtractVectorFileName() {
+        // V2 format: extractVectorFileName returns fileId as string
         VectorDescriptor descriptor =
                 new VectorDescriptor("/bucket-0/data-001.vector.bin", 5, 512, 128);
         byte[] bytes = descriptor.serialize();
 
         String fileName = VectorFileGarbageCollector.extractVectorFileName(bytes);
-        assertThat(fileName).isEqualTo("data-001.vector.bin");
+        // V2 serialization does not preserve filePath, returns fileId string
+        assertThat(fileName).isEqualTo(String.valueOf(descriptor.fileId()));
+
+        // extractVectorFileId should return the same fileId
+        int fileId = VectorFileGarbageCollector.extractVectorFileId(bytes);
+        assertThat(fileId).isEqualTo(descriptor.fileId());
     }
 
     @Test

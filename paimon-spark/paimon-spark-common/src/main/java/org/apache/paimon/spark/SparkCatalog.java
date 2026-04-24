@@ -355,7 +355,9 @@ public class SparkCatalog extends SparkBaseCatalog
     public org.apache.spark.sql.connector.catalog.Table alterTable(
             Identifier ident, TableChange... changes) throws NoSuchTableException {
         List<SchemaChange> schemaChanges =
-                Arrays.stream(changes).map(this::toSchemaChange).collect(Collectors.toList());
+                Arrays.stream(changes)
+                        .map(c -> toSchemaChange(c, collectOptions(ident, changes)))
+                        .collect(Collectors.toList());
         try {
             catalog.alterTable(toIdentifier(ident, catalogName), schemaChanges, false);
             return loadTable(ident);
@@ -364,6 +366,29 @@ public class SparkCatalog extends SparkBaseCatalog
         } catch (Catalog.ColumnAlreadyExistException | Catalog.ColumnNotExistException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    /**
+     * Collect merged table options from existing table + SET_PROPERTY changes. Used to resolve
+     * vector-field and blob-field during AddColumn.
+     */
+    private Map<String, String> collectOptions(Identifier ident, TableChange... changes) {
+        Map<String, String> options = new HashMap<>();
+        try {
+            org.apache.spark.sql.connector.catalog.Table table = loadTable(ident);
+            if (table != null) {
+                options.putAll(table.properties());
+            }
+        } catch (Exception e) {
+            // table may not exist yet, ignore
+        }
+        for (TableChange change : changes) {
+            if (change instanceof TableChange.SetProperty) {
+                TableChange.SetProperty set = (TableChange.SetProperty) change;
+                options.put(set.property(), set.value());
+            }
+        }
+        return options;
     }
 
     @Override
@@ -398,7 +423,7 @@ public class SparkCatalog extends SparkBaseCatalog
         }
     }
 
-    private SchemaChange toSchemaChange(TableChange change) {
+    private SchemaChange toSchemaChange(TableChange change, Map<String, String> tableOptions) {
         if (change instanceof TableChange.SetProperty) {
             TableChange.SetProperty set = (TableChange.SetProperty) change;
             validateAlterProperty(set.property());
@@ -419,11 +444,14 @@ public class SparkCatalog extends SparkBaseCatalog
             TableChange.AddColumn add = (TableChange.AddColumn) change;
             SchemaChange.Move move = getMove(add.position(), add.fieldNames());
             checkNoDefaultValue(add);
+            String fieldName =
+                    add.fieldNames().length > 0
+                            ? add.fieldNames()[add.fieldNames().length - 1]
+                            : "";
+            org.apache.paimon.types.DataType paimonType =
+                    resolveDataType(fieldName, add.dataType(), tableOptions);
             return SchemaChange.addColumn(
-                    add.fieldNames(),
-                    toPaimonType(add.dataType()).copy(add.isNullable()),
-                    add.comment(),
-                    move);
+                    add.fieldNames(), paimonType.copy(add.isNullable()), add.comment(), move);
         } else if (change instanceof TableChange.RenameColumn) {
             TableChange.RenameColumn rename = (TableChange.RenameColumn) change;
             return SchemaChange.renameColumn(rename.fieldNames(), rename.newName());
@@ -451,6 +479,36 @@ public class SparkCatalog extends SparkBaseCatalog
             throw new UnsupportedOperationException(
                     "Change is not supported: " + change.getClass());
         }
+    }
+
+    /**
+     * Resolve Spark data type to Paimon data type, converting ArrayType to VectorType when the
+     * field is configured as a vector field via table properties (aligned with Flink's approach).
+     */
+    private static DataType resolveDataType(
+            String fieldName,
+            org.apache.spark.sql.types.DataType sparkType,
+            Map<String, String> tableOptions) {
+        // Check if this field is configured as a vector field
+        java.util.Set<String> vectorFields = CoreOptions.vectorField(tableOptions);
+        if (vectorFields.contains(fieldName)) {
+            String dimKey = String.format("field.%s.vector-dim", fieldName);
+            String dimVal = tableOptions.get(dimKey);
+            if (dimVal != null && !dimVal.trim().isEmpty()) {
+                try {
+                    int dim = Integer.parseInt(dimVal.trim());
+                    DataType elementType = toPaimonType(sparkType);
+                    if (elementType instanceof org.apache.paimon.types.ArrayType) {
+                        DataType elemInner =
+                                ((org.apache.paimon.types.ArrayType) elementType).getElementType();
+                        return DataTypes.VECTOR(dim, elemInner);
+                    }
+                } catch (NumberFormatException ignored) {
+                    // fall through to default
+                }
+            }
+        }
+        return toPaimonType(sparkType);
     }
 
     private static SchemaChange.Move getMove(

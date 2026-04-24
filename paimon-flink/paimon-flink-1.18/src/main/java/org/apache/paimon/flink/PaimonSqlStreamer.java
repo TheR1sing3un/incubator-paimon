@@ -54,6 +54,10 @@ public class PaimonSqlStreamer {
 
     public static void main(String[] args) throws Exception {
         GenParams params = parseGenerateParams(args);
+        // VCF mode defaults to 2048-dim vectors
+        if (params.vcf && params.dim == 8) {
+            params.dim = 2048;
+        }
         boolean isBatchPhase = "1c".equals(params.phase) || "3".equals(params.phase);
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(params.parallelism);
@@ -92,10 +96,18 @@ public class PaimonSqlStreamer {
         switch (phase) {
             case "1":
                 tableEnv.executeSql("DROP TABLE IF EXISTS " + params.table).await();
-                createTable(tableEnv, params);
+                if (params.vcf) {
+                    createVcfTable(tableEnv, params);
+                } else {
+                    createTable(tableEnv, params);
+                }
                 System.out.println(
                         "=== Phase 1: Writing initial data (pk 0 ~ " + (params.rows - 1) + ") ===");
-                writeData(env, tableEnv, params, 0, params.rows, params.pt, false);
+                if (params.vcf) {
+                    writeVcfData(env, tableEnv, params, 0, params.rows, params.pt, false);
+                } else {
+                    writeData(env, tableEnv, params, 0, params.rows, params.pt, false);
+                }
                 System.out.println("=== Phase 1 complete: data written ===");
                 break;
             case "1c":
@@ -110,14 +122,25 @@ public class PaimonSqlStreamer {
                                 + ", "
                                 + params.updateEnd
                                 + ") ===");
-                writeData(
-                        env,
-                        tableEnv,
-                        params,
-                        params.updateStart,
-                        params.updateEnd,
-                        params.pt,
-                        true);
+                if (params.vcf) {
+                    writeVcfData(
+                            env,
+                            tableEnv,
+                            params,
+                            params.updateStart,
+                            params.updateEnd,
+                            params.pt,
+                            true);
+                } else {
+                    writeData(
+                            env,
+                            tableEnv,
+                            params,
+                            params.updateStart,
+                            params.updateEnd,
+                            params.pt,
+                            true);
+                }
                 System.out.println(
                         "=== Phase 2 complete: Snapshot S2 ready (DV created, not compacted) ===");
                 break;
@@ -140,7 +163,7 @@ public class PaimonSqlStreamer {
                 String.format(
                         "CREATE TABLE IF NOT EXISTS %s (\n"
                                 + "  pt INT,\n"
-                                + "  pk INT,\n"
+                                + "  pk BIGINT,\n"
                                 + "  tag INT,\n"
                                 + "  category STRING,\n"
                                 + "  vec ARRAY<FLOAT>,\n"
@@ -194,7 +217,7 @@ public class PaimonSqlStreamer {
                                         },
                                         new TypeInformation[] {
                                             Types.INT,
-                                            Types.INT,
+                                            Types.LONG,
                                             Types.INT,
                                             Types.STRING,
                                             Types.OBJECT_ARRAY(Types.FLOAT),
@@ -212,7 +235,7 @@ public class PaimonSqlStreamer {
         Schema schema =
                 Schema.newBuilder()
                         .column("pt", DataTypes.INT())
-                        .column("pk", DataTypes.INT())
+                        .column("pk", DataTypes.BIGINT())
                         .column("tag", DataTypes.INT())
                         .column("category", DataTypes.STRING())
                         .column("vec", DataTypes.ARRAY(DataTypes.FLOAT()))
@@ -260,6 +283,195 @@ public class PaimonSqlStreamer {
 
     // ========== Data Generation ==========
 
+    /** Create a vector-cf table. Uses ARRAY&lt;FLOAT&gt; in DDL + vector-field property. */
+    private static void createVcfTable(StreamTableEnvironment tableEnv, GenParams params)
+            throws Exception {
+        String ddl =
+                String.format(
+                        "CREATE TABLE IF NOT EXISTS %s (\n"
+                                + "  pt INT,\n"
+                                + "  pk BIGINT,\n"
+                                + "  tag INT,\n"
+                                + "  category STRING,\n"
+                                + "  embedding ARRAY<FLOAT>,\n"
+                                + "  docs ARRAY<ROW<content STRING, label STRING, score INT>>,\n"
+                                + "  PRIMARY KEY (pt, pk) NOT ENFORCED\n"
+                                + ") PARTITIONED BY (pt) WITH (\n"
+                                + "  'bucket' = '%d',\n"
+                                + "  'deletion-vectors.enabled' = 'true',\n"
+                                + "  'file.format' = 'parquet',\n"
+                                + "  'vector-field' = 'embedding',\n"
+                                + "  'field.embedding.vector-dim' = '%d',\n"
+                                + "  'vector-column-family.enabled' = 'true',\n"
+                                + "  'vector-column-family.target-file-rows' = '200000',\n"
+                                + "  'compaction.min.file-num' = '999',\n"
+                                + "  'compaction.max.file-num' = '999',\n"
+                                + "  'num-sorted-runs.compaction-trigger' = '999'\n"
+                                + ")",
+                        params.table, params.bucket, params.dim);
+        System.out.println("Executing VCF DDL:\n" + ddl);
+        tableEnv.executeSql(ddl).await();
+    }
+
+    /** Write data for vector-cf table (schema: pt, pk, tag, category, embedding, docs). */
+    private static void writeVcfData(
+            StreamExecutionEnvironment env,
+            StreamTableEnvironment tableEnv,
+            GenParams params,
+            long startPk,
+            long endPk,
+            int pt,
+            boolean isUpdate)
+            throws Exception {
+        long count = endPk - startPk;
+        if (count <= 0) {
+            System.out.println("No data to write (startPk=" + startPk + ", endPk=" + endPk + ")");
+            return;
+        }
+
+        final int dim = params.dim;
+        final int tagMax = params.tagMax;
+        final int clusterSize = params.clusterSize;
+
+        DataStream<Row> ds =
+                env.fromSequence(startPk, endPk - 1)
+                        .setParallelism(params.parallelism)
+                        .map(new VcfDataGeneratorFunction(pt, dim, tagMax, clusterSize, isUpdate))
+                        .setParallelism(params.parallelism)
+                        .returns(
+                                Types.ROW_NAMED(
+                                        new String[] {
+                                            "pt", "pk", "tag", "category", "embedding", "docs"
+                                        },
+                                        new TypeInformation[] {
+                                            Types.INT,
+                                            Types.LONG,
+                                            Types.INT,
+                                            Types.STRING,
+                                            Types.OBJECT_ARRAY(Types.FLOAT),
+                                            Types.OBJECT_ARRAY(
+                                                    Types.ROW_NAMED(
+                                                            new String[] {
+                                                                "content", "label", "score"
+                                                            },
+                                                            Types.STRING,
+                                                            Types.STRING,
+                                                            Types.INT))
+                                        }));
+
+        Schema schema =
+                Schema.newBuilder()
+                        .column("pt", DataTypes.INT())
+                        .column("pk", DataTypes.BIGINT())
+                        .column("tag", DataTypes.INT())
+                        .column("category", DataTypes.STRING())
+                        .column("embedding", DataTypes.ARRAY(DataTypes.FLOAT()))
+                        .column(
+                                "docs",
+                                DataTypes.ARRAY(
+                                        DataTypes.ROW(
+                                                DataTypes.FIELD("content", DataTypes.STRING()),
+                                                DataTypes.FIELD("label", DataTypes.STRING()),
+                                                DataTypes.FIELD("score", DataTypes.INT()))))
+                        .build();
+
+        String viewName = isUpdate ? "_vcf_update_view_" : "_vcf_init_view_";
+        Table table = tableEnv.fromDataStream(ds, schema);
+        tableEnv.createTemporaryView(viewName, table);
+
+        String insertSql =
+                String.format(
+                        "INSERT INTO %s /*+ OPTIONS('write-only'='true') */ "
+                                + "SELECT pt, pk, tag, category, embedding, docs FROM %s",
+                        params.table, viewName);
+        System.out.println(
+                "Executing VCF: " + insertSql + " (rows=" + count + ", isUpdate=" + isUpdate + ")");
+
+        StatementSet ss = tableEnv.createStatementSet();
+        ss.addInsertSql(insertSql);
+        TableResult result = ss.execute();
+        result.await();
+
+        tableEnv.executeSql("DROP TEMPORARY VIEW IF EXISTS " + viewName);
+        System.out.println("VCF write complete: " + count + " rows.");
+    }
+
+    /** Data generator for vector-cf mode (clustered vectors + docs for Lucene). */
+    static class VcfDataGeneratorFunction extends RichMapFunction<Long, Row> {
+        private static final long serialVersionUID = 1L;
+
+        private static final double[][] CLUSTER_CENTERS = {
+            {10.0, 0.0}, {-10.0, 0.0}, {0.0, 10.0}, {0.0, -10.0}, {10.0, 10.0}
+        };
+        private static final double CLUSTER_RADIUS = 0.05;
+
+        private final int pt;
+        private final int dim;
+        private final int tagMax;
+        private final int clusterSize;
+        private final boolean isUpdate;
+
+        VcfDataGeneratorFunction(int pt, int dim, int tagMax, int clusterSize, boolean isUpdate) {
+            this.pt = pt;
+            this.dim = dim;
+            this.tagMax = tagMax;
+            this.clusterSize = clusterSize;
+            this.isUpdate = isUpdate;
+        }
+
+        @Override
+        public Row map(Long idx) {
+            long pk = idx;
+            int tag = (int) (pk % tagMax);
+            String category = "cat_" + (pk % 5);
+            if (isUpdate) {
+                tag += 100;
+            }
+
+            boolean isNull = (pk % 500 == 499);
+            Float[] vec = isNull ? null : generateClusteredVec(pk);
+            Row[] docs = isNull ? null : generateDocs(pk, tag, category);
+
+            return Row.of(pt, pk, tag, category, vec, docs);
+        }
+
+        private Float[] generateClusteredVec(long pk) {
+            int clusterIdx = (int) ((pk / clusterSize) % CLUSTER_CENTERS.length);
+            double[] center = CLUSTER_CENTERS[clusterIdx];
+            int offset = (int) (pk % clusterSize);
+            double angle = 2.0 * Math.PI * offset / clusterSize;
+
+            Float[] vec = new Float[dim];
+            for (int i = 0; i < dim; i++) {
+                vec[i] = 0.0f;
+            }
+            vec[0] = (float) (center[0] + CLUSTER_RADIUS * Math.cos(angle));
+            vec[1] = (float) (center[1] + CLUSTER_RADIUS * Math.sin(angle));
+            return vec;
+        }
+
+        private Row[] generateDocs(long pk, int tag, String category) {
+            String prefix = isUpdate ? "updated_" : "";
+            long batch = pk / 100;
+            int scoreBase = isUpdate ? (int) (pk % 100) + 200 : (int) (pk % 100);
+
+            String content0 = prefix + "product " + pk + " review quality batch_" + batch;
+            String label0 = "tag_" + tag;
+            int score0 = scoreBase;
+            Row doc0 = Row.of(content0, label0, score0);
+
+            if (pk % 3 != 0) {
+                String content1 = prefix + "item " + pk + " description performance batch_" + batch;
+                String label1 = "cat_" + category;
+                int score1 = scoreBase + 50;
+                Row doc1 = Row.of(content1, label1, score1);
+                return new Row[] {doc0, doc1};
+            } else {
+                return new Row[] {doc0};
+            }
+        }
+    }
+
     /** RichMapFunction that generates each row from a sequential pk index. */
     static class DataGeneratorFunction extends RichMapFunction<Long, Row> {
         private static final long serialVersionUID = 1L;
@@ -288,8 +500,8 @@ public class PaimonSqlStreamer {
 
         @Override
         public Row map(Long idx) {
-            int pk = idx.intValue();
-            int tag = pk % tagMax;
+            long pk = idx;
+            int tag = (int) (pk % tagMax);
             String category = "cat_" + (pk % 5);
 
             if (isUpdate) {
@@ -305,10 +517,10 @@ public class PaimonSqlStreamer {
             return Row.of(pt, pk, tag, category, vec, vecPerf, docs);
         }
 
-        private Float[] generateClusteredVec(int pk) {
-            int clusterIdx = (pk / clusterSize) % CLUSTER_CENTERS.length;
+        private Float[] generateClusteredVec(long pk) {
+            int clusterIdx = (int) ((pk / clusterSize) % CLUSTER_CENTERS.length);
             double[] center = CLUSTER_CENTERS[clusterIdx];
-            int offset = pk % clusterSize;
+            int offset = (int) (pk % clusterSize);
             double angle = 2.0 * Math.PI * offset / clusterSize;
 
             Float[] vec = new Float[dim];
@@ -321,7 +533,7 @@ public class PaimonSqlStreamer {
             return vec;
         }
 
-        private Float[] generateRandomVec(int pk, int d) {
+        private Float[] generateRandomVec(long pk, int d) {
             Float[] vec = new Float[d];
             Random r = new Random(pk);
             for (int i = 0; i < d; i++) {
@@ -330,10 +542,10 @@ public class PaimonSqlStreamer {
             return vec;
         }
 
-        private Row[] generateDocs(int pk, int tag, String category) {
+        private Row[] generateDocs(long pk, int tag, String category) {
             String prefix = isUpdate ? "updated_" : "";
-            int batch = pk / 100;
-            int scoreBase = isUpdate ? (pk % 100) + 200 : pk % 100;
+            long batch = pk / 100;
+            int scoreBase = isUpdate ? (int) (pk % 100) + 200 : (int) (pk % 100);
 
             // doc[0]: always present
             String content0 = prefix + "product " + pk + " review quality batch_" + batch;
@@ -373,6 +585,11 @@ public class PaimonSqlStreamer {
                 val = a.substring(eq + 1);
             } else {
                 key = a;
+                // --vcf is a flag (no value needed)
+                if ("--vcf".equals(key)) {
+                    p.vcf = true;
+                    continue;
+                }
                 if (i + 1 < args.length && !args[i + 1].startsWith("--")) {
                     val = args[++i];
                 }
@@ -420,6 +637,9 @@ public class PaimonSqlStreamer {
                     break;
                 case "--updateEnd":
                     p.updateEnd = Long.parseLong(val);
+                    break;
+                case "--vcf":
+                    p.vcf = Boolean.parseBoolean(val);
                     break;
                 default:
                     System.out.println("Unknown parameter: " + key);
@@ -500,5 +720,6 @@ public class PaimonSqlStreamer {
         int parallelism = 1;
         long updateStart = 0;
         long updateEnd = 300;
+        boolean vcf = false;
     }
 }

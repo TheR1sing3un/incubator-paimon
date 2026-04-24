@@ -23,12 +23,14 @@ import org.apache.paimon.KeyValue;
 import org.apache.paimon.KeyValueFileStore;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.data.InternalRow;
+import org.apache.paimon.data.columnar.VectorCFReaderContext;
 import org.apache.paimon.deletionvectors.DeletionVector;
 import org.apache.paimon.disk.IOManager;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.io.ChainKeyValueFileReaderFactory;
 import org.apache.paimon.io.ChainReadContext;
 import org.apache.paimon.io.DataFileMeta;
+import org.apache.paimon.io.DataFilePathFactory;
 import org.apache.paimon.io.KeyValueFileReaderFactory;
 import org.apache.paimon.mergetree.DropDeleteReader;
 import org.apache.paimon.mergetree.MergeSorter;
@@ -229,20 +231,41 @@ public class MergeFileSplitRead implements SplitRead<KeyValue> {
     }
 
     public RecordReader<KeyValue> createReader(DataSplit split) throws IOException {
+        // Build vector CF resolver from all files in split, then filter scalar files
+        List<DataFileMeta> dataFiles =
+                VectorCFReaderContextBuilder.filterScalarFiles(split.dataFiles());
+        DataFilePathFactory dataFilePathFactory =
+                readerFactoryBuilder
+                        .pathFactory()
+                        .createDataFilePathFactory(split.partition(), split.bucket());
+        // Use full KV read type (key + seq + kind + value) for column position mapping.
+        // Note: bytesPerVector array positions may not exactly match ColumnarRow positions
+        // when key projection is active, but this is handled by the compaction passthrough
+        // (write-path VectorRef) for merge reads. For actual vector resolution, the
+        // FormatReaderContext/DataFileRecordReader path provides the correct context.
+        RowType kvReadType =
+                KeyValue.schema(
+                        readerFactoryBuilder.keyType(), readerFactoryBuilder.readValueType());
+        VectorCFReaderContext vectorCFContext =
+                VectorCFReaderContextBuilder.build(
+                        split.dataFiles(), dataFilePathFactory, kvReadType);
+
         if (split.isStreaming() || split.bucket() == BucketMode.POSTPONE_BUCKET) {
             return createNoMergeReader(
                     split.partition(),
                     split.bucket(),
-                    split.dataFiles(),
+                    dataFiles,
                     split.deletionFiles().orElse(null),
-                    split.isStreaming());
+                    split.isStreaming(),
+                    vectorCFContext);
         } else {
             return createMergeReader(
                     split.partition(),
                     split.bucket(),
-                    split.dataFiles(),
+                    dataFiles,
                     split.deletionFiles().orElse(null),
-                    forceKeepDelete);
+                    forceKeepDelete,
+                    vectorCFContext);
         }
     }
 
@@ -273,13 +296,26 @@ public class MergeFileSplitRead implements SplitRead<KeyValue> {
             @Nullable List<DeletionFile> deletionFiles,
             boolean keepDelete)
             throws IOException {
+        return createMergeReader(partition, bucket, files, deletionFiles, keepDelete, null);
+    }
+
+    public RecordReader<KeyValue> createMergeReader(
+            BinaryRow partition,
+            int bucket,
+            List<DataFileMeta> files,
+            @Nullable List<DeletionFile> deletionFiles,
+            boolean keepDelete,
+            @Nullable VectorCFReaderContext vectorCFContext)
+            throws IOException {
         // Sections are read by SortMergeReader, which sorts and merges records by keys.
         // So we cannot project keys or else the sorting will be incorrect.
         DeletionVector.Factory dvFactory = DeletionVector.factory(fileIO, files, deletionFiles);
         KeyValueFileReaderFactory overlappedSectionFactory =
                 readerFactoryBuilder.build(partition, bucket, dvFactory, false, filtersForKeys);
+        overlappedSectionFactory.setVectorCFContext(vectorCFContext);
         KeyValueFileReaderFactory nonOverlappedSectionFactory =
                 readerFactoryBuilder.build(partition, bucket, dvFactory, false, filtersForAll);
+        nonOverlappedSectionFactory.setVectorCFContext(vectorCFContext);
         return createMergeReader(
                 files, overlappedSectionFactory, nonOverlappedSectionFactory, keepDelete);
     }
@@ -322,6 +358,17 @@ public class MergeFileSplitRead implements SplitRead<KeyValue> {
             @Nullable List<DeletionFile> deletionFiles,
             boolean onlyFilterKey)
             throws IOException {
+        return createNoMergeReader(partition, bucket, files, deletionFiles, onlyFilterKey, null);
+    }
+
+    public RecordReader<KeyValue> createNoMergeReader(
+            BinaryRow partition,
+            int bucket,
+            List<DataFileMeta> files,
+            @Nullable List<DeletionFile> deletionFiles,
+            boolean onlyFilterKey,
+            @Nullable VectorCFReaderContext vectorCFContext)
+            throws IOException {
         KeyValueFileReaderFactory readerFactory =
                 readerFactoryBuilder.build(
                         partition,
@@ -329,6 +376,7 @@ public class MergeFileSplitRead implements SplitRead<KeyValue> {
                         DeletionVector.factory(fileIO, files, deletionFiles),
                         true,
                         onlyFilterKey ? filtersForKeys : filtersForAll);
+        readerFactory.setVectorCFContext(vectorCFContext);
         List<ReaderSupplier<KeyValue>> suppliers = new ArrayList<>();
         for (DataFileMeta file : files) {
             suppliers.add(() -> readerFactory.createRecordReader(file));

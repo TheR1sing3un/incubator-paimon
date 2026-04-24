@@ -105,13 +105,57 @@ public class AccelerateIndexBatchScan implements DataTableScan {
         }
         int columnId = field.id();
 
-        // 2. Create SnapshotReader with level filter (AccelerateIndex built on L1+)
+        boolean isVectorCF = table.coreOptions().vectorColumnFamilyEnabled();
+
+        if (isVectorCF) {
+            return doPlanVectorCF(columnId);
+        } else {
+            return doPlanAccelerateIndex(columnId);
+        }
+    }
+
+    /**
+     * Vector Column Family optimized plan. No per-bucket meta reads — one manifest read + one DV
+     * index scan → VectorCFSearchSplits in memory.
+     *
+     * <p>Key differences from AccelerateIndex plan:
+     *
+     * <ul>
+     *   <li>No level filter on manifest read: vector CF files are always at L0 (DUMMY_LEVEL=0) and
+     *       must not be filtered out. However, scalar files are filtered to L1+ inside {@link
+     *       AccelerateIndexSearchSplitUtils#buildVectorCFSplitsForBucket} to ensure consistency
+     *       with the standard AccelerateIndex search path.
+     *   <li>No data predicate / stats filtering: VCF search is vector-similarity based, not
+     *       stats-based. Filter predicates are not applicable to vector search splits.
+     * </ul>
+     */
+    private Plan doPlanVectorCF(int columnId) throws Exception {
+        SnapshotReader reader = table.newSnapshotReader();
+        if (search.snapshotId() != null) {
+            reader.withSnapshot(search.snapshotId());
+        }
+        if (partitionFilter != null) {
+            reader.withPartitionFilter(partitionFilter);
+        }
+        if (specifiedBucket != null) {
+            reader.withBucket(specifiedBucket);
+        }
+        if (bucketFilter != null) {
+            reader.withBucketFilter(bucketFilter);
+        }
+
+        List<VectorCFSearchSplit> splits =
+                reader.readForVectorCFSearch(search, columnId, search.columnName());
+        if (splits.isEmpty()) {
+            return () -> Collections.emptyList();
+        }
+        return () -> new ArrayList<>(splits);
+    }
+
+    /** Standard accelerate index plan with per-bucket meta reads and index entry matching. */
+    private Plan doPlanAccelerateIndex(int columnId) throws Exception {
+        // Create SnapshotReader with level filter (AccelerateIndex built on L1+)
         // IMPORTANT: Do NOT pass the data predicate (filter) to SnapshotReader.
-        // Data predicate causes file-level stats filtering which removes files before
-        // index entry matching. Since buildSearchUnitsForBucket requires ALL files in
-        // an index entry to be present (allFound check), stats-filtered files would
-        // cause valid entries to be skipped. File-level stats filtering is deferred
-        // to the executor side (buildFilterIdsFromPrecomputed).
         SnapshotReader reader = table.newSnapshotReader().withLevelFilter(level -> level >= 1);
         if (search.snapshotId() != null) {
             reader.withSnapshot(search.snapshotId());
@@ -126,8 +170,6 @@ public class AccelerateIndexBatchScan implements DataTableScan {
             reader.withBucketFilter(bucketFilter);
         }
 
-        // 3. Get search units. For vector search (queryVector != null), emit uncovered
-        // splits for brute force fallback. For text search, skip uncovered files.
         boolean emitUncovered = search.queryVector() != null;
         List<AccelerateIndexSearchSplitUtils.SearchUnit> searchUnits =
                 reader.readForAccelerateIndex(columnId, search.algorithm(), emitUncovered);
@@ -136,7 +178,7 @@ public class AccelerateIndexBatchScan implements DataTableScan {
             return () -> Collections.emptyList();
         }
 
-        // 4. Precompute stats filtering results for each split
+        // Precompute stats filtering results for each split
         Predicate keyPredicate = null;
         Predicate valuePredicate = filter;
         if (filter != null) {
@@ -150,12 +192,9 @@ public class AccelerateIndexBatchScan implements DataTableScan {
             }
         }
 
-        // 5. Pair each SearchUnit with index info + stats filtering → AccelerateIndexSplit
         List<Split> resultSplits = new ArrayList<>();
         for (AccelerateIndexSearchSplitUtils.SearchUnit unit : searchUnits) {
             DataSplit dataSplit = unit.split();
-
-            // Compute statsPassingFiles: null if no filter, otherwise set of passing file names
             Set<String> statsPassingFiles = null;
             if (filter != null) {
                 statsPassingFiles = new HashSet<>();
@@ -166,8 +205,6 @@ public class AccelerateIndexBatchScan implements DataTableScan {
                     }
                 }
             }
-
-            // Uncovered splits (entry == null) are included for brute force at read time
             resultSplits.add(
                     new AccelerateIndexSplit(
                             dataSplit, unit.entry(), search, columnId, statsPassingFiles));

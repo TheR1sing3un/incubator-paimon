@@ -98,6 +98,13 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
 
     @Nullable private final VectorColumnFamilyFlushHelper.Factory vectorColumnFamilyHelperFactory;
 
+    /**
+     * Persistent vector file writers that survive across flushes. Created once by the factory,
+     * closed on MergeTreeWriter shutdown. Each flush creates a new VectorColumnFamilyFlushHelper
+     * wrapping these same writers.
+     */
+    @Nullable private VectorColumnFamilyFlushHelper.VectorFileWriter[] persistentVectorWriters;
+
     public MergeTreeWriter(
             boolean writeBufferSpillable,
             MemorySize maxDiskSize,
@@ -239,10 +246,23 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
                             : null;
             final RollingFileWriter<KeyValue, DataFileMeta> dataWriter =
                     writerFactory.createRollingMergeTreeFileWriter(0, FileSource.APPEND);
-            final VectorColumnFamilyFlushHelper vectorHelper =
-                    vectorColumnFamilyHelperFactory != null
-                            ? vectorColumnFamilyHelperFactory.create()
-                            : null;
+            final VectorColumnFamilyFlushHelper vectorHelper;
+            if (vectorColumnFamilyHelperFactory != null) {
+                if (persistentVectorWriters == null) {
+                    // First flush: create persistent writers via factory
+                    VectorColumnFamilyFlushHelper firstHelper =
+                            vectorColumnFamilyHelperFactory.create();
+                    persistentVectorWriters = firstHelper.getWriters();
+                    vectorHelper = firstHelper;
+                } else {
+                    // Subsequent flushes: create helper wrapping existing persistent writers
+                    vectorHelper =
+                            vectorColumnFamilyHelperFactory.createWithWriters(
+                                    persistentVectorWriters);
+                }
+            } else {
+                vectorHelper = null;
+            }
 
             try {
                 if (vectorHelper != null) {
@@ -283,6 +303,12 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
                 newFiles.add(fileMeta);
                 compactManager.addNewFile(fileMeta);
             }
+
+            // Add vector file metas to newFiles for manifest tracking,
+            // but do NOT add to compactManager (vector files don't participate in LSM compaction)
+            if (vectorHelper != null) {
+                newFiles.addAll(vectorHelper.collectVectorFileMetas());
+            }
         }
 
         trySyncLatestCompaction(waitForLatestCompaction);
@@ -292,6 +318,19 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
     @Override
     public CommitIncrement prepareCommit(boolean waitCompaction) throws Exception {
         flushWriteBuffer(waitCompaction, false);
+
+        // Commit any vector file appends (atomic overwrite rename)
+        if (persistentVectorWriters != null) {
+            for (VectorColumnFamilyFlushHelper.VectorFileWriter w : persistentVectorWriters) {
+                if (w instanceof DefaultVectorFileWriter) {
+                    DefaultVectorFileWriter dvw = (DefaultVectorFileWriter) w;
+                    if (dvw.isAppendMode()) {
+                        dvw.commitAppend();
+                    }
+                }
+            }
+        }
+
         if (commitForceCompact) {
             waitCompaction = true;
         }
@@ -418,6 +457,18 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
 
         if (compactDeletionFile != null) {
             compactDeletionFile.clean();
+        }
+
+        // Close persistent vector writers and clean up their produced files
+        if (persistentVectorWriters != null) {
+            // Collect any remaining vector file metas before closing
+            for (VectorColumnFamilyFlushHelper.VectorFileWriter w : persistentVectorWriters) {
+                for (DataFileMeta vectorMeta : w.result()) {
+                    writerFactory.deleteFile(vectorMeta);
+                }
+            }
+            VectorColumnFamilyFlushHelper.closeWriters(persistentVectorWriters);
+            persistentVectorWriters = null;
         }
     }
 }

@@ -32,6 +32,7 @@ import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.types.IntType;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.types.TinyIntType;
+import org.apache.paimon.types.VectorType;
 import org.apache.paimon.utils.Range;
 import org.apache.paimon.utils.RoaringBitmap32;
 
@@ -414,6 +415,12 @@ public interface DataFileMeta {
 
     @Nullable
     List<String> writeCols();
+
+    /** Whether this file is a vector column family file (separate vector storage). */
+    default boolean isVectorCFFile() {
+        List<String> wc = writeCols();
+        return wc != null && !wc.isEmpty() && VectorType.isVectorStoreFile(fileName());
+    }
 
     /**
      * Merge mode for the versioned-partial-update merge engine. Defaults to {@link

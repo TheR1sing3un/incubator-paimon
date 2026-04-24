@@ -22,6 +22,7 @@ import org.apache.paimon.CoreOptions;
 import org.apache.paimon.KeyValue;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.data.InternalRow;
+import org.apache.paimon.data.columnar.VectorCFReaderContext;
 import org.apache.paimon.deletionvectors.ApplyDeletionVectorReader;
 import org.apache.paimon.deletionvectors.DeletionVector;
 import org.apache.paimon.format.FileFormatDiscover;
@@ -71,6 +72,7 @@ public class KeyValueFileReaderFactory implements FileReaderFactory<KeyValue> {
     private final Map<FormatKey, FormatReaderMapping> formatReaderMappings;
     private final BinaryRow partition;
     private final DeletionVector.Factory dvFactory;
+    @Nullable private VectorCFReaderContext vectorCFContext;
 
     protected KeyValueFileReaderFactory(
             FileIO fileIO,
@@ -104,6 +106,10 @@ public class KeyValueFileReaderFactory implements FileReaderFactory<KeyValue> {
 
     public DataFilePathFactory pathFactory() {
         return pathFactory;
+    }
+
+    public void setVectorCFContext(@Nullable VectorCFReaderContext vectorCFContext) {
+        this.vectorCFContext = vectorCFContext;
     }
 
     protected TableSchema getDataSchema(DataFileMeta fileMeta) {
@@ -143,14 +149,16 @@ public class KeyValueFileReaderFactory implements FileReaderFactory<KeyValue> {
         Path filePath = pathFactory.toPath(file);
 
         long fileSize = file.fileSize();
+        FormatReaderContext formatReaderContext =
+                orcPoolSize == null
+                        ? new FormatReaderContext(fileIO, filePath, fileSize, null)
+                        : new OrcFormatReaderContext(fileIO, filePath, fileSize, orcPoolSize);
+        formatReaderContext.withVectorCFContext(vectorCFContext);
         FileRecordReader<InternalRow> fileRecordReader =
                 new DataFileRecordReader(
                         schema.logicalRowType(),
                         formatReaderMapping.getReaderFactory(),
-                        orcPoolSize == null
-                                ? new FormatReaderContext(fileIO, filePath, fileSize, null)
-                                : new OrcFormatReaderContext(
-                                        fileIO, filePath, fileSize, orcPoolSize),
+                        formatReaderContext,
                         ignoreCorruptFiles,
                         ignoreLostFiles,
                         formatReaderMapping.getIndexMapping(),
@@ -268,8 +276,16 @@ public class KeyValueFileReaderFactory implements FileReaderFactory<KeyValue> {
             return keyType;
         }
 
+        public RowType readKeyType() {
+            return readKeyType;
+        }
+
         public RowType readValueType() {
             return readValueType;
+        }
+
+        public FileStorePathFactory pathFactory() {
+            return pathFactory;
         }
 
         public KeyValueFileReaderFactory build(
