@@ -23,9 +23,6 @@ import org.apache.paimon.KeyValue;
 import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.mergetree.compact.aggregate.FieldAggregator;
-import org.apache.paimon.mergetree.compact.aggregate.factory.FieldAggregatorFactory;
-import org.apache.paimon.mergetree.compact.aggregate.factory.FieldLastNonNullValueAggFactory;
-import org.apache.paimon.mergetree.compact.aggregate.factory.FieldPrimaryKeyAggFactory;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataType;
@@ -56,7 +53,6 @@ import static org.apache.paimon.CoreOptions.FIELDS_SEPARATOR;
 import static org.apache.paimon.CoreOptions.PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE;
 import static org.apache.paimon.CoreOptions.PARTIAL_UPDATE_REMOVE_RECORD_ON_SEQUENCE_GROUP;
 import static org.apache.paimon.utils.InternalRowUtils.createFieldGetters;
-import static org.apache.paimon.utils.Preconditions.checkArgument;
 
 /**
  * A {@link MergeFunction} where key is primary key (unique) and value is the partial record, update
@@ -443,7 +439,7 @@ public class PartialUpdateMergeFunction implements MergeFunction<KeyValue> {
                 }
             }
             this.fieldAggregators =
-                    createFieldAggregators(
+                    PartialUpdateFieldAggregators.forPartialUpdate(
                             rowType,
                             primaryKeys,
                             allSequenceFields,
@@ -610,76 +606,6 @@ public class PartialUpdateMergeFunction implements MergeFunction<KeyValue> {
 
             return field;
         }
-
-        /**
-         * Creating aggregation function for the columns.
-         *
-         * @return The aggregators for each column.
-         */
-        private Map<Integer, Supplier<FieldAggregator>> createFieldAggregators(
-                RowType rowType,
-                List<String> primaryKeys,
-                List<String> allSequenceFields,
-                List<String> fieldsProtectedBySequenceGroup,
-                CoreOptions options) {
-
-            List<String> fieldNames = rowType.getFieldNames();
-            List<DataType> fieldTypes = rowType.getFieldTypes();
-            Map<Integer, Supplier<FieldAggregator>> fieldAggregators = new HashMap<>();
-            for (int i = 0; i < fieldNames.size(); i++) {
-                String fieldName = fieldNames.get(i);
-                DataType fieldType = fieldTypes.get(i);
-
-                String aggFuncName =
-                        getAggFuncName(
-                                fieldName,
-                                options,
-                                primaryKeys,
-                                allSequenceFields,
-                                fieldsProtectedBySequenceGroup);
-                if (aggFuncName != null) {
-                    fieldAggregators.put(
-                            i,
-                            () ->
-                                    FieldAggregatorFactory.create(
-                                            fieldType, fieldName, aggFuncName, options));
-                }
-            }
-            return fieldAggregators;
-        }
-    }
-
-    @Nullable
-    public static String getAggFuncName(
-            String fieldName,
-            CoreOptions options,
-            List<String> primaryKeys,
-            List<String> sequenceFields,
-            List<String> fieldsProtectedBySequenceGroup) {
-        if (sequenceFields.contains(fieldName)) {
-            // no agg for sequence fields
-            return null;
-        }
-
-        if (primaryKeys.contains(fieldName)) {
-            // aggregate by primary keys, so they do not aggregate
-            return FieldPrimaryKeyAggFactory.NAME;
-        }
-
-        String aggFuncName = options.fieldAggFunc(fieldName);
-        if (aggFuncName == null) {
-            aggFuncName = options.fieldsDefaultFunc();
-        }
-
-        if (aggFuncName != null) {
-            // last_non_null_value doesn't require sequence group
-            checkArgument(
-                    aggFuncName.equals(FieldLastNonNullValueAggFactory.NAME)
-                            || fieldsProtectedBySequenceGroup.contains(fieldName),
-                    "Must use sequence group for aggregation functions but not found for field %s.",
-                    fieldName);
-        }
-        return aggFuncName;
     }
 
     private <T> List<WrapperWithFieldIndex<T>> getKeySortedListFromMap(Map<Integer, T> map) {

@@ -27,6 +27,7 @@ import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.data.InternalArray;
 import org.apache.paimon.data.InternalMap;
 import org.apache.paimon.data.InternalRow;
+import org.apache.paimon.mergetree.compact.aggregate.FieldAggregator;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataType;
@@ -44,6 +45,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
 
 import static org.apache.paimon.utils.Preconditions.checkState;
 
@@ -87,6 +89,7 @@ public class VersionedPartialUpdateMergeFunction implements MergeFunction<KeyVal
     private final InternalRow.FieldGetter[] getters;
     private final Set<Integer> primaryKeyIndices;
     private final Map<Integer, MultiVersionColumnMeta> mvMetas;
+    private final Map<Integer, FieldAggregator> fieldAggregators;
     private final boolean ignoreDelete;
     private final int fieldCount;
     private final boolean[] nullables;
@@ -113,12 +116,14 @@ public class VersionedPartialUpdateMergeFunction implements MergeFunction<KeyVal
             InternalRow.FieldGetter[] getters,
             Set<Integer> primaryKeyIndices,
             Map<Integer, MultiVersionColumnMeta> mvMetas,
+            Map<Integer, FieldAggregator> fieldAggregators,
             int fieldCount,
             boolean ignoreDelete,
             boolean[] nullables) {
         this.getters = getters;
         this.primaryKeyIndices = primaryKeyIndices;
         this.mvMetas = mvMetas;
+        this.fieldAggregators = fieldAggregators;
         this.fieldCount = fieldCount;
         this.ignoreDelete = ignoreDelete;
         this.nullables = nullables;
@@ -136,6 +141,7 @@ public class VersionedPartialUpdateMergeFunction implements MergeFunction<KeyVal
         latestSequenceNumber = 0;
         currentDeleteRow = false;
         meetInsert = false;
+        resetFieldAggregators();
     }
 
     /**
@@ -179,6 +185,7 @@ public class VersionedPartialUpdateMergeFunction implements MergeFunction<KeyVal
                 }
             }
             mvStates.clear();
+            resetFieldAggregators();
             return;
         }
 
@@ -200,6 +207,16 @@ public class VersionedPartialUpdateMergeFunction implements MergeFunction<KeyVal
             } else if (mvMetas.containsKey(i)) {
                 mergeMultiVersionColumn(i, value, isIgnore);
             } else {
+                FieldAggregator aggregator = fieldAggregators.get(i);
+                if (aggregator != null) {
+                    if (value == null && !nullables[i]) {
+                        throw new IllegalArgumentException(
+                                "Field " + i + " can not be null for NOT NULL column.");
+                    }
+                    row.setField(i, aggregator.agg(row.getField(i), value));
+                    continue;
+                }
+
                 // Single-version column: mode-based merge
                 if (value == null) {
                     if (!nullables[i]) {
@@ -219,6 +236,10 @@ public class VersionedPartialUpdateMergeFunction implements MergeFunction<KeyVal
                 }
             }
         }
+    }
+
+    private void resetFieldAggregators() {
+        fieldAggregators.values().forEach(FieldAggregator::reset);
     }
 
     /** Validate and advance the (snapshotId, sequenceNumber) watermark. */
@@ -375,6 +396,7 @@ public class VersionedPartialUpdateMergeFunction implements MergeFunction<KeyVal
         private final RowType rowType;
         private final List<String> primaryKeys;
         private final Set<String> mvFieldNames;
+        private final Map<Integer, Supplier<FieldAggregator>> fieldAggregators;
         private final boolean ignoreDelete;
 
         Factory(Options options, RowType rowType, List<String> primaryKeys) {
@@ -389,6 +411,28 @@ public class VersionedPartialUpdateMergeFunction implements MergeFunction<KeyVal
                     mvFieldNames.add(fieldName);
                 }
             }
+
+            CoreOptions coreOptions = new CoreOptions(options);
+            if (!mvFieldNames.isEmpty() && coreOptions.fieldsDefaultFunc() != null) {
+                throw new IllegalArgumentException(
+                        String.format(
+                                "'%s' is not supported when multi-version fields exist in "
+                                        + "versioned-partial-update merge engine. Multi-version "
+                                        + "fields: %s.",
+                                CoreOptions.FIELDS_DEFAULT_AGG_FUNC.key(), mvFieldNames));
+            }
+            for (String mvFieldName : mvFieldNames) {
+                if (coreOptions.fieldAggFunc(mvFieldName) != null) {
+                    throw new IllegalArgumentException(
+                            String.format(
+                                    "Aggregation function is not supported for multi-version field '%s' "
+                                            + "in versioned-partial-update merge engine.",
+                                    mvFieldName));
+                }
+            }
+            this.fieldAggregators =
+                    PartialUpdateFieldAggregators.forVersionedPartialUpdate(
+                            rowType, primaryKeys, mvFieldNames, coreOptions);
         }
 
         private static boolean isMultiVersionType(DataType type) {
@@ -420,6 +464,7 @@ public class VersionedPartialUpdateMergeFunction implements MergeFunction<KeyVal
             InternalRow.FieldGetter[] getters = new InternalRow.FieldGetter[fields.size()];
             Set<Integer> pkIndices = new HashSet<>();
             Map<Integer, MultiVersionColumnMeta> mvMetas = new HashMap<>();
+            Map<Integer, FieldAggregator> projectedAggregators = new HashMap<>();
             boolean[] nullables = new boolean[fields.size()];
 
             for (int i = 0; i < fields.size(); i++) {
@@ -441,10 +486,21 @@ public class VersionedPartialUpdateMergeFunction implements MergeFunction<KeyVal
                                     InternalRowUtils.createNullCheckingFieldGetter(valueType, 1),
                                     InternalArray.createElementGetter(mapType.getValueType())));
                 }
+
+                int originalIdx = rowType.getFieldIndex(fields.get(i).name());
+                if (originalIdx >= 0 && fieldAggregators.containsKey(originalIdx)) {
+                    projectedAggregators.put(i, fieldAggregators.get(originalIdx).get());
+                }
             }
 
             return new VersionedPartialUpdateMergeFunction(
-                    getters, pkIndices, mvMetas, fields.size(), ignoreDelete, nullables);
+                    getters,
+                    pkIndices,
+                    mvMetas,
+                    projectedAggregators,
+                    fields.size(),
+                    ignoreDelete,
+                    nullables);
         }
 
         @Override

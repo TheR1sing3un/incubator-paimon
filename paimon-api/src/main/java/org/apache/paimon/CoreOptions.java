@@ -981,7 +981,10 @@ public class CoreOptions implements Serializable {
                                     + "is null; for multi-version columns, only append new version "
                                     + "keys and do not overwrite existing version entries. "
                                     + "Different jobs writing to the same table can use different "
-                                    + "modes by setting this option per job.");
+                                    + "modes by setting this option per job. "
+                                    + "Note: columns configured with 'fields.<field>.aggregate-function' "
+                                    + "always follow the aggregation semantics and are not affected "
+                                    + "by this merge mode.");
 
     public static final ConfigOption<Boolean> VERSIONED_PARTIAL_UPDATE_IGNORE_MODE_ENABLED =
             key("versioned-partial-update.ignore-mode.enabled")
@@ -1929,7 +1932,8 @@ public class CoreOptions implements Serializable {
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
-                            "Default aggregate function of all fields for partial-update and aggregate merge function.");
+                            "Default aggregate function of all fields for partial-update, "
+                                    + "versioned-partial-update and aggregate merge function.");
 
     public static final ConfigOption<String> COMMIT_USER_PREFIX =
             key("commit.user-prefix")

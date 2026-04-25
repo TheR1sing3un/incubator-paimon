@@ -43,6 +43,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link VersionedPartialUpdateMergeFunction}. */
 public class VersionedPartialUpdateMergeFunctionTest {
@@ -60,6 +61,21 @@ public class VersionedPartialUpdateMergeFunctionTest {
             RowType.builder()
                     .field("pk", DataTypes.INT())
                     .field("single_col", DataTypes.STRING())
+                    .field("mv_col", MV_ROW_TYPE)
+                    .build();
+
+    private static final RowType AGG_ROW_TYPE =
+            RowType.builder()
+                    .field("pk", DataTypes.INT())
+                    .field("amount", DataTypes.INT())
+                    .field("single_col", DataTypes.STRING())
+                    .field("mv_col", MV_ROW_TYPE)
+                    .build();
+
+    private static final RowType DEFAULT_AGG_ROW_TYPE =
+            RowType.builder()
+                    .field("pk", DataTypes.INT())
+                    .field("amount", DataTypes.INT())
                     .field("mv_col", MV_ROW_TYPE)
                     .build();
 
@@ -85,7 +101,16 @@ public class VersionedPartialUpdateMergeFunctionTest {
             String expectedLatestVersion,
             String expectedLatestValue,
             Map<String, String> expectedVersions) {
-        InternalRow mvRow = row.getRow(2, 3);
+        assertMvCol(row, 2, expectedLatestVersion, expectedLatestValue, expectedVersions);
+    }
+
+    private static void assertMvCol(
+            InternalRow row,
+            int index,
+            String expectedLatestVersion,
+            String expectedLatestValue,
+            Map<String, String> expectedVersions) {
+        InternalRow mvRow = row.getRow(index, 3);
         assertThat(mvRow.getString(0).toString()).isEqualTo(expectedLatestVersion);
         assertThat(mvRow.getString(1).toString()).isEqualTo(expectedLatestValue);
         assertThat(toMap(mvRow.getMap(2))).containsExactlyInAnyOrderEntriesOf(expectedVersions);
@@ -171,6 +196,51 @@ public class VersionedPartialUpdateMergeFunctionTest {
                 .setVersionedMergeMode(mergeMode);
     }
 
+    private KeyValue aggKv(
+            int pk,
+            Integer amount,
+            String singleCol,
+            String version,
+            String value,
+            VersionedMergeMode mergeMode,
+            long seqNum) {
+        GenericRow mvRow = null;
+        if (version != null) {
+            mvRow = new GenericRow(3);
+            mvRow.setField(0, BinaryString.fromString(version));
+            mvRow.setField(1, BinaryString.fromString(value));
+            mvRow.setField(2, null);
+        }
+
+        GenericRow row = new GenericRow(4);
+        row.setField(0, pk);
+        row.setField(1, amount);
+        row.setField(2, singleCol == null ? null : BinaryString.fromString(singleCol));
+        row.setField(3, mvRow);
+
+        GenericRow key = new GenericRow(1);
+        key.setField(0, pk);
+
+        return new KeyValue()
+                .replace(key, seqNum, RowKind.INSERT, row)
+                .setLevel(0)
+                .setVersionedMergeMode(mergeMode);
+    }
+
+    private KeyValue projectedAggKv(int pk, Integer amount, long seqNum) {
+        GenericRow row = new GenericRow(2);
+        row.setField(0, pk);
+        row.setField(1, amount);
+
+        GenericRow key = new GenericRow(1);
+        key.setField(0, pk);
+
+        return new KeyValue()
+                .replace(key, seqNum, RowKind.INSERT, row)
+                .setLevel(0)
+                .setVersionedMergeMode(VersionedMergeMode.UPSERT);
+    }
+
     @Test
     void testSingleVersionUpsert() {
         function.reset();
@@ -207,6 +277,76 @@ public class VersionedPartialUpdateMergeFunctionTest {
         function.add(kv(1, "C", null, null, VersionedMergeMode.UPSERT)); // upsert
         KeyValue result = function.getResult();
         assertThat(result.value().getString(1).toString()).isEqualTo("C");
+    }
+
+    @Test
+    void testSingleVersionAggregationOverridesMergeModeForConfiguredColumn() {
+        Options options = new Options();
+        options.set("fields.amount.aggregate-function", "sum");
+        MergeFunction<KeyValue> aggFunction =
+                VersionedPartialUpdateMergeFunction.factory(
+                                options, AGG_ROW_TYPE, Collections.singletonList("pk"))
+                        .create(null);
+
+        aggFunction.reset();
+        aggFunction.add(aggKv(1, 5, "A", "v1", "hello", VersionedMergeMode.UPSERT, 1));
+        aggFunction.add(aggKv(1, 7, "B", "v2", "world", VersionedMergeMode.IGNORE, 2));
+
+        KeyValue result = aggFunction.getResult();
+        assertThat(result.value().getInt(1)).isEqualTo(12);
+        assertThat(result.value().getString(2).toString()).isEqualTo("A");
+        assertMvCol(result.value(), 3, "v2", "world", mapOf("v1", "hello", "v2", "world"));
+    }
+
+    @Test
+    void testDefaultAggregationIsRejectedWhenMultiVersionColumnExists() {
+        Options options = new Options();
+        options.set("fields.default-aggregate-function", "sum");
+
+        assertThatThrownBy(
+                        () ->
+                                VersionedPartialUpdateMergeFunction.factory(
+                                        options,
+                                        DEFAULT_AGG_ROW_TYPE,
+                                        Collections.singletonList("pk")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("fields.default-aggregate-function")
+                .hasMessageContaining("mv_col");
+    }
+
+    @Test
+    void testExplicitAggregationOnMultiVersionColumnIsRejected() {
+        Options options = new Options();
+        options.set("fields.mv_col.aggregate-function", "last_non_null_value");
+
+        assertThatThrownBy(
+                        () ->
+                                VersionedPartialUpdateMergeFunction.factory(
+                                        options, ROW_TYPE, Collections.singletonList("pk")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("multi-version field 'mv_col'");
+    }
+
+    @Test
+    void testAggregationIsRemappedForProjectedReadType() {
+        Options options = new Options();
+        options.set("fields.amount.aggregate-function", "sum");
+        MergeFunctionFactory<KeyValue> factory =
+                VersionedPartialUpdateMergeFunction.factory(
+                        options, AGG_ROW_TYPE, Collections.singletonList("pk"));
+        RowType readType =
+                RowType.builder()
+                        .field("pk", DataTypes.INT())
+                        .field("amount", DataTypes.INT())
+                        .build();
+        MergeFunction<KeyValue> projectedFunction = factory.create(readType);
+
+        projectedFunction.reset();
+        projectedFunction.add(projectedAggKv(1, 4, 1));
+        projectedFunction.add(projectedAggKv(1, 6, 2));
+
+        KeyValue result = projectedFunction.getResult();
+        assertThat(result.value().getInt(1)).isEqualTo(10);
     }
 
     @Test

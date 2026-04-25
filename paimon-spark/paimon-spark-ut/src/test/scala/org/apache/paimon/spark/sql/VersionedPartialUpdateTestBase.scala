@@ -302,4 +302,44 @@ abstract class VersionedPartialUpdateTestBase extends PaimonSparkTestBase {
     }
   }
 
+  // ===== Field-level aggregation on single-version columns =====
+
+  test("versioned partial update: single-version ARRAY column aggregated with collect") {
+    withTable("T") {
+      spark.sql("""
+                  |CREATE TABLE T (
+                  |  pk INT,
+                  |  tags ARRAY<STRING>,
+                  |  mv_col STRUCT<latest_version: STRING, latest_value: STRING,
+                  |                all_versioned_values: MAP<STRING, STRING>>
+                  |) TBLPROPERTIES (
+                  |  'primary-key' = 'pk',
+                  |  'bucket' = '1',
+                  |  'merge-engine' = 'versioned-partial-update',
+                  |  'deletion-vectors.enabled' = 'true',
+                  |  'sequence.snapshot-ordering' = 'true',
+                  |  'fields.tags.aggregate-function' = 'collect'
+                  |)
+                  |""".stripMargin)
+
+      withSparkSQLConf("spark.paimon.versioned-partial-update.merge-mode" -> "upsert") {
+        spark.sql(
+          "INSERT INTO T VALUES " +
+            "(1, ARRAY('a'), STRUCT('v1', 'hello', MAP('v1', 'hello')))")
+        spark.sql(
+          "INSERT INTO T VALUES " +
+            "(1, ARRAY('b', 'c'), STRUCT('v2', 'world', MAP('v2', 'world')))")
+      }
+      // IGNORE mode does not block aggregation on columns configured with an
+      // aggregate function — agg semantics take precedence over UPSERT/IGNORE.
+      withSparkSQLConf("spark.paimon.versioned-partial-update.merge-mode" -> "ignore") {
+        spark.sql(
+          "INSERT INTO T VALUES " +
+            "(1, ARRAY('d'), STRUCT('v3', '!', MAP('v3', '!')))")
+      }
+
+      checkAnswer(spark.sql("SELECT pk, tags FROM T"), Row(1, Array("a", "b", "c", "d")) :: Nil)
+    }
+  }
+
 }
