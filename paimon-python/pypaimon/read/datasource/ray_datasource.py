@@ -79,6 +79,7 @@ class RayDatasource(Datasource):
         limit: Optional[int] = None,
         snapshot_id: Optional[int] = None,
         tag_name: Optional[str] = None,
+        dv_read_mode: Optional[str] = None,
     ):
         """
         Initialize RayDatasource.
@@ -91,6 +92,9 @@ class RayDatasource(Datasource):
             limit: Optional row limit for the scan.
             snapshot_id: Optional snapshot id to read from a specific snapshot.
             tag_name: Optional tag name to read from a specific tagged snapshot.
+            dv_read_mode: Optional override for ``deletion-vectors.read-mode``
+                (``"performance"`` / ``"freshness"``). When ``None`` the table
+                / catalog property default is honored.
         """
         self.table_identifier = table_identifier
         self.catalog_options = catalog_options
@@ -99,6 +103,7 @@ class RayDatasource(Datasource):
         self.limit = limit
         self.snapshot_id = snapshot_id
         self.tag_name = tag_name
+        self.dv_read_mode = dv_read_mode
         self._table = None
         self._splits = None
         self._read_type = None
@@ -116,6 +121,8 @@ class RayDatasource(Datasource):
                 copy_options["scan.snapshot-id"] = str(self.snapshot_id)
             if self.tag_name is not None:
                 copy_options["scan.tag-name"] = self.tag_name
+            if self.dv_read_mode is not None:
+                copy_options["deletion-vectors.read-mode"] = self.dv_read_mode
             if copy_options:
                 table = table.copy(copy_options)
             self._table = table

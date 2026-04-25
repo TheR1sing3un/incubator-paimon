@@ -57,6 +57,16 @@ class MergeEngine(str, Enum):
     VERSIONED_PARTIAL_UPDATE = "versioned-partial-update"
 
 
+class DvReadMode(str, Enum):
+    """
+    Read mode for deletion vector tables.
+
+    Mirrors Java CoreOptions.DvReadMode in commit d5ddcfda6.
+    """
+    PERFORMANCE = "performance"
+    FRESHNESS = "freshness"
+
+
 class CoreOptions:
     """Core options for Paimon tables."""
     # File format constants
@@ -313,6 +323,19 @@ class CoreOptions:
         .boolean_type()
         .default_value(False)
         .with_description("Whether to enable deletion vectors.")
+    )
+
+    DELETION_VECTORS_READ_MODE: ConfigOption[DvReadMode] = (
+        ConfigOptions.key("deletion-vectors.read-mode")
+        .enum_type(DvReadMode)
+        .default_value(DvReadMode.PERFORMANCE)
+        .with_description(
+            "Read mode for deletion vector tables. "
+            "PERFORMANCE: only read compacted data (level >= 1), best read performance. "
+            "FRESHNESS: read all levels including level-0 for better data freshness, "
+            "level-0 files will be merged on read with deletion vector pre-filtering. "
+            "For LOOKUP streaming reads, this mainly affects the initial full snapshot."
+        )
     )
 
     CHANGELOG_PRODUCER: ConfigOption[ChangelogProducer] = (
@@ -730,6 +753,14 @@ class CoreOptions:
 
     def deletion_vectors_enabled(self, default=None):
         return self.options.get(CoreOptions.DELETION_VECTORS_ENABLED, default)
+
+    def dv_read_mode(self, default=None):
+        return self.options.get(CoreOptions.DELETION_VECTORS_READ_MODE, default)
+
+    def dv_freshness_read_enabled(self) -> bool:
+        # Mirror Java CoreOptions.dvFreshnessReadEnabled(): True only when DV is enabled
+        # AND read-mode is FRESHNESS. Non-DV tables ignore the read-mode setting.
+        return self.deletion_vectors_enabled() and self.dv_read_mode() == DvReadMode.FRESHNESS
 
     def changelog_producer(self, default=None):
         return self.options.get(CoreOptions.CHANGELOG_PRODUCER, default)

@@ -108,6 +108,11 @@ class AsyncStreamingTableScan:
         # Auto-select based on changelog-producer if not explicitly provided
         self.follow_up_scanner = follow_up_scanner or self._create_follow_up_scanner()
 
+        # Cached for skip_same_commit_compaction_snapshots (LOOKUP + FRESHNESS only).
+        # See docs/design/dv-read-mode-design.md §5 (bootstrap freshness).
+        self._dv_freshness_read_enabled = table.options.dv_freshness_read_enabled()
+        self._changelog_producer = table.options.changelog_producer()
+
         # State tracking
         self.next_snapshot_id: Optional[int] = None
 
@@ -125,6 +130,16 @@ class AsyncStreamingTableScan:
             latest_snapshot = self._snapshot_manager.get_latest_snapshot()
             if latest_snapshot:
                 self.next_snapshot_id = latest_snapshot.id + 1
+                # FRESHNESS bootstrap already materialized L0 from the starting APPEND
+                # snapshot; the immediately-following COMPACT snapshot only replays the
+                # same logical change as changelog. Skip it to avoid double-emitting.
+                # PERFORMANCE mode must NOT skip — its bootstrap missed L0 and relies
+                # on the COMPACT changelog as the only delivery channel.
+                if (self._dv_freshness_read_enabled
+                        and self._changelog_producer == ChangelogProducer.LOOKUP):
+                    self.next_snapshot_id = self._skip_same_commit_compaction_snapshots(
+                        latest_snapshot.id, self.next_snapshot_id
+                    )
                 yield self._create_initial_plan(latest_snapshot)
 
         # Check for catch-up scenario: starting from earlier snapshot with large gap.
@@ -257,6 +272,28 @@ class AsyncStreamingTableScan:
             return self._create_changelog_plan(snapshot)
         else:
             return self._create_delta_plan(snapshot)
+
+    def _skip_same_commit_compaction_snapshots(
+        self, current_snapshot_id: int, next_snapshot_id: int
+    ) -> int:
+        """Mirror Java DataTableStreamScan.skipSameCommitCompactionSnapshots.
+
+        Only invoked under LOOKUP changelog + FRESHNESS read-mode. The starting
+        snapshot must be APPEND for the skip to be meaningful — pypaimon's
+        bootstrap takes the latest snapshot, which may itself be a COMPACT, in
+        which case there is no APPEND L0 to dedupe against and we must not skip.
+        """
+        current_snapshot = self._snapshot_manager.get_snapshot_by_id(current_snapshot_id)
+        if current_snapshot is None or current_snapshot.commit_kind != "APPEND":
+            return next_snapshot_id
+        while True:
+            next_snapshot = self._snapshot_manager.get_snapshot_by_id(next_snapshot_id)
+            if next_snapshot is None:
+                break
+            if next_snapshot.commit_kind != "COMPACT":
+                break
+            next_snapshot_id += 1
+        return next_snapshot_id
 
     def _create_follow_up_scanner(self) -> FollowUpScanner:
         """Create the appropriate follow-up scanner based on changelog-producer option."""

@@ -83,6 +83,9 @@ def _merge_ray_remote_args(
     return merged or None
 
 
+_VALID_DV_READ_MODES = ("performance", "freshness")
+
+
 def read_paimon(
     table_identifier: str,
     catalog_options: Dict[str, str],
@@ -92,6 +95,7 @@ def read_paimon(
     limit: Optional[int] = None,
     snapshot_id: Optional[int] = None,
     tag_name: Optional[str] = None,
+    dv_read_mode: Optional[str] = None,
     ray_remote_args: Optional[Dict[str, Any]] = None,
     concurrency: Optional[int] = None,
     override_num_blocks: Optional[int] = None,
@@ -108,6 +112,14 @@ def read_paimon(
         limit: Optional row limit for the scan.
         snapshot_id: Optional snapshot id to read from a specific snapshot.
         tag_name: Optional tag name to read from a specific tagged snapshot.
+        dv_read_mode: Optional read mode for deletion-vector tables. Accepts
+            ``"performance"`` (default behavior — only L1+ data is read for the
+            fastest DV-aware path) or ``"freshness"`` (L0 also flows in and is
+            merged on read with DV pre-filtering, so newly-written rows are
+            visible before compaction). When ``None`` (default), the table /
+            catalog property ``deletion-vectors.read-mode`` is honored. Has no
+            effect on non-DV tables. See
+            ``docs/design/dv-read-mode-design.md`` for the full contract.
         ray_remote_args: Optional kwargs passed to ``ray.remote`` in read tasks.
         concurrency: Optional max number of Ray read tasks to run concurrently.
         override_num_blocks: Optional override for the number of output blocks.
@@ -121,6 +133,12 @@ def read_paimon(
     if snapshot_id is not None and tag_name is not None:
         raise ValueError(
             "snapshot_id and tag_name cannot be set at the same time"
+        )
+
+    if dv_read_mode is not None and dv_read_mode not in _VALID_DV_READ_MODES:
+        raise ValueError(
+            f"dv_read_mode must be one of {_VALID_DV_READ_MODES} or None, "
+            f"got {dv_read_mode!r}"
         )
 
     if override_num_blocks is not None and override_num_blocks < 1:
@@ -146,6 +164,8 @@ def read_paimon(
             copy_opts["scan.snapshot-id"] = str(snapshot_id)
         if tag_name is not None:
             copy_opts["scan.tag-name"] = tag_name
+        if dv_read_mode is not None:
+            copy_opts["deletion-vectors.read-mode"] = dv_read_mode
         if copy_opts:
             system_table = system_table.copy(copy_opts)
 
@@ -167,6 +187,7 @@ def read_paimon(
         limit=limit,
         snapshot_id=snapshot_id,
         tag_name=tag_name,
+        dv_read_mode=dv_read_mode,
     )
     return ray.data.read_datasource(
         datasource,

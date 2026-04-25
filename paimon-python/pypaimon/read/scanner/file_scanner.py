@@ -201,6 +201,9 @@ class FileScanner:
         self.only_read_real_buckets = options.bucket() == BucketMode.POSTPONE_BUCKET.value
         self.data_evolution = options.data_evolution_enabled()
         self.deletion_vectors_enabled = options.deletion_vectors_enabled()
+        # FRESHNESS read-mode lets L0 flow through; default PERFORMANCE matches prior behavior.
+        # Mirrors Java DataTableBatchScan / KeyValueFileStoreScan logic in commit d5ddcfda6.
+        self.dv_freshness_read_enabled = options.dv_freshness_read_enabled()
 
         def schema_fields_func(schema_id: int):
             return self.table.schema_manager.get_schema(schema_id).fields
@@ -419,7 +422,14 @@ class FileScanner:
 
         # Apply evolution to stats
         if self.table.is_primary_key_table:
-            if self.deletion_vectors_enabled and entry.file.level == 0:  # do not read level 0 file
+            # PERFORMANCE (default): hide L0 to keep the DV fast-path correct.
+            # FRESHNESS: let L0 through; it will flow into the IntervalPartition merge path
+            # (PrimaryKeyTableSplitGenerator already drops raw_convertible whenever any
+            # L0 file is present), and L1+ DVs become a performance pre-filter rather than
+            # a correctness requirement (see docs/design/dv-read-mode-design.md).
+            if (self.deletion_vectors_enabled
+                    and entry.file.level == 0
+                    and not self.dv_freshness_read_enabled):
                 return False
             if not self.primary_key_predicate:
                 return True
