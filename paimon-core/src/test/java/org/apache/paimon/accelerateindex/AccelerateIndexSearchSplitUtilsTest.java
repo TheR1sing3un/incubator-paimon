@@ -26,6 +26,7 @@ import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.data.BinaryRowWriter;
 import org.apache.paimon.data.BinaryString;
+import org.apache.paimon.data.BinaryVector;
 import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.disk.IOManager;
 import org.apache.paimon.disk.IOManagerImpl;
@@ -33,6 +34,7 @@ import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.fs.local.LocalFileIO;
 import org.apache.paimon.io.DataFileMeta;
+import org.apache.paimon.memory.MemorySegment;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.sink.BatchTableCommit;
@@ -40,6 +42,8 @@ import org.apache.paimon.table.sink.BatchTableWrite;
 import org.apache.paimon.table.sink.BatchWriteBuilder;
 import org.apache.paimon.table.source.DataSplit;
 import org.apache.paimon.table.source.DeletionFile;
+import org.apache.paimon.table.source.ReadBuilder;
+import org.apache.paimon.table.source.Split;
 import org.apache.paimon.types.DataTypes;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -52,8 +56,11 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for {@link AccelerateIndexSearchSplitUtils}: greedy matching, early termination, uncovered
@@ -1116,5 +1123,356 @@ class AccelerateIndexSearchSplitUtilsTest {
         BinaryRow deserializedPartition = deserialized.split().partition();
         assertThat(deserializedPartition.getFieldCount())
                 .isEqualTo(originalPartition.getFieldCount());
+    }
+
+    // ---- planAccelerateIndexSearch tests ----
+
+    private static final int VEC_DIM = 4;
+
+    private FileStoreTable createVCFTable(String name, int buckets) throws Exception {
+        Identifier id = Identifier.create("default", name);
+        Schema schema =
+                Schema.newBuilder()
+                        .column("pt", DataTypes.INT())
+                        .column("pk", DataTypes.INT())
+                        .column("vec", DataTypes.VECTOR(VEC_DIM, DataTypes.FLOAT()))
+                        .partitionKeys("pt")
+                        .primaryKey("pt", "pk")
+                        .option(CoreOptions.BUCKET.key(), String.valueOf(buckets))
+                        .option(CoreOptions.FILE_FORMAT.key(), "parquet")
+                        .option(CoreOptions.DELETION_VECTORS_ENABLED.key(), "true")
+                        .option(CoreOptions.VECTOR_COLUMN_FAMILY_ENABLED.key(), "true")
+                        .option(
+                                CoreOptions.VECTOR_COLUMN_FAMILY_TARGET_FILE_ROWS.key(),
+                                "100") // seal after 100 rows
+                        .option(
+                                CoreOptions.NUM_SORTED_RUNS_COMPACTION_TRIGGER.key(),
+                                "999") // disable auto-compaction
+                        .build();
+        catalog.createTable(id, schema, false);
+        return (FileStoreTable) catalog.getTable(id);
+    }
+
+    private void writeVectorBatch(FileStoreTable table, int partition, int startPk, int count)
+            throws Exception {
+        BatchWriteBuilder wb = table.newBatchWriteBuilder();
+        try (BatchTableWrite write = wb.newWrite().withIOManager(ioManager);
+                BatchTableCommit commit = wb.newCommit()) {
+            for (int i = 0; i < count; i++) {
+                int pk = startPk + i;
+                float[] vec = new float[VEC_DIM];
+                for (int d = 0; d < VEC_DIM; d++) {
+                    vec[d] = pk * 0.1f + d;
+                }
+                BinaryVector bv = createTestBinaryVector(vec);
+                write.write(GenericRow.of(partition, pk, bv));
+            }
+            commit.commit(write.prepareCommit());
+        }
+    }
+
+    private static BinaryVector createTestBinaryVector(float[] data) {
+        int dim = data.length;
+        int bytesPerVector = ((dim * 4 + 7) / 8) * 8;
+        byte[] bytes = new byte[bytesPerVector];
+        java.nio.ByteBuffer bb =
+                java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.nativeOrder());
+        for (float f : data) {
+            bb.putFloat(f);
+        }
+        BinaryVector bv = new BinaryVector(dim);
+        bv.pointTo(MemorySegment.wrap(bytes), 0, bytesPerVector);
+        return bv;
+    }
+
+    private void compactBucket(FileStoreTable table, int partition, int bucket) throws Exception {
+        BatchWriteBuilder wb = table.newBatchWriteBuilder();
+        try (BatchTableWrite write = wb.newWrite().withIOManager(ioManager);
+                BatchTableCommit commit = wb.newCommit()) {
+            write.compact(binaryRow(partition), bucket, true);
+            commit.commit(write.prepareCommit());
+        }
+    }
+
+    private AccelerateIndexSearch createVectorSearch(float[] queryVector) {
+        return new AccelerateIndexSearch(
+                "vec", queryVector, 10, "lumina", "l2", VEC_DIM, Collections.emptyMap(), null);
+    }
+
+    /** VCF table after compaction: splits should be VectorCFSearchSplit with correct files. */
+    @Test
+    void testPlanAccelerateIndexSearchVCF() throws Exception {
+        FileStoreTable table = createVCFTable("t_plan_vcf", 1);
+        writeVectorBatch(table, 1, 0, 20);
+        compactBucket(table, 1, 0);
+        // reload to pick up latest snapshot
+        table = (FileStoreTable) catalog.getTable(Identifier.create("default", "t_plan_vcf"));
+
+        // Collect actual file names from manifest for later assertion
+        List<DataSplit> rawSplits = table.newSnapshotReader().read().dataSplits();
+        assertThat(rawSplits).hasSize(1);
+        DataSplit rawSplit = rawSplits.get(0);
+        Set<String> vectorFileNames =
+                rawSplit.dataFiles().stream()
+                        .filter(f -> f.fileName().endsWith(".vector.bin"))
+                        .map(DataFileMeta::fileName)
+                        .collect(Collectors.toSet());
+        Set<String> scalarFileNames =
+                rawSplit.dataFiles().stream()
+                        .filter(f -> !f.fileName().endsWith(".vector.bin"))
+                        .map(DataFileMeta::fileName)
+                        .collect(Collectors.toSet());
+        assertThat(vectorFileNames).isNotEmpty();
+        assertThat(scalarFileNames).isNotEmpty();
+
+        // Plan via the new API
+        float[] query = new float[VEC_DIM];
+        ReadBuilder rb = table.newReadBuilder();
+        List<Split> splits = rb.planAccelerateIndexSearch(createVectorSearch(query));
+
+        assertThat(splits).isNotEmpty();
+        // All splits should be VectorCFSearchSplit
+        for (Split split : splits) {
+            assertThat(split).isInstanceOf(VectorCFSearchSplit.class);
+            VectorCFSearchSplit vcfSplit = (VectorCFSearchSplit) split;
+
+            // Vector file name should match manifest
+            assertThat(vcfSplit.vectorFileName()).endsWith(".vector.bin");
+            assertThat(vectorFileNames).contains(vcfSplit.vectorFileName());
+
+            // Scalar files should be L1+ parquet files
+            assertThat(vcfSplit.scalarFiles()).isNotEmpty();
+            for (DataFileMeta sf : vcfSplit.scalarFiles()) {
+                assertThat(sf.fileName()).doesNotContain(".vector.");
+                assertThat(scalarFileNames).contains(sf.fileName());
+            }
+
+            // Metadata fields
+            assertThat(vcfSplit.partition().getInt(0)).isEqualTo(1);
+            assertThat(vcfSplit.bucket()).isEqualTo(0);
+            assertThat(vcfSplit.bucketPath()).isNotEmpty();
+            assertThat(vcfSplit.snapshotId()).isGreaterThan(0);
+        }
+    }
+
+    /** VCF table without compaction: verify all scalar files in splits are L1+. */
+    @Test
+    void testPlanAccelerateIndexSearchVCFNoCompaction() throws Exception {
+        FileStoreTable table = createVCFTable("t_plan_vcf_no_compact", 1);
+        writeVectorBatch(table, 1, 0, 20);
+        // NO explicit compaction
+        table =
+                (FileStoreTable)
+                        catalog.getTable(Identifier.create("default", "t_plan_vcf_no_compact"));
+
+        float[] query = new float[VEC_DIM];
+        List<Split> splits =
+                table.newReadBuilder().planAccelerateIndexSearch(createVectorSearch(query));
+
+        // Whether splits are returned depends on whether any L1+ scalar files exist.
+        // With PK table + LSM tree, the first flush may produce L0 or higher level files.
+        // Key invariant: if any splits exist, all scalar files must be L1+.
+        for (Split split : splits) {
+            assertThat(split).isInstanceOf(VectorCFSearchSplit.class);
+            VectorCFSearchSplit vcfSplit = (VectorCFSearchSplit) split;
+            for (DataFileMeta sf : vcfSplit.scalarFiles()) {
+                assertThat(sf.level())
+                        .as("Scalar file %s should be L1+", sf.fileName())
+                        .isGreaterThanOrEqualTo(1);
+            }
+        }
+    }
+
+    /** VCF table with partition filter: only matching partition's splits returned. */
+    @Test
+    void testPlanAccelerateIndexSearchVCFPartitionFilter() throws Exception {
+        FileStoreTable table = createVCFTable("t_plan_vcf_pf", 1);
+        // Write to partition 1 and partition 2
+        writeVectorBatch(table, 1, 0, 20);
+        writeVectorBatch(table, 2, 0, 20);
+        compactBucket(table, 1, 0);
+        compactBucket(table, 2, 0);
+        table = (FileStoreTable) catalog.getTable(Identifier.create("default", "t_plan_vcf_pf"));
+
+        float[] query = new float[VEC_DIM];
+        AccelerateIndexSearch search = createVectorSearch(query);
+
+        // Filter to partition 1 only via withPartitionFilter
+        // (withFilter alone may not be routed as partition filter in AccelerateIndexBatchScan)
+        org.apache.paimon.types.RowType partType =
+                org.apache.paimon.types.RowType.of(DataTypes.INT());
+        org.apache.paimon.predicate.PredicateBuilder partPredBuilder =
+                new org.apache.paimon.predicate.PredicateBuilder(partType);
+        org.apache.paimon.partition.PartitionPredicate pp1 =
+                org.apache.paimon.partition.PartitionPredicate.fromPredicate(
+                        partType, partPredBuilder.equal(0, 1));
+        ReadBuilder rb = table.newReadBuilder().withPartitionFilter(pp1);
+        List<Split> splits = rb.planAccelerateIndexSearch(search);
+
+        assertThat(splits).isNotEmpty();
+        for (Split split : splits) {
+            VectorCFSearchSplit vcfSplit = (VectorCFSearchSplit) split;
+            // All splits must be partition 1
+            assertThat(vcfSplit.partition().getInt(0)).isEqualTo(1);
+        }
+
+        // Filter to partition 2 only
+        org.apache.paimon.partition.PartitionPredicate pp2 =
+                org.apache.paimon.partition.PartitionPredicate.fromPredicate(
+                        partType, partPredBuilder.equal(0, 2));
+        ReadBuilder rb2 = table.newReadBuilder().withPartitionFilter(pp2);
+        List<Split> splits2 = rb2.planAccelerateIndexSearch(search);
+
+        assertThat(splits2).isNotEmpty();
+        for (Split split : splits2) {
+            VectorCFSearchSplit vcfSplit = (VectorCFSearchSplit) split;
+            assertThat(vcfSplit.partition().getInt(0)).isEqualTo(2);
+        }
+
+        // Verify the two partitions have different vector files
+        Set<String> p1VectorFiles =
+                splits.stream()
+                        .map(s -> ((VectorCFSearchSplit) s).vectorFileName())
+                        .collect(Collectors.toSet());
+        Set<String> p2VectorFiles =
+                splits2.stream()
+                        .map(s -> ((VectorCFSearchSplit) s).vectorFileName())
+                        .collect(Collectors.toSet());
+        // Vector files should be disjoint between partitions
+        for (String f : p1VectorFiles) {
+            assertThat(p2VectorFiles).doesNotContain(f);
+        }
+    }
+
+    /** VCF table with bucket filter: only matching bucket's splits returned. */
+    @Test
+    void testPlanAccelerateIndexSearchVCFBucketFilter() throws Exception {
+        FileStoreTable table = createVCFTable("t_plan_vcf_bf", 2);
+        writeVectorBatch(table, 1, 0, 50);
+        compactBucket(table, 1, 0);
+        compactBucket(table, 1, 1);
+        table = (FileStoreTable) catalog.getTable(Identifier.create("default", "t_plan_vcf_bf"));
+
+        float[] query = new float[VEC_DIM];
+        AccelerateIndexSearch search = createVectorSearch(query);
+
+        // All splits (both buckets)
+        List<Split> allSplits = table.newReadBuilder().planAccelerateIndexSearch(search);
+
+        // Filter to bucket 0 only
+        ReadBuilder rb0 = table.newReadBuilder().withBucket(0);
+        List<Split> bucket0Splits = rb0.planAccelerateIndexSearch(search);
+
+        // Filter to bucket 1 only
+        ReadBuilder rb1 = table.newReadBuilder().withBucket(1);
+        List<Split> bucket1Splits = rb1.planAccelerateIndexSearch(search);
+
+        // Bucket-filtered splits should be subsets
+        assertThat(bucket0Splits.size() + bucket1Splits.size()).isEqualTo(allSplits.size());
+
+        for (Split s : bucket0Splits) {
+            assertThat(((VectorCFSearchSplit) s).bucket()).isEqualTo(0);
+        }
+        for (Split s : bucket1Splits) {
+            assertThat(((VectorCFSearchSplit) s).bucket()).isEqualTo(1);
+        }
+    }
+
+    /** Non-VCF table: splits should be AccelerateIndexSplit (uncovered, no index built). */
+    @Test
+    void testPlanAccelerateIndexSearchNonVCF() throws Exception {
+        // Create a non-VCF table with a regular column (not VectorType)
+        FileStoreTable table = createTable("t_plan_nonvcf", false, false);
+        writeInsertBatch(table, 0, 20);
+
+        // After auto-compaction, some files should be L1+
+        table = (FileStoreTable) catalog.getTable(Identifier.create("default", "t_plan_nonvcf"));
+
+        // Collect L1+ file names
+        List<DataSplit> l1Splits =
+                table.newSnapshotReader().withLevelFilter(level -> level >= 1).read().dataSplits();
+
+        if (l1Splits.isEmpty()) {
+            // Need to force compaction
+            compactBucket(table, 1, 0);
+            table =
+                    (FileStoreTable)
+                            catalog.getTable(Identifier.create("default", "t_plan_nonvcf"));
+            l1Splits =
+                    table.newSnapshotReader()
+                            .withLevelFilter(level -> level >= 1)
+                            .read()
+                            .dataSplits();
+        }
+        assertThat(l1Splits).isNotEmpty();
+
+        Set<String> l1FileNames =
+                l1Splits.stream()
+                        .flatMap(s -> s.dataFiles().stream())
+                        .map(DataFileMeta::fileName)
+                        .collect(Collectors.toSet());
+
+        // Plan via new API — "val" column exists in schema
+        float[] query = new float[] {1.0f, 2.0f, 3.0f, 4.0f};
+        AccelerateIndexSearch search =
+                new AccelerateIndexSearch(
+                        "val", query, 10, "lumina", "l2", 4, Collections.emptyMap(), null);
+        List<Split> splits = table.newReadBuilder().planAccelerateIndexSearch(search);
+
+        assertThat(splits).isNotEmpty();
+        for (Split split : splits) {
+            assertThat(split).isInstanceOf(AccelerateIndexSplit.class);
+            AccelerateIndexSplit aiSplit = (AccelerateIndexSplit) split;
+
+            // No index built → all uncovered
+            assertThat(aiSplit.isUncovered()).isTrue();
+            assertThat(aiSplit.indexEntry()).isNull();
+
+            // Data files should be L1+
+            for (DataFileMeta df : aiSplit.dataSplit().dataFiles()) {
+                assertThat(l1FileNames).contains(df.fileName());
+            }
+        }
+    }
+
+    /** newRead() should return search-aware reader after planAccelerateIndexSearch. */
+    @Test
+    void testPlanAccelerateIndexSearchSetsBuilderState() throws Exception {
+        FileStoreTable table = createVCFTable("t_plan_state", 1);
+        writeVectorBatch(table, 1, 0, 20);
+        compactBucket(table, 1, 0);
+        table = (FileStoreTable) catalog.getTable(Identifier.create("default", "t_plan_state"));
+
+        float[] query = new float[VEC_DIM];
+        ReadBuilder rb = table.newReadBuilder();
+
+        // Before planAccelerateIndexSearch, newScan returns regular scan
+        List<Split> normalSplits = rb.newScan().plan().splits();
+        for (Split s : normalSplits) {
+            // Regular splits are DataSplit, not VectorCFSearchSplit
+            assertThat(s).isInstanceOf(DataSplit.class);
+        }
+
+        // After planAccelerateIndexSearch, builder state is set
+        List<Split> searchSplits = rb.planAccelerateIndexSearch(createVectorSearch(query));
+        for (Split s : searchSplits) {
+            assertThat(s).isInstanceOf(VectorCFSearchSplit.class);
+        }
+
+        // Subsequent newScan() should also produce search-aware splits
+        // because withAccelerateIndexSearch was called internally
+        List<Split> subsequentSplits = rb.newScan().plan().splits();
+        for (Split s : subsequentSplits) {
+            assertThat(s).isInstanceOf(VectorCFSearchSplit.class);
+        }
+    }
+
+    /** Null search should throw. */
+    @Test
+    void testPlanAccelerateIndexSearchNullThrows() throws Exception {
+        FileStoreTable table = createVCFTable("t_plan_null", 1);
+        ReadBuilder rb = table.newReadBuilder();
+        assertThatThrownBy(() -> rb.planAccelerateIndexSearch(null))
+                .isInstanceOf(NullPointerException.class);
     }
 }

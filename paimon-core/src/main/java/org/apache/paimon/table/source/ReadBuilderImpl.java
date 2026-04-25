@@ -41,6 +41,7 @@ import java.util.Objects;
 
 import static org.apache.paimon.partition.PartitionPredicate.createPartitionPredicate;
 import static org.apache.paimon.partition.PartitionPredicate.fromPredicate;
+import static org.apache.paimon.utils.Preconditions.checkNotNull;
 import static org.apache.paimon.utils.Preconditions.checkState;
 
 /** Implementation for {@link ReadBuilder}. */
@@ -197,6 +198,7 @@ public class ReadBuilderImpl implements ReadBuilder {
 
     @Override
     public List<Split> planAccelerateIndexSearch(AccelerateIndexSearch search) {
+        checkNotNull(search, "AccelerateIndexSearch must not be null");
         withAccelerateIndexSearch(search);
         return newScan().plan().splits();
     }

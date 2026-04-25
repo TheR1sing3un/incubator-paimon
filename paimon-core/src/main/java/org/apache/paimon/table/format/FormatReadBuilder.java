@@ -35,6 +35,7 @@ import org.apache.paimon.reader.FileRecordReader;
 import org.apache.paimon.reader.RecordReader;
 import org.apache.paimon.table.FormatTable;
 import org.apache.paimon.table.source.ReadBuilder;
+import org.apache.paimon.table.source.Split;
 import org.apache.paimon.table.source.StreamTableScan;
 import org.apache.paimon.table.source.TableRead;
 import org.apache.paimon.table.source.TableScan;
@@ -258,6 +259,13 @@ public class FormatReadBuilder implements ReadBuilder {
 
     @Override
     public ReadBuilder withAccelerateIndexSearch(
+            org.apache.paimon.accelerateindex.AccelerateIndexSearch search) {
+        throw new UnsupportedOperationException(
+                "Format Table does not support accelerate index search.");
+    }
+
+    @Override
+    public List<Split> planAccelerateIndexSearch(
             org.apache.paimon.accelerateindex.AccelerateIndexSearch search) {
         throw new UnsupportedOperationException(
                 "Format Table does not support accelerate index search.");
