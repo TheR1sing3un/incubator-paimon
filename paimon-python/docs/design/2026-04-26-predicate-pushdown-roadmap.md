@@ -47,7 +47,7 @@ SplitRead.create_reader（pypaimon/read/split_read.py）
 
 ### 1.2 已支持的算子（Predicate `LeafFunction`）
 
-`pypaimon/common/predicate.py:157-454` 共 **15 个**：
+`pypaimon/common/predicate.py:157-454` 共 **16 个**：
 `Equal / NotEqual / LessThan / LessOrEqual / GreaterThan / GreaterOrEqual / In / NotIn / Between / NotBetween / StartsWith / EndsWith / Contains / IsNull / IsNotNull / Like`
 
 每个算子实现三个签名（与 Java 等价）：
@@ -69,7 +69,7 @@ Java 在谓词下推上做了大量"防御性裁剪"，因为它的 file reader 
 
 | | Java | Python |
 |---|---|---|
-| 用什么 stats 裁剪 | **value_stats**（`KeyValueFileStoreScan.filterByStats`） | **key_stats** 仅（`file_scanner.py:436-439`） |
+| 用什么 stats 裁剪 | **value_stats**（`KeyValueFileStoreScan.filterByStats`） | **key_stats** 仅（`file_scanner.py` PK 分支 `_filter_manifest_entry`） |
 | L0 是否需要专门保护 | 是（`KeyValueFileStoreScan.java:148-159` 抛异常 / FRESHNESS 豁免） | 否（PK 唯一性 → 同 PK 所有版本必落入同 key 区间） |
 
 > **为什么 Java 的 L0 value-stats 反例在 Python 不成立**：Python PK 表 manifest 裁剪只看 PK 子谓词 vs `key_stats`。同一 PK 的所有版本（含 L0 / L1+）必落入相同的 key 范围 → 要么整组保留要么整组丢弃，不会出现"L0 被 stats 错杀但 L1+ 旧版本逃过"的反例。
@@ -86,7 +86,7 @@ Java 在谓词下推上做了大量"防御性裁剪"，因为它的 file reader 
 
 ### 2.3 Append-only 表 valueStats 裁剪
 
-Append-only 表无 merge、无 L0 重叠概念，Python 与 Java 都用 `value_stats` 做单文件 manifest 裁剪（`file_scanner.py:440-460`），含 `SimpleStatsEvolution` schema 演进。**正确性等价**。
+Append-only 表无 merge、无 L0 重叠概念，Python 与 Java 都用 `value_stats` 做单文件 manifest 裁剪（`file_scanner.py` 的 `_filter_manifest_entry` append-only 分支），含 `SimpleStatsEvolution` schema 演进。**正确性等价**。
 
 ---
 
@@ -128,9 +128,9 @@ Append-only 表无 merge、无 L0 重叠概念，Python 与 Java 都用 `value_s
    - 断言 reader 不返回旧版本（Java 反例在 Python 不可触发）
    - 断言 partition stats 跳过 vs 不下推全表读，结果集等价（false-positive 安全）
 
-3. **Hypothesis 性质测试**（新增 `hypothesis>=6` 到 dev 依赖）
+3. **Property 性质测试**（用 seeded `random.Random`，**不**引入 hypothesis 依赖以保留 Python 3.6 兼容）
    - 随机生成包含 PK / partition / value 列的小数据集（10-1000 行）
-   - 随机生成 `Predicate`（AND/OR/Equal/Range/IN）
+   - 随机生成 `Predicate`（AND/OR/Equal/Range/IN/IsNull/...）
    - 性质 1：下推读取结果集 == 全表读取后 Python 内 `predicate.test(row)` 过滤
    - 性质 2：partition stats 跳过永不丢失命中行（false-negative-free）
 

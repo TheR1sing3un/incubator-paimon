@@ -241,6 +241,29 @@ class BucketSelectConverterUnitTest(unittest.TestCase):
             self.assertTrue(sel(-1, total))
             self.assertTrue(sel(99, total))
 
+    def test_type_mismatched_literal_fails_open_not_crash(self):
+        """If the user constructs a predicate whose literal type doesn't
+        match the bucket-key column's atomic type — for example a STRING
+        literal on a BIGINT column — the writer's GenericRowSerializer
+        will raise during the deferred hash inside _Selector. Selector
+        MUST swallow the exception and fail open (return True for every
+        bucket) rather than propagate it: crashing the entire scan with
+        an opaque struct.error would be a worse user experience than
+        silently skipping bucket pruning."""
+        # `id` is BIGINT; pass a string literal — serialization will
+        # explode when GenericRowSerializer tries to pack it as int64.
+        sel = create_bucket_selector(
+            self.pb_id_val.equal('id', 'not-an-int'), [self.id_field])
+        # Construction itself succeeds (no eager hashing).
+        self.assertIsNotNone(sel)
+        # Calling the selector must NOT raise; instead it returns True
+        # for every (bucket, total_buckets), preserving soundness.
+        for total in (4, 8):
+            for b in range(total):
+                self.assertTrue(sel(b, total),
+                                "type-mismatched literal must fail open, "
+                                f"not crash (bucket={b}, total={total})")
+
 
 # ---------------------------------------------------------------------------
 # Layer 2 — Integration: real tables, public API, assert correctness AND

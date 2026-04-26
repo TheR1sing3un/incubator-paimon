@@ -135,7 +135,15 @@ class _Selector:
         # rows the writer hashed under a different convention. Fail open.
         if total_buckets <= 0:
             return True
-        return bucket in self._compute(total_buckets)
+        try:
+            return bucket in self._compute(total_buckets)
+        except Exception:
+            # Fail open on any hashing/serialization error (e.g. literal
+            # type doesn't match bucket-key column type:
+            # ``pb.equal('id_bigint', 'foo')``). Crashing the scan would be
+            # worse than skipping pruning — soundness contract still
+            # forbids false-negatives.
+            return True
 
     def _compute(self, total_buckets: int) -> FrozenSet[int]:
         cached = self._cache.get(total_buckets)
