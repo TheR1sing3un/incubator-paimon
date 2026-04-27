@@ -185,6 +185,45 @@ class PkProjectionWithVersionedPartialUpdateTest(unittest.TestCase):
             {'v1': 'hello', 'v2': 'world'},
         )
 
+    def test_nested_projection_into_mv_col_subfields(self):
+        """Phase 2d: nested projection on PK + versioned-partial-update.
+
+        The user requests ``mv_col.LATEST_VERSION`` (a leaf inside the
+        multi-version struct). adjust_read_type collapses the path back
+        to the full ``mv_col`` parent for the merge function, then
+        OuterProjectionRecordReader walks into the struct to extract the
+        leaf for the user-facing batch.
+        """
+        pa_schema = pa.schema([
+            pa.field('pk', pa.int32(), nullable=False),
+            ('amount', pa.int64()),
+            ('mv_col', MV_STRING_TYPE),
+        ])
+        table = self._create_table(pa_schema, {})
+        self._write(table, {
+            'pk': [1],
+            'amount': [5],
+            'mv_col': [mv_single('v1', 'hello')],
+        }, pa_schema)
+        self._write(table, {
+            'pk': [1],
+            'amount': [7],
+            'mv_col': [mv_single('v2', 'world')],
+        }, pa_schema)
+
+        rb = table.new_read_builder().with_projection([
+            'pk', 'mv_col.LATEST_VERSION', 'mv_col.LATEST_VALUE',
+        ])
+        result = rb.new_read().to_arrow(rb.new_scan().plan().splits())
+        self.assertEqual(result.column_names,
+                         ['pk', 'mv_col_LATEST_VERSION', 'mv_col_LATEST_VALUE'])
+        rows = result.to_pydict()
+        self.assertEqual(rows['pk'][0], 1)
+        # latest_version is determined by the multi-version map's
+        # lexicographic ordering: 'v2' > 'v1'
+        self.assertEqual(rows['mv_col_LATEST_VERSION'][0], 'v2')
+        self.assertEqual(rows['mv_col_LATEST_VALUE'][0], 'world')
+
     def test_projection_reorders_columns(self):
         """Projection reorders columns: ``[amount, pk]``. Output column
         order must follow the user's request, not the table schema.

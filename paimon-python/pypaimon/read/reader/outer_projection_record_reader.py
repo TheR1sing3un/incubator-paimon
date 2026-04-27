@@ -36,50 +36,117 @@ from pypaimon.table.row.offset_row import OffsetRow
 
 class OuterProjectionRecordReader(RecordReader[InternalRow]):
     """Project each row from the merge function's inner schema back to the
-    user's outer schema using the supplied positional mapping.
+    user's outer schema.
 
-    ``outer_indices[i]`` is the position of the i-th outer field within the
-    inner row.
+    Two modes:
+
+    - **Positional**: ``outer_indices[i]`` is the position of the i-th
+      outer field within the inner row. Used when the user's projection
+      stays at the top level (the standard Phase 1 case).
+    - **Path-based**: ``outer_extract_specs[i] = (inner_idx, sub_path)``.
+      The i-th outer field is reached by ``inner_row[inner_idx]`` followed
+      by successive ``[name]`` lookups for each entry in ``sub_path``.
+      Used when the user requested a nested projection on a PK table
+      (Phase 2d) — the merge function keeps the full struct and we walk
+      into it here to recover the leaf value.
+
+    Exactly one of ``outer_indices`` / ``outer_extract_specs`` must be set.
     """
 
-    def __init__(self, inner_reader: RecordReader[InternalRow], outer_indices: List[int]):
+    def __init__(self, inner_reader: RecordReader[InternalRow],
+                 outer_indices: Optional[List[int]] = None,
+                 outer_extract_specs: Optional[List[tuple]] = None):
+        if (outer_indices is None) == (outer_extract_specs is None):
+            raise ValueError(
+                "Exactly one of outer_indices / outer_extract_specs must be set")
         self._inner_reader = inner_reader
         self._outer_indices = outer_indices
+        self._outer_extract_specs = outer_extract_specs
 
     def read_batch(self) -> Optional[RecordIterator[InternalRow]]:
         batch = self._inner_reader.read_batch()
         if batch is None:
             return None
-        return _OuterProjectionIterator(batch, self._outer_indices)
+        return _OuterProjectionIterator(
+            batch, self._outer_indices, self._outer_extract_specs)
 
     def close(self) -> None:
         self._inner_reader.close()
 
 
+def _extract_subpath(value, sub_path):
+    """Walk ``sub_path`` (a list of field names) through a struct value
+    (typically a dict produced by Paimon's KV unwrap path). Returns the
+    leaf value, or None if any segment is missing.
+    """
+    current = value
+    for name in sub_path:
+        if current is None:
+            return None
+        if isinstance(current, dict):
+            current = current.get(name)
+            continue
+        # PyArrow-style struct may expose .as_py() or attribute access
+        if hasattr(current, name):
+            current = getattr(current, name)
+            continue
+        as_py = getattr(current, 'as_py', None)
+        if as_py is not None:
+            try:
+                py = as_py()
+            except Exception:
+                return None
+            if isinstance(py, dict):
+                current = py.get(name)
+                continue
+        return None
+    return current
+
+
 class _OuterProjectionIterator(RecordIterator[InternalRow]):
 
-    def __init__(self, batch: RecordIterator[InternalRow], outer_indices: List[int]):
+    def __init__(self, batch: RecordIterator[InternalRow],
+                 outer_indices: Optional[List[int]],
+                 outer_extract_specs: Optional[List[tuple]]):
         self._batch = batch
         self._outer_indices = outer_indices
+        self._outer_extract_specs = outer_extract_specs
+        arity = len(outer_indices) if outer_indices is not None else len(outer_extract_specs)
         # Reuse a single OffsetRow + tuple buffer per iterator. The downstream
         # consumer is expected to fully process each row before calling
         # next() again (mirrors how OffsetRow is reused upstream).
-        self._row = OffsetRow(None, 0, len(outer_indices))
+        self._row = OffsetRow(None, 0, arity)
+        self._arity = arity
 
     def next(self) -> Optional[InternalRow]:
         inner_row = self._batch.next()
         if inner_row is None:
             return None
-        # Materialize the projected tuple. inner_row is an OffsetRow whose
-        # window starts at `inner_row.offset` and spans `inner_row.arity`.
-        if isinstance(inner_row, OffsetRow):
-            base = inner_row.row_tuple
-            base_offset = inner_row.offset
-            projected = tuple(base[base_offset + idx] for idx in self._outer_indices)
+
+        if self._outer_indices is not None:
+            if isinstance(inner_row, OffsetRow):
+                base = inner_row.row_tuple
+                base_offset = inner_row.offset
+                projected = tuple(base[base_offset + idx] for idx in self._outer_indices)
+            else:
+                projected = tuple(inner_row.get_field(idx) for idx in self._outer_indices)
         else:
-            projected = tuple(inner_row.get_field(idx) for idx in self._outer_indices)
+            # Path-based extraction (Phase 2d nested + PK).
+            if isinstance(inner_row, OffsetRow):
+                base = inner_row.row_tuple
+                base_offset = inner_row.offset
+
+                def get_field(idx):
+                    return base[base_offset + idx]
+            else:
+                get_field = inner_row.get_field
+            projected = tuple(
+                _extract_subpath(get_field(inner_idx), sub_path)
+                for inner_idx, sub_path in self._outer_extract_specs
+            )
+
         self._row.row_tuple = projected
         self._row.offset = 0
-        self._row.arity = len(self._outer_indices)
+        self._row.arity = self._arity
         self._row.set_row_kind_byte(inner_row.get_row_kind().value)
         return self._row

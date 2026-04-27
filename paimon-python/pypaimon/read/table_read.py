@@ -42,7 +42,8 @@ class TableRead:
         predicate: Optional[Predicate],
         read_type: List[DataField],
         include_row_kind: bool = False,
-        limit: Optional[int] = None
+        limit: Optional[int] = None,
+        nested_name_paths: Optional[List[List[str]]] = None,
     ):
         from pypaimon.table.file_store_table import FileStoreTable
 
@@ -51,6 +52,12 @@ class TableRead:
         self.read_type = read_type
         self.include_row_kind = include_row_kind
         self.limit = limit
+        # Parallel to read_type: nested_name_paths[i] is the chain of field
+        # names walked to reach the i-th projected field. Length-1 paths are
+        # plain top-level. Used by format readers (Parquet/ORC via PyArrow)
+        # to push nested column reads down to the file. None when no nested
+        # projection is in play.
+        self.nested_name_paths = nested_name_paths
 
     def to_iterator(self, splits: List[Split]) -> Iterator:
         limit = self.limit
@@ -342,7 +349,8 @@ class TableRead:
                 read_type=self.read_type,
                 split=split,
                 row_tracking_enabled=False,
-                limit=self.limit
+                limit=self.limit,
+                nested_name_paths=self.nested_name_paths,
             )
         elif self.table.options.data_evolution_enabled():
             return DataEvolutionSplitRead(
@@ -350,7 +358,8 @@ class TableRead:
                 predicate=self.predicate,
                 read_type=self.read_type,
                 split=split,
-                row_tracking_enabled=True
+                row_tracking_enabled=True,
+                nested_name_paths=self.nested_name_paths,
             )
         else:
             return RawFileSplitRead(
@@ -358,7 +367,8 @@ class TableRead:
                 predicate=self.predicate,
                 read_type=self.read_type,
                 split=split,
-                row_tracking_enabled=self.table.options.row_tracking_enabled()
+                row_tracking_enabled=self.table.options.row_tracking_enabled(),
+                nested_name_paths=self.nested_name_paths,
             )
 
     @staticmethod

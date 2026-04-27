@@ -32,10 +32,17 @@ class FormatAvroReader(RecordBatchReader):
     """
     An ArrowBatchReader for reading Avro files using fastavro, filters records based on the
     provided predicate and projection, and converts Avro records to RecordBatch format.
+
+    Nested projection is supported via ``nested_name_paths`` (parallel to
+    ``read_fields``). fastavro does not push nested column reads to the
+    file, so this is a Python-side fallback: we read the full top-level
+    record and walk each path through the resulting dict to extract the
+    leaf value. Output columns use the flat user-facing names.
     """
 
     def __init__(self, file_io: FileIO, file_path: str, read_fields: List[str], full_fields: List[DataField],
-                 push_down_predicate: Any, batch_size: int = 1024):
+                 push_down_predicate: Any, batch_size: int = 1024,
+                 nested_name_paths: Optional[List[List[str]]] = None):
         file_path_for_io = file_io.to_filesystem_path(file_path)
         self._file = file_io.filesystem.open_input_file(file_path_for_io)
         self._avro_reader = fastavro.reader(self._file)
@@ -47,13 +54,26 @@ class FormatAvroReader(RecordBatchReader):
         projected_data_fields = [full_fields_map[name] for name in read_fields]
         self._schema = PyarrowFieldParser.from_paimon_schema(projected_data_fields)
 
+        # Default each field to a length-1 path of its own name (top-level
+        # extraction); override with the supplied paths for any nested
+        # field. This keeps the per-record extraction loop uniform.
+        if nested_name_paths is not None:
+            if len(nested_name_paths) != len(read_fields):
+                raise ValueError(
+                    "nested_name_paths must be parallel to read_fields "
+                    "(got %d paths for %d fields)"
+                    % (len(nested_name_paths), len(read_fields)))
+            self._paths = [list(p) for p in nested_name_paths]
+        else:
+            self._paths = [[name] for name in read_fields]
+
     def read_arrow_batch(self) -> Optional[RecordBatch]:
         pydict_data = {name: [] for name in self._fields}
         records_in_batch = 0
 
         for record in self._avro_reader:
-            for col_name in self._fields:
-                pydict_data[col_name].append(record.get(col_name))
+            for col_name, path in zip(self._fields, self._paths):
+                pydict_data[col_name].append(_walk_avro_record(record, path))
             records_in_batch += 1
             if records_in_batch >= self._batch_size:
                 break
@@ -76,3 +96,19 @@ class FormatAvroReader(RecordBatchReader):
         if self._file:
             self._file.close()
             self._file = None
+
+
+def _walk_avro_record(record, path):
+    """Walk ``path`` (a list of field names) through a fastavro record
+    (a dict) and return the leaf value, or None if any segment is
+    missing. Mirrors the schema-evolution-tolerant lookup used by
+    FormatPyArrowReader for nested PyArrow expressions.
+    """
+    current = record
+    for name in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(name)
+        if current is None:
+            return None
+    return current

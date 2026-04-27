@@ -33,11 +33,19 @@ class FormatPyArrowReader(RecordBatchReader):
     """
     A Format Reader that reads record batch from a Parquet or ORC file using PyArrow,
     and filters it based on the provided predicate and projection.
+
+    When ``nested_name_paths`` is supplied (parallel to ``read_fields``,
+    where each entry is the chain of source field names walked to reach
+    the corresponding output field), the scanner is constructed in
+    dict-of-expressions form so PyArrow truly pushes nested column reads
+    down to the file. Top-level paths (length 1) interleave seamlessly
+    with truly-nested paths in the same dict.
     """
 
     def __init__(self, file_io: FileIO, file_format: str, file_path: str,
                  read_fields: List[DataField],
-                 push_down_predicate: Any, batch_size: int = 1024):
+                 push_down_predicate: Any, batch_size: int = 1024,
+                 nested_name_paths: Optional[List[List[str]]] = None):
         file_path_for_pyarrow = file_io.to_filesystem_path(file_path)
         self.dataset = ds.dataset(file_path_for_pyarrow, format=file_format, filesystem=file_io.filesystem)
         self._file_format = file_format
@@ -48,17 +56,45 @@ class FormatPyArrowReader(RecordBatchReader):
             f.name: f.type for f in read_fields if isinstance(f.type, VectorType)
         }
 
-        # Identify which fields exist in the file and which are missing
         file_schema_names = set(self.dataset.schema.names)
-        self.existing_fields = [f.name for f in read_fields if f.name in file_schema_names]
-        self.missing_fields = [f.name for f in read_fields if f.name not in file_schema_names]
 
-        # Only pass existing fields to PyArrow scanner to avoid errors
-        self.reader = self.dataset.scanner(
-            columns=self.existing_fields,
-            filter=push_down_predicate,
-            batch_size=batch_size
-        ).to_reader()
+        if nested_name_paths is not None and any(len(p) > 1 for p in nested_name_paths):
+            if len(nested_name_paths) != len(read_fields):
+                raise ValueError(
+                    "nested_name_paths must be parallel to read_fields "
+                    "(got %d paths for %d fields)"
+                    % (len(nested_name_paths), len(read_fields)))
+            # The full path must resolve in the file's physical schema.
+            # If any segment along the way is missing — top-level root or
+            # a sub-field that has been schema-evolved away — the field is
+            # treated as missing and filled with NULLs downstream rather
+            # than letting PyArrow's scanner raise ArrowInvalid at scan
+            # time on an unresolvable ds.field(...) expression.
+            columns_dict = {}
+            self.existing_fields = []
+            self.missing_fields = []
+            for field, path in zip(read_fields, nested_name_paths):
+                if not path or not _path_exists_in_arrow_schema(self.dataset.schema, path):
+                    self.missing_fields.append(field.name)
+                    continue
+                columns_dict[field.name] = ds.field(*path)
+                self.existing_fields.append(field.name)
+            self.reader = self.dataset.scanner(
+                columns=columns_dict,
+                filter=push_down_predicate,
+                batch_size=batch_size,
+            ).to_reader()
+        else:
+            # Identify which fields exist in the file and which are missing
+            self.existing_fields = [f.name for f in read_fields if f.name in file_schema_names]
+            self.missing_fields = [f.name for f in read_fields if f.name not in file_schema_names]
+
+            # Only pass existing fields to PyArrow scanner to avoid errors
+            self.reader = self.dataset.scanner(
+                columns=self.existing_fields,
+                filter=push_down_predicate,
+                batch_size=batch_size
+            ).to_reader()
 
         self._output_schema = (
             PyarrowFieldParser.from_paimon_schema(read_fields) if read_fields else None
@@ -165,3 +201,29 @@ class FormatPyArrowReader(RecordBatchReader):
     def close(self):
         if self.reader is not None:
             self.reader = None
+
+
+def _path_exists_in_arrow_schema(schema, path) -> bool:
+    """Walk ``path`` (a list of field names) through a nested PyArrow
+    schema (or struct type) and return True only if every segment resolves.
+
+    Used to safely tolerate sub-field schema evolution — a leaf that was
+    added in a newer schema may not exist in older files; surfacing such a
+    column as "missing" (NULL) is the same contract as the top-level path.
+    """
+    if not path:
+        return False
+    current = schema
+    for name in path:
+        # PyArrow Schema has .names + .field(name); StructType has .field(name)
+        if hasattr(current, 'names') and name in current.names:
+            current = current.field(name).type
+            continue
+        if pa.types.is_struct(current):
+            try:
+                current = current.field(name).type
+                continue
+            except (KeyError, ValueError):
+                return False
+        return False
+    return True
