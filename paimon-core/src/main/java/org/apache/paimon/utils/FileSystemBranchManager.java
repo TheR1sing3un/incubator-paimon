@@ -30,6 +30,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -91,8 +92,10 @@ public class FileSystemBranchManager implements BranchManager {
             Long latestId = snapshotManager.latestSnapshotId();
             String forkUuid = ForkInfo.EMPTY_FORK_UUID;
             long forkSnapshotId = 0;
+            Snapshot forkSnapshot = null;
             if (latestId != null) {
-                forkUuid = snapshotManager.snapshot(latestId).commitUuid();
+                forkSnapshot = snapshotManager.snapshot(latestId);
+                forkUuid = forkSnapshot.commitUuid();
                 Preconditions.checkNotNull(
                         forkUuid,
                         "Snapshot #%s has no commitUuid. "
@@ -101,6 +104,10 @@ public class FileSystemBranchManager implements BranchManager {
                 forkSnapshotId = latestId;
             }
             writeForkInfoOrCleanup(branchName, parentBranch, forkSnapshotId, forkUuid);
+
+            if (forkSnapshot != null) {
+                createForkProtectionTagOrCleanup(branchName, forkSnapshot);
+            }
         } catch (IOException e) {
             throw new RuntimeException(
                     String.format(
@@ -144,6 +151,8 @@ public class FileSystemBranchManager implements BranchManager {
                             + "Branch merge requires snapshots written by a recent Paimon version.",
                     snapshot.id());
             writeForkInfoOrCleanup(branchName, parentBranch, snapshot.id(), forkUuid);
+
+            createForkProtectionTagOrCleanup(branchName, snapshot);
         } catch (IOException e) {
             throw new RuntimeException(
                     String.format(
@@ -156,6 +165,14 @@ public class FileSystemBranchManager implements BranchManager {
     @Override
     public void dropBranch(String branchName) {
         checkArgument(branchExists(branchName), "Branch name '%s' doesn't exist.", branchName);
+
+        // Release the fork-point protection tag on the parent branch before deleting the branch
+        // directory, so that the fork-point snapshot can be reclaimed by the normal expiration
+        // flow if no other references keep it alive. Note: removing the tag only un-pins the
+        // snapshot; its data files become eligible for reclamation but are physically deleted by
+        // the next snapshot expiration cycle, not synchronously by dropBranch.
+        deleteForkProtectionTag(branchName);
+
         try {
             // Delete branch directory
             fileIO.delete(branchPath(branchName), true);
@@ -273,7 +290,13 @@ public class FileSystemBranchManager implements BranchManager {
             throws IOException {
         ForkInfo info = new ForkInfo(parentBranch, forkSnapshotId, forkUuid);
         Path forkInfoPath = new Path(branchPath(branchName), FORK_INFO_FILE);
-        fileIO.tryToWriteAtomic(forkInfoPath, info.toJson());
+        boolean written = fileIO.tryToWriteAtomic(forkInfoPath, info.toJson());
+        if (!written) {
+            throw new IOException(
+                    String.format(
+                            "FORK_INFO already exists at %s — residue of a failed branch creation?",
+                            forkInfoPath));
+        }
     }
 
     /**
@@ -359,5 +382,62 @@ public class FileSystemBranchManager implements BranchManager {
             return new Path(tablePath, MERGE_LINEAGE_FILE);
         }
         return new Path(branchPath(branchName), MERGE_LINEAGE_FILE);
+    }
+
+    /**
+     * Create a system tag on the parent branch pinning the fork-point snapshot for the given child
+     * branch. This prevents the fork-point (and its base manifest / data files) from being
+     * reclaimed by snapshot expiration, guaranteeing it remains readable for the lifetime of the
+     * child branch — which branch merge requires.
+     *
+     * <p>The tag is named {@link BranchManager#forkTagName(String)}. If a tag with the same name
+     * already exists, creation fails loudly rather than overwriting; this surfaces stale leftovers
+     * from a previous branch with the same name instead of silently masking them.
+     */
+    private void createForkProtectionTag(String childBranchName, Snapshot forkSnapshot) {
+        tagManager.createTag(
+                forkSnapshot,
+                BranchManager.forkTagName(childBranchName),
+                null,
+                Collections.emptyList(),
+                false);
+    }
+
+    /**
+     * Create the fork-protection tag; if it fails (e.g. same-name tag already exists from a
+     * previous stale branch), delete the partially-created branch directory so the caller sees
+     * "branch not created" rather than a half-created state where FORK_INFO / schemas are present
+     * but the protection tag is missing. The tag is mandatory for merge correctness, so "branch
+     * without tag" is not a valid state we want to leave on disk.
+     */
+    private void createForkProtectionTagOrCleanup(String childBranchName, Snapshot forkSnapshot) {
+        try {
+            createForkProtectionTag(childBranchName, forkSnapshot);
+        } catch (RuntimeException tagErr) {
+            LOG.error(
+                    "Failed to create fork-protection tag for branch '{}'. "
+                            + "Cleaning up partially created branch.",
+                    childBranchName,
+                    tagErr);
+            try {
+                fileIO.delete(branchPath(childBranchName), true);
+            } catch (IOException cleanupErr) {
+                LOG.error("Failed to clean up branch directory '{}'.", childBranchName, cleanupErr);
+            }
+            throw tagErr;
+        }
+    }
+
+    /**
+     * Remove the fork-point protection tag for the given child branch. The tag metadata file is
+     * deleted directly; data files referenced only by this tag will be reclaimed by the next
+     * snapshot expiration cycle.
+     *
+     * <p>Drop is idempotent — missing tag is a no-op, matching {@code fileIO.deleteQuietly}
+     * semantics.
+     */
+    private void deleteForkProtectionTag(String childBranchName) {
+        Path tagPath = tagManager.tagPath(BranchManager.forkTagName(childBranchName));
+        fileIO.deleteQuietly(tagPath);
     }
 }

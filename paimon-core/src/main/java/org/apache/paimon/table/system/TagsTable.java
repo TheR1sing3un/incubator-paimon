@@ -48,6 +48,7 @@ import org.apache.paimon.types.BigIntType;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.types.TimestampType;
+import org.apache.paimon.utils.BranchManager;
 import org.apache.paimon.utils.DateTimeUtils;
 import org.apache.paimon.utils.IteratorRecordReader;
 import org.apache.paimon.utils.Pair;
@@ -266,6 +267,12 @@ public class TagsTable implements ReadonlyTable {
                 nameToSnapshot.putAll(predicateMap);
             } else {
                 for (Pair<Tag, String> tag : tagManager.tagObjects()) {
+                    // Hide system-reserved tags (e.g. __sys.fork.*, __sys.last_merge.*) from the
+                    // user-facing tags system table. An explicit predicate on tag_name still
+                    // resolves these via the predicate branch above, for debugging.
+                    if (BranchManager.isSystemTag(tag.getValue())) {
+                        continue;
+                    }
                     nameToSnapshot.put(tag.getValue(), tag.getKey());
                 }
             }

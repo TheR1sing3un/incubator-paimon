@@ -530,6 +530,15 @@ public class RESTFileSystemCatalog extends FileSystemCatalog {
         }
         Collections.sort(allTags);
 
+        boolean callerExplicitlyWantsSystemTags =
+                tagNamePrefix != null && tagNamePrefix.startsWith(BranchManager.SYSTEM_TAG_PREFIX);
+        if (!callerExplicitlyWantsSystemTags) {
+            allTags =
+                    allTags.stream()
+                            .filter(t -> !BranchManager.isSystemTag(t))
+                            .collect(Collectors.toList());
+        }
+
         if (tagNamePrefix != null && !tagNamePrefix.isEmpty()) {
             allTags =
                     allTags.stream()

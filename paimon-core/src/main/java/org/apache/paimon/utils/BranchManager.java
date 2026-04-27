@@ -32,6 +32,28 @@ public interface BranchManager {
 
     String BRANCH_PREFIX = "branch-";
 
+    /**
+     * Prefix for system-managed tags. These tags are created and removed by branch lifecycle and
+     * should be filtered from user-facing tag listings.
+     */
+    String SYSTEM_TAG_PREFIX = "__sys.";
+
+    /**
+     * Prefix for fork-point protection tags. Each child branch has one tag on its parent branch
+     * keeping the fork-point snapshot alive across expiration.
+     */
+    String FORK_TAG_PREFIX = SYSTEM_TAG_PREFIX + "fork.";
+
+    /** The system tag name that protects the fork-point snapshot for the given child branch. */
+    static String forkTagName(String childBranchName) {
+        return FORK_TAG_PREFIX + childBranchName;
+    }
+
+    /** Whether the given tag name is a system-managed tag (not created by users). */
+    static boolean isSystemTag(String tagName) {
+        return tagName != null && tagName.startsWith(SYSTEM_TAG_PREFIX);
+    }
+
     void createBranch(String branchName);
 
     void createBranch(String branchName, @Nullable String tagName);
