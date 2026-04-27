@@ -17,6 +17,7 @@
 ################################################################################
 
 from pypaimon.common.versioned_merge_mode import VersionedMergeMode
+from pypaimon.read.reader.aggregate import FieldAggregator  # noqa: F401  (re-exported in type hints)
 from pypaimon.read.reader.merge_function import MergeFunction
 from pypaimon.table.row.key_value import KeyValue
 from pypaimon.table.row.row_kind import RowKind
@@ -62,7 +63,7 @@ class VersionedPartialUpdateMergeFunction(MergeFunction):
     """
 
     def __init__(self, key_arity, field_count, primary_key_indices,
-                 mv_metas, ignore_delete, nullables):
+                 mv_metas, ignore_delete, nullables, field_aggregators=None):
         """
         Args:
             key_arity: Number of key fields.
@@ -71,6 +72,10 @@ class VersionedPartialUpdateMergeFunction(MergeFunction):
             mv_metas: Dict mapping value field index to MultiVersionColumnMeta.
             ignore_delete: Whether to silently drop delete records.
             nullables: List of booleans indicating if each value field is nullable.
+            field_aggregators: Optional dict mapping value field index to a
+                FieldAggregator instance. Configured columns aggregate
+                instead of following the upsert/ignore merge mode. Mirrors
+                Java VersionedPartialUpdateMergeFunction L92, L210-218.
         """
         self.key_arity = key_arity
         self.field_count = field_count
@@ -78,6 +83,7 @@ class VersionedPartialUpdateMergeFunction(MergeFunction):
         self.mv_metas = mv_metas
         self.ignore_delete = ignore_delete
         self.nullables = nullables
+        self.field_aggregators = field_aggregators if field_aggregators is not None else {}
 
         self.row = None
         self.mv_states = {}
@@ -95,6 +101,12 @@ class VersionedPartialUpdateMergeFunction(MergeFunction):
         self.latest_sequence_number = 0
         self.current_delete_row = False
         self.meet_insert = False
+        self._reset_field_aggregators()
+
+    def _reset_field_aggregators(self):
+        """Clear stateful aggregator state for a new merge group / DELETE."""
+        for agg in self.field_aggregators.values():
+            agg.reset()
 
     def add(self, kv):
         kind_byte = kv.value_row_kind_byte
@@ -119,6 +131,7 @@ class VersionedPartialUpdateMergeFunction(MergeFunction):
                 else:
                     self.row[i] = None
             self.mv_states.clear()
+            self._reset_field_aggregators()
             return
 
         # INSERT / UPDATE_AFTER: a subsequent insert overrides a previous delete
@@ -138,6 +151,16 @@ class VersionedPartialUpdateMergeFunction(MergeFunction):
             elif i in self.mv_metas:
                 self._merge_multi_version_column(i, value, is_ignore)
             else:
+                # Aggregator path: configured columns aggregate and bypass
+                # the upsert/ignore merge mode. Mirrors Java L210-218.
+                aggregator = self.field_aggregators.get(i)
+                if aggregator is not None:
+                    if value is None and not self.nullables[i]:
+                        raise ValueError(
+                            "Field %d can not be null for NOT NULL column." % i)
+                    self.row[i] = aggregator.agg(self.row[i], value)
+                    continue
+
                 # Single-version column: mode-based merge
                 if value is None:
                     if not self.nullables[i]:

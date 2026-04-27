@@ -16,8 +16,10 @@
 # limitations under the License.
 ################################################################################
 
-from pypaimon.common.options.core_options import CoreOptions, MergeEngine
-from pypaimon.read.reader.merge_function import MergeFunction
+from pypaimon.common.options.core_options import MergeEngine
+from pypaimon.read.reader.aggregate.partial_update_field_aggregators import (
+    for_versioned_partial_update,
+)
 from pypaimon.read.reader.sort_merge_reader import DeduplicateMergeFunction
 from pypaimon.read.reader.versioned_partial_update_merge_function import (
     MultiVersionColumnMeta,
@@ -68,6 +70,20 @@ def _create_versioned_partial_update(schema, options, key_arity):
         elif _is_multi_version_field(field):
             mv_field_names.add(field.name)
 
+    # Zero-tolerance validation for aggregation on multi-version columns.
+    # Mirrors Java VersionedPartialUpdateMergeFunction.Factory L416-432.
+    if mv_field_names and options.fields_default_agg_func() is not None:
+        raise ValueError(
+            "'fields.default-aggregate-function' is not supported when "
+            "multi-version fields exist in versioned-partial-update merge "
+            "engine. Multi-version fields: %s." % sorted(mv_field_names))
+    for mv_field_name in mv_field_names:
+        if options.field_agg_func(mv_field_name) is not None:
+            raise ValueError(
+                "Aggregation function is not supported for multi-version "
+                "field '%s' in versioned-partial-update merge engine."
+                % mv_field_name)
+
     # Build multi-version column metadata with actual sub-field names from schema
     mv_metas = {}
     for mv_name in mv_field_names:
@@ -86,6 +102,22 @@ def _create_versioned_partial_update(schema, options, key_arity):
     for field in value_fields:
         nullables.append(field.type.nullable)
 
+    # Build per-column FieldAggregator instances. Mirrors Java
+    # VersionedPartialUpdateMergeFunction.Factory L433-435 + L490-493.
+    aggregator_suppliers = for_versioned_partial_update(
+        fields=value_fields,
+        primary_keys=trimmed_pks,
+        multi_version_fields=mv_field_names,
+        options=options,
+    )
+    # Skip primary-key indices: PK columns are already handled by the
+    # primary_key_indices branch in add() and don't need an aggregator.
+    field_aggregators = {
+        i: supplier()
+        for i, supplier in aggregator_suppliers.items()
+        if i not in primary_key_indices
+    }
+
     return VersionedPartialUpdateMergeFunction(
         key_arity=key_arity,
         field_count=field_count,
@@ -93,6 +125,7 @@ def _create_versioned_partial_update(schema, options, key_arity):
         mv_metas=mv_metas,
         ignore_delete=ignore_delete,
         nullables=nullables,
+        field_aggregators=field_aggregators,
     )
 
 
