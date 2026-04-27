@@ -31,6 +31,19 @@ Currently only ``for_versioned_partial_update`` is exposed publicly because
 pypaimon does not yet have a partial-update merge function. The private
 ``_create`` helper is already parameterised with both axes so that a
 ``for_partial_update`` entry point can be added later without rework.
+
+Index alignment under projection
+--------------------------------
+
+The aggregator suppliers' integer keys are positions within the ``fields``
+sequence passed in. Phase 1's inner/outer projection split in
+``MergeFileSplitRead`` ensures this function is always invoked with the
+**inner read schema** — i.e., the projected field list extended with any
+columns the merge engine structurally requires (mv columns, PK, agg
+columns). The resulting indices therefore align directly with what
+``VersionedPartialUpdateMergeFunction.add()`` iterates over the
+``KeyValue.value`` row, with no second-layer remap required (a TODO that
+existed in the original field-aggregation port — now resolved).
 """
 
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set
