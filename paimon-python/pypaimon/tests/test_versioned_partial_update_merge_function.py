@@ -395,3 +395,196 @@ class TestVersionedPartialUpdateMergeFunction:
         f.add(make_kv(1, "B", None, None, VersionedMergeMode.UPSERT, seq=10))
         result = f.get_result()
         assert result.sequence_number == 10
+
+
+# ===========================================================================
+# Field-level aggregation tests
+# ===========================================================================
+#
+# Mirrors the four new cases added to Java VersionedPartialUpdateMergeFunctionTest
+# in commit e1964c7d9:
+#   testSingleVersionAggregationOverridesMergeModeForConfiguredColumn
+#   testDefaultAggregationIsRejectedWhenMultiVersionColumnExists
+#   testExplicitAggregationOnMultiVersionColumnIsRejected
+#   (Spark E2E "collect across UPSERT/IGNORE" — covered here with a unit test)
+
+
+# Schema for aggregation tests: pk(INT), amount(BIGINT), tags(ARRAY<STRING>),
+# single_col(STRING), mv_col(ROW<...>)
+AGG_KEY_ARITY = 1
+AGG_FIELD_COUNT = 5
+AGG_PK_INDICES = {0}
+AGG_MV_METAS = {4: MultiVersionColumnMeta(4)}
+AGG_NULLABLES = [False, True, True, True, True]
+
+
+def make_agg_kv(pk, amount, tags, single_col, version, value, merge_mode, seq=1):
+    """Build a KeyValue for the 5-column aggregation schema."""
+    mv_val = None
+    if version is not None:
+        mv_val = {
+            MV_LATEST_VERSION: version,
+            MV_LATEST_VALUE: value,
+            MV_ALL_VERSIONED_VALUES: None,
+        }
+    row_tuple = (pk, seq, RowKind.INSERT.value, pk, amount, tags, single_col, mv_val)
+    kv = KeyValue(AGG_KEY_ARITY, AGG_FIELD_COUNT)
+    kv.replace(row_tuple)
+    kv.set_merge_mode(merge_mode.value)
+    return kv
+
+
+class TestFieldLevelAggregation:
+    """Mirrors Java VersionedPartialUpdateMergeFunctionTest L283-350."""
+
+    def test_single_version_aggregation_overrides_merge_mode_for_configured_column(self):
+        """An aggregator-configured column accumulates across UPSERT/IGNORE
+        modes, while a column without an aggregator follows the mode (here
+        IGNORE keeps the first non-null value).
+
+        Mirrors testSingleVersionAggregationOverridesMergeModeForConfiguredColumn.
+        """
+        from pypaimon.read.reader.aggregate.aggregators import FieldSumAgg
+
+        # idx 1 (amount) gets a sum aggregator; idx 2/3 (tags/single_col) and
+        # idx 4 (mv_col) follow the normal paths.
+        field_aggregators = {1: FieldSumAgg(None, "amount")}
+
+        f = VersionedPartialUpdateMergeFunction(
+            key_arity=AGG_KEY_ARITY,
+            field_count=AGG_FIELD_COUNT,
+            primary_key_indices=AGG_PK_INDICES,
+            mv_metas=AGG_MV_METAS,
+            ignore_delete=False,
+            nullables=AGG_NULLABLES,
+            field_aggregators=field_aggregators,
+        )
+        f.reset()
+
+        # First insert: amount=5, single_col="A", mv v1="hello" — UPSERT
+        f.add(make_agg_kv(1, 5, None, "A", "v1", "hello", VersionedMergeMode.UPSERT, seq=1))
+        # Second insert: amount=7, single_col="B", mv v2="world" — IGNORE
+        f.add(make_agg_kv(1, 7, None, "B", "v2", "world", VersionedMergeMode.IGNORE, seq=2))
+
+        result = f.get_result()
+        # amount aggregated: 5 + 7 = 12 (sum overrides IGNORE)
+        assert result.value.get_field(1) == 12
+        # single_col stays "A": IGNORE keeps the first non-null
+        assert result.value.get_field(3) == "A"
+        # mv_col accumulated both versions
+        mv = result.value.get_field(4)
+        assert mv[MV_LATEST_VERSION] == "v2"
+        assert mv[MV_LATEST_VALUE] == "world"
+        assert dict(mv[MV_ALL_VERSIONED_VALUES]) == {"v1": "hello", "v2": "world"}
+
+    def test_collect_on_array_column_accumulates_across_modes(self):
+        """``collect`` on an ARRAY column accumulates elements across
+        UPSERT/IGNORE inputs. Covers the Spark E2E behaviour from Java's
+        commit e1964c7d9 with a unit test.
+        """
+        from pypaimon.read.reader.aggregate.aggregators import FieldCollectAgg
+
+        # idx 2 (tags) gets a collect aggregator.
+        field_aggregators = {2: FieldCollectAgg(None, "tags", distinct=False)}
+
+        f = VersionedPartialUpdateMergeFunction(
+            key_arity=AGG_KEY_ARITY,
+            field_count=AGG_FIELD_COUNT,
+            primary_key_indices=AGG_PK_INDICES,
+            mv_metas=AGG_MV_METAS,
+            ignore_delete=False,
+            nullables=AGG_NULLABLES,
+            field_aggregators=field_aggregators,
+        )
+        f.reset()
+
+        f.add(make_agg_kv(1, None, ["a"], None, "v1", "hello", VersionedMergeMode.UPSERT, seq=1))
+        f.add(make_agg_kv(1, None, ["b", "c"], None, "v2", "world", VersionedMergeMode.UPSERT, seq=2))
+        f.add(make_agg_kv(1, None, ["d"], None, "v3", "!", VersionedMergeMode.IGNORE, seq=3))
+
+        result = f.get_result()
+        # tags accumulated across all modes
+        assert result.value.get_field(2) == ["a", "b", "c", "d"]
+        # mv_col accumulated three versions (latest by lexicographic order is "v3")
+        mv = result.value.get_field(4)
+        assert dict(mv[MV_ALL_VERSIONED_VALUES]) == {
+            "v1": "hello", "v2": "world", "v3": "!",
+        }
+
+    # -----------------------------------------------------------------------
+    # Factory-level zero-tolerance validation
+    # -----------------------------------------------------------------------
+
+    def _build_schema_with_mv(self):
+        """Build a minimal schema-like object exercising the factory.
+
+        Schema: pk INT NOT NULL, amount BIGINT, mv_col ROW<latest_version
+        STRING, latest_value STRING, all_versioned_values MAP<STRING, STRING>>.
+        """
+        from collections import namedtuple
+        from pypaimon.schema.data_types import (
+            AtomicType, DataField, MapType, RowType,
+        )
+
+        SchemaStub = namedtuple("SchemaStub", ["fields", "primary_keys", "partition_keys"])
+        string_t = AtomicType("STRING", nullable=True)
+        bigint_t = AtomicType("BIGINT", nullable=True)
+        int_t = AtomicType("INT", nullable=False)
+        mv_row_type = RowType(
+            nullable=True,
+            fields=[
+                DataField(0, "latest_version", string_t),
+                DataField(1, "latest_value", string_t),
+                DataField(2, "all_versioned_values",
+                          MapType(nullable=True, key_type=string_t, value_type=string_t)),
+            ],
+        )
+        return SchemaStub(
+            fields=[
+                DataField(0, "pk", int_t),
+                DataField(1, "amount", bigint_t),
+                DataField(2, "mv_col", mv_row_type),
+            ],
+            primary_keys=["pk"],
+            partition_keys=[],
+        )
+
+    def test_default_aggregation_is_rejected_when_multi_version_column_exists(self):
+        """``fields.default-aggregate-function`` is rejected when any
+        multi-version column exists, mirroring Java
+        testDefaultAggregationIsRejectedWhenMultiVersionColumnExists.
+        """
+        from pypaimon.common.options import CoreOptions
+        from pypaimon.read.reader.merge_function_factory import (
+            _create_versioned_partial_update,
+        )
+
+        schema = self._build_schema_with_mv()
+        options = CoreOptions.from_dict({
+            "fields.default-aggregate-function": "sum",
+        })
+        with pytest.raises(ValueError) as excinfo:
+            _create_versioned_partial_update(schema, options, key_arity=1)
+        msg = str(excinfo.value)
+        assert "fields.default-aggregate-function" in msg
+        assert "mv_col" in msg
+
+    def test_explicit_aggregation_on_multi_version_column_is_rejected(self):
+        """Explicitly configuring ``fields.<mv_col>.aggregate-function`` is
+        rejected, mirroring Java
+        testExplicitAggregationOnMultiVersionColumnIsRejected.
+        """
+        from pypaimon.common.options import CoreOptions
+        from pypaimon.read.reader.merge_function_factory import (
+            _create_versioned_partial_update,
+        )
+
+        schema = self._build_schema_with_mv()
+        options = CoreOptions.from_dict({
+            "fields.mv_col.aggregate-function": "last_non_null_value",
+        })
+        with pytest.raises(ValueError) as excinfo:
+            _create_versioned_partial_update(schema, options, key_arity=1)
+        msg = str(excinfo.value)
+        assert "multi-version" in msg
+        assert "'mv_col'" in msg
