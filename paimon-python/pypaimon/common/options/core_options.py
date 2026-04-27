@@ -379,6 +379,24 @@ class CoreOptions:
             "Whether to enable ignore mode for versioned-partial-update. "
             "When enabled, the table must have lookup capability.")
     )
+
+    # Field-level aggregation options (mirror Java CoreOptions.FIELDS_DEFAULT_AGG_FUNC
+    # and the dynamic ``fields.<field>.*`` keys). The dynamic keys are read directly
+    # from the underlying option map by helper methods below — no static ConfigOption
+    # is needed per field.
+    FIELDS_DEFAULT_AGG_FUNC: ConfigOption[str] = (
+        ConfigOptions.key("fields.default-aggregate-function")
+        .string_type()
+        .no_default_value()
+        .with_description(
+            "Default aggregate function for partial-update, "
+            "versioned-partial-update and aggregate merge functions.")
+    )
+
+    FIELDS_PREFIX = "fields"
+    AGG_FUNCTION_SUFFIX = "aggregate-function"
+    DISTINCT_SUFFIX = "distinct"
+    LIST_AGG_DELIMITER_SUFFIX = "list-agg-delimiter"
     # Commit options
     COMMIT_USER_PREFIX: ConfigOption[str] = (
         ConfigOptions.key("commit.user-prefix")
@@ -776,6 +794,35 @@ class CoreOptions:
 
     def versioned_partial_update_ignore_mode_enabled(self, default=None):
         return self.options.get(CoreOptions.VERSIONED_PARTIAL_UPDATE_IGNORE_MODE_ENABLED, default)
+
+    # ---- Field-level aggregation helpers ---------------------------------
+    # Mirrors Java CoreOptions.fieldsDefaultFunc / fieldAggFunc /
+    # fieldCollectAggDistinct / fieldListAggDelimiter / definedAggFunc.
+
+    def fields_default_agg_func(self, default=None) -> Optional[str]:
+        return self.options.get(CoreOptions.FIELDS_DEFAULT_AGG_FUNC, default)
+
+    def field_agg_func(self, field_name: str) -> Optional[str]:
+        key = "fields.%s.aggregate-function" % field_name
+        return self.options.to_map().get(key)
+
+    def field_collect_agg_distinct(self, field_name: str) -> bool:
+        key = "fields.%s.distinct" % field_name
+        raw = self.options.to_map().get(key)
+        return raw is True or (isinstance(raw, str) and raw.lower() == "true")
+
+    def field_list_agg_delimiter(self, field_name: str) -> str:
+        key = "fields.%s.list-agg-delimiter" % field_name
+        raw = self.options.to_map().get(key)
+        return raw if raw is not None else ","
+
+    def defined_agg_func(self) -> bool:
+        if self.options.contains(CoreOptions.FIELDS_DEFAULT_AGG_FUNC):
+            return True
+        for k in self.options.to_map().keys():
+            if k.startswith("fields.") and k.endswith(".aggregate-function"):
+                return True
+        return False
 
     def data_file_external_paths(self, default=None):
         external_paths_str = self.options.get(CoreOptions.DATA_FILE_EXTERNAL_PATHS, default)
