@@ -44,9 +44,27 @@ public interface BranchManager {
      */
     String FORK_TAG_PREFIX = SYSTEM_TAG_PREFIX + "fork.";
 
+    /**
+     * Prefix for last-merge protection tags. Every successful merge places one such tag on the
+     * source branch pinning the source-side snapshot that was just merged, so the next merge's
+     * audit baseline remains readable regardless of source-side snapshot expiration. The baseline
+     * is required for correctness when target-side compaction happens between merges (file
+     * identifiers on target get rewritten, and only the audit baseline remembers which identifiers
+     * source has already delivered).
+     */
+    String LAST_MERGE_TAG_PREFIX = SYSTEM_TAG_PREFIX + "last_merge.";
+
     /** The system tag name that protects the fork-point snapshot for the given child branch. */
     static String forkTagName(String childBranchName) {
         return FORK_TAG_PREFIX + childBranchName;
+    }
+
+    /**
+     * The system tag name that pins the source-side snapshot from the most recent successful merge
+     * of {@code sourceBranch} into {@code targetBranch}. Lives on the source branch.
+     */
+    static String lastMergeTagName(String targetBranch, String sourceBranch) {
+        return LAST_MERGE_TAG_PREFIX + targetBranch + "." + sourceBranch;
     }
 
     /** Whether the given tag name is a system-managed tag (not created by users). */

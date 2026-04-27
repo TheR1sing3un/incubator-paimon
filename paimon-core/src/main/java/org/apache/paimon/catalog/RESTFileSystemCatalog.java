@@ -18,14 +18,17 @@
 
 package org.apache.paimon.catalog;
 
+import org.apache.paimon.FileStore;
 import org.apache.paimon.PagedList;
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
+import org.apache.paimon.operation.BranchMergeOperation;
 import org.apache.paimon.options.CatalogOptions;
 import org.apache.paimon.partition.PartitionStatistics;
 import org.apache.paimon.rest.responses.GetTagResponse;
 import org.apache.paimon.schema.SchemaManager;
+import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Instant;
 import org.apache.paimon.table.RollbackHelper;
 import org.apache.paimon.table.TableSnapshot;
@@ -378,19 +381,57 @@ public class RESTFileSystemCatalog extends FileSystemCatalog {
         }
     }
 
-    // Branch merge is currently unimplemented: the previous rebase-style implementation has been
-    // removed in preparation for the V4 merge-semantics rewrite (see branch-merge-design-v4.md).
-    // The API endpoint and signature are kept so upstream callers (Flink/Spark) can continue to
-    // compile and discover the feature; attempting to invoke it will fail fast.
+    // Branch merge: one new APPEND snapshot on the target whose baseManifest is
+    // target.latest.base ∪ (source.tip.live − fork.live − target.latest.live).
+    // See docs/design/branch-merge-design-v4.md.
     @Override
     public void mergeBranch(Identifier identifier, String sourceBranch, String targetBranch)
             throws TableNotExistException, BranchNotExistException {
         assertTableExists(identifier);
         assertBranchExists(identifier, sourceBranch);
         assertBranchExists(identifier, targetBranch);
-        throw new UnsupportedOperationException(
-                "Branch merge is not available in this build. The V2 implementation has been"
-                        + " removed and V4 is not yet wired up.");
+        try {
+            BranchMergeOperation op = newBranchMergeOperation(identifier, targetBranch);
+            // Branch-level lock ensures mutual exclusion with normal commits targeting the same
+            // branch. Writes to other branches proceed concurrently.
+            withBranchLock(
+                    identifier.getDatabaseName(),
+                    identifier.getObjectName(),
+                    targetBranch,
+                    () ->
+                            runWithLock(
+                                    identifier,
+                                    () -> {
+                                        op.merge(sourceBranch, targetBranch);
+                                        return null;
+                                    }));
+        } catch (TableNotExistException | BranchNotExistException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(
+                    String.format(
+                            "Failed to merge branch '%s' onto '%s' for table '%s'.",
+                            sourceBranch, targetBranch, identifier),
+                    e);
+        }
+    }
+
+    private BranchMergeOperation newBranchMergeOperation(Identifier identifier, String targetBranch)
+            throws TableNotExistException, BranchNotExistException {
+        FileStoreTable table = (FileStoreTable) getTable(identifier);
+        FileStore<?> store = table.store();
+        return new BranchMergeOperation(
+                store.snapshotManager(),
+                store.manifestListFactory(),
+                store.manifestFileFactory(),
+                new SchemaManager(fileIO, getTableLocation(identifier), targetBranch),
+                new TagManager(fileIO, getTableLocation(identifier), targetBranch),
+                store.options(),
+                store.partitionType(),
+                "branch-merge",
+                fileIO,
+                getTableLocation(identifier),
+                newBranchManager(identifier));
     }
 
     private void assertBranchExists(Identifier identifier, String branch)
