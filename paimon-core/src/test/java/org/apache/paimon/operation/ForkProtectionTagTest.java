@@ -20,9 +20,18 @@ package org.apache.paimon.operation;
 
 import org.apache.paimon.PagedList;
 import org.apache.paimon.catalog.Catalog;
+import org.apache.paimon.catalog.CatalogContext;
+import org.apache.paimon.catalog.RESTFileSystemCatalog;
+import org.apache.paimon.data.BinaryString;
+import org.apache.paimon.data.GenericRow;
+import org.apache.paimon.schema.Schema;
 import org.apache.paimon.table.FileStoreTable;
+import org.apache.paimon.table.TableTestBase;
+import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.utils.BranchManager;
+import org.apache.paimon.utils.TraceableFileIO;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,7 +44,37 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code listTagsPaged}, and the failure-loud behavior when a stale tag with the same name already
  * exists.
  */
-public class ForkProtectionTagTest extends BranchMergeTestBase {
+public class ForkProtectionTagTest extends TableTestBase {
+
+    @BeforeEach
+    @Override
+    public void beforeEach() throws Catalog.DatabaseAlreadyExistException {
+        super.beforeEach();
+        // Use RESTFileSystemCatalog because the plain FileSystemCatalog does not expose the
+        // branch / tag APIs we need to exercise here.
+        catalog =
+                new RESTFileSystemCatalog(
+                        new TraceableFileIO(), warehouse, CatalogContext.create(warehouse));
+        catalog.createDatabase(database, true);
+    }
+
+    private FileStoreTable createPkTable() throws Exception {
+        Schema schema =
+                Schema.newBuilder()
+                        .column("pk", DataTypes.INT())
+                        .column("val", DataTypes.STRING())
+                        .primaryKey("pk")
+                        .option("bucket", "1")
+                        .option("merge-engine", "deduplicate")
+                        .option("sequence.snapshot-ordering", "true")
+                        .build();
+        catalog.createTable(identifier(), schema, false);
+        return getTableDefault();
+    }
+
+    private GenericRow row(int pk, String val) {
+        return GenericRow.of(pk, BinaryString.fromString(val));
+    }
 
     @Test
     public void testCreateBranchCreatesForkProtectionTag() throws Exception {

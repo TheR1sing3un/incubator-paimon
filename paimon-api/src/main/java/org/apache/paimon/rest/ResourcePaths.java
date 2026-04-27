@@ -298,17 +298,6 @@ public class ResourcePaths {
                 "reset");
     }
 
-    public String diff(String databaseName, String tableName) {
-        return SLASH.join(
-                V1,
-                prefix,
-                DATABASES,
-                encodeString(databaseName),
-                TABLES,
-                encodeString(tableName),
-                "diff");
-    }
-
     public String tag(String databaseName, String objectName, String tagName) {
         return SLASH.join(
                 V1,

@@ -18,17 +18,14 @@
 
 package org.apache.paimon.catalog;
 
-import org.apache.paimon.FileStore;
 import org.apache.paimon.PagedList;
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
-import org.apache.paimon.operation.BranchMergeOperation;
 import org.apache.paimon.options.CatalogOptions;
 import org.apache.paimon.partition.PartitionStatistics;
 import org.apache.paimon.rest.responses.GetTagResponse;
 import org.apache.paimon.schema.SchemaManager;
-import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Instant;
 import org.apache.paimon.table.RollbackHelper;
 import org.apache.paimon.table.TableSnapshot;
@@ -52,7 +49,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.SortedMap;
-import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -382,39 +378,19 @@ public class RESTFileSystemCatalog extends FileSystemCatalog {
         }
     }
 
-    // Merge requires manifest-level manipulation via FileStore components (manifest factories,
-    // SnapshotCommit, etc.), which is why it bypasses BranchManager and operates directly
-    // through BranchMergeOperation.
+    // Branch merge is currently unimplemented: the previous rebase-style implementation has been
+    // removed in preparation for the V4 merge-semantics rewrite (see branch-merge-design-v4.md).
+    // The API endpoint and signature are kept so upstream callers (Flink/Spark) can continue to
+    // compile and discover the feature; attempting to invoke it will fail fast.
     @Override
     public void mergeBranch(Identifier identifier, String sourceBranch, String targetBranch)
             throws TableNotExistException, BranchNotExistException {
         assertTableExists(identifier);
         assertBranchExists(identifier, sourceBranch);
         assertBranchExists(identifier, targetBranch);
-        try {
-            BranchMergeOperation op = newBranchMergeOperation(identifier, targetBranch);
-            // Branch-level lock ensures mutual exclusion with normal commits targeting the same
-            // branch. Writes to other branches can proceed concurrently.
-            withBranchLock(
-                    identifier.getDatabaseName(),
-                    identifier.getObjectName(),
-                    targetBranch,
-                    () ->
-                            runWithLock(
-                                    identifier,
-                                    () -> {
-                                        op.merge(sourceBranch, targetBranch);
-                                        return null;
-                                    }));
-        } catch (TableNotExistException | BranchNotExistException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new RuntimeException(
-                    String.format(
-                            "Failed to merge branch '%s' onto '%s' for table '%s'.",
-                            sourceBranch, targetBranch, identifier),
-                    e);
-        }
+        throw new UnsupportedOperationException(
+                "Branch merge is not available in this build. The V2 implementation has been"
+                        + " removed and V4 is not yet wired up.");
     }
 
     private void assertBranchExists(Identifier identifier, String branch)
@@ -423,23 +399,6 @@ public class RESTFileSystemCatalog extends FileSystemCatalog {
                 && !newBranchManager(identifier).branchExists(branch)) {
             throw new BranchNotExistException(identifier, branch);
         }
-    }
-
-    private BranchMergeOperation newBranchMergeOperation(Identifier identifier, String targetBranch)
-            throws TableNotExistException, BranchNotExistException {
-        FileStoreTable table = (FileStoreTable) getTable(identifier);
-        FileStore<?> store = table.store();
-        return new BranchMergeOperation(
-                store.snapshotManager(),
-                store.manifestListFactory(),
-                store.manifestFileFactory(),
-                new SchemaManager(fileIO, getTableLocation(identifier), targetBranch),
-                store.options(),
-                store.partitionType(),
-                UUID.randomUUID().toString(),
-                fileIO,
-                getTableLocation(identifier),
-                newBranchManager(identifier));
     }
 
     @Override

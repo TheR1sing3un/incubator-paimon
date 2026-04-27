@@ -344,46 +344,6 @@ public class FileSystemBranchManager implements BranchManager {
         }
     }
 
-    @Override
-    public MergeLineage mergeLineage(String branchName) {
-        Path lineagePath = mergeLineagePath(branchName);
-        try {
-            if (!fileIO.exists(lineagePath)) {
-                return null;
-            }
-            return fileIO.readOverwrittenFileUtf8(lineagePath)
-                    .map(MergeLineage::fromJson)
-                    .orElse(null);
-        } catch (IOException e) {
-            throw new RuntimeException(
-                    String.format(
-                            "Failed to read MERGE_LINEAGE for branch '%s' at %s.",
-                            branchName, lineagePath),
-                    e);
-        }
-    }
-
-    @Override
-    public void writeMergeLineage(String branchName, MergeLineage lineage) {
-        Path lineagePath = mergeLineagePath(branchName);
-        try {
-            fileIO.overwriteFileUtf8(lineagePath, lineage.toJson());
-        } catch (IOException e) {
-            throw new RuntimeException(
-                    String.format(
-                            "Failed to write MERGE_LINEAGE for branch '%s' at %s.",
-                            branchName, lineagePath),
-                    e);
-        }
-    }
-
-    private Path mergeLineagePath(String branchName) {
-        if (BranchManager.isMainBranch(branchName)) {
-            return new Path(tablePath, MERGE_LINEAGE_FILE);
-        }
-        return new Path(branchPath(branchName), MERGE_LINEAGE_FILE);
-    }
-
     /**
      * Create a system tag on the parent branch pinning the fork-point snapshot for the given child
      * branch. This prevents the fork-point (and its base manifest / data files) from being

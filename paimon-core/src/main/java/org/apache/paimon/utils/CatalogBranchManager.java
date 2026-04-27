@@ -121,15 +121,4 @@ public class CatalogBranchManager implements BranchManager {
     public ForkInfo forkInfo(String branchName) {
         return fileDelegate.forkInfo(branchName);
     }
-
-    @Override
-    @Nullable
-    public MergeLineage mergeLineage(String branchName) {
-        return fileDelegate.mergeLineage(branchName);
-    }
-
-    @Override
-    public void writeMergeLineage(String branchName, MergeLineage lineage) {
-        fileDelegate.writeMergeLineage(branchName, lineage);
-    }
 }
