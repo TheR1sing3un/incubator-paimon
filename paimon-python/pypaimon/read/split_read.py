@@ -52,8 +52,10 @@ from pypaimon.read.reader.key_value_unwrap_reader import \
     KeyValueUnwrapRecordReader
 from pypaimon.read.reader.key_value_wrap_reader import KeyValueWrapReader
 from pypaimon.read.reader.limited_record_reader import LimitedRecordReader
+from pypaimon.read.reader.outer_projection_record_reader import \
+    OuterProjectionRecordReader
 from pypaimon.read.reader.shard_batch_reader import ShardBatchReader
-from pypaimon.read.reader.merge_function_factory import create_merge_function
+from pypaimon.read.reader.merge_function_factory import adjust_read_type, create_merge_function
 from pypaimon.read.reader.sort_merge_reader import SortMergeReaderWithMinHeap
 from pypaimon.read.push_down_utils import _get_all_fields
 from pypaimon.read.split import Split
@@ -65,6 +67,33 @@ from pypaimon.globalindex.indexed_split import IndexedSplit
 KEY_PREFIX = "_KEY_"
 KEY_FIELD_ID_START = 1000000
 NULL_FIELD_INDEX = -1
+
+
+class _ProjectedSchemaView:
+    """A lightweight TableSchema-like view backed by the underlying full schema
+    plus a (possibly extended) projected field list.
+
+    Used by ``MergeFileSplitRead.section_reader_supplier`` to construct a merge
+    function whose ``field_count`` matches the actual KeyValue value arity at
+    merge time. Mirrors the inner/outer projection split in Java's
+    MergeFileSplitRead (L135-165).
+
+    Only attributes consumed by ``create_merge_function`` and downstream merge
+    function factories are exposed: ``fields`` / ``primary_keys`` /
+    ``partition_keys``. Other TableSchema attributes are inherited via
+    attribute-fallback to the underlying schema so the view stays drop-in.
+    """
+
+    def __init__(self, table_schema, projected_fields: List[DataField]):
+        self._table_schema = table_schema
+        self.fields = projected_fields
+        self.primary_keys = list(getattr(table_schema, 'primary_keys', []) or [])
+        self.partition_keys = list(getattr(table_schema, 'partition_keys', []) or [])
+
+    def __getattr__(self, name):
+        # Fall through to the underlying TableSchema for anything we don't
+        # explicitly override (options, etc.).
+        return getattr(self._table_schema, name)
 
 
 class SplitRead(ABC):
@@ -84,12 +113,40 @@ class SplitRead(ABC):
         self.push_down_predicate = self._push_down_predicate()
         self.split = split
         self.row_tracking_enabled = row_tracking_enabled
-        self.value_arity = len(read_type)
+
+        # Two-layer projection (mirrors Java MergeFileSplitRead L135-165):
+        #   outer_read_type: user-facing projection (what the user requested).
+        #   inner_read_type: merge-engine view, possibly extended via
+        #     adjust_read_type to keep mv columns / PK / aggregator columns
+        #     even when the user dropped them from the projection.
+        # For non-merge paths (append-only, RawFileSplitRead) the two are
+        # identical because there is no merge step that needs extra columns.
+        self.outer_read_type = read_type
+        if isinstance(self, MergeFileSplitRead):
+            self.inner_read_type = adjust_read_type(
+                read_type, self.table.table_schema, self.table.options)
+        else:
+            self.inner_read_type = read_type
+
+        # outer_indices: position of each outer field within inner_read_type.
+        # Used by OuterProjectionRecordReader to project the merge result back
+        # to the user view. None means "no projection needed" (identity).
+        if self.inner_read_type is self.outer_read_type or len(self.inner_read_type) == len(self.outer_read_type):
+            # adjust_read_type returns identity when nothing was added.
+            self.outer_indices = None
+        else:
+            inner_name_to_idx = {f.name: i for i, f in enumerate(self.inner_read_type)}
+            self.outer_indices = [inner_name_to_idx[f.name] for f in self.outer_read_type]
+
+        # value_arity / read_fields are based on the inner view — that is what
+        # the file reader actually fetches and what the merge function
+        # iterates over.
+        self.value_arity = len(self.inner_read_type)
 
         self.trimmed_primary_key = self.table.trimmed_primary_keys
-        self.read_fields = read_type
+        self.read_fields = self.inner_read_type
         if isinstance(self, MergeFileSplitRead):
-            self.read_fields = self._create_key_value_fields(read_type)
+            self.read_fields = self._create_key_value_fields(self.inner_read_type)
         self.schema_id_2_fields = {}
         self.deletion_file_readers = {}
         # Apply filter only when all predicate columns are read by this scan,
@@ -97,17 +154,17 @@ class SplitRead(ABC):
         # Predicates carry an `index` baked in by PredicateBuilder against the
         # original table schema; if `read_type` is narrower or reordered, that
         # index no longer matches the OffsetRow handed to FilterRecordReader.
-        # We must use `read_type` here (not `self.read_fields`) because
-        # MergeFileSplitRead's `read_fields` is augmented with _KEY_*/_SEQ/_KIND
-        # prefixes, while KeyValueUnwrapRecordReader returns kv.value whose
-        # arity equals len(read_type) and whose coordinate space is read_type.
-        read_type_names = {f.name for f in read_type}
+        # We use `outer_read_type` here (not `inner_read_type` and not
+        # `self.read_fields`) because the predicate filter runs at the user
+        # level — after the outer projection unwraps the inner row, the row
+        # layout matches outer_read_type.
+        outer_names = {f.name for f in self.outer_read_type}
         if (
             self.predicate is not None
-            and _get_all_fields(self.predicate).issubset(read_type_names)
+            and _get_all_fields(self.predicate).issubset(outer_names)
         ):
             self.predicate_for_reader = rewrite_predicate_indices(
-                self.predicate, read_type
+                self.predicate, self.outer_read_type
             )
         else:
             self.predicate_for_reader = None
@@ -466,10 +523,17 @@ class MergeFileSplitRead(SplitRead):
                 supplier = partial(self.kv_reader_supplier, file, self.deletion_file_readers.get(file.file_name, None))
                 data_readers.append(supplier)
             readers.append(ConcatRecordReader(data_readers))
+        # Build the merge function on the *inner* schema — i.e., what the
+        # KeyValue rows actually carry after projection. Using the full
+        # table_schema here would mismatch the projected row arity and cause
+        # IndexError in column-iterating merge functions like
+        # VersionedPartialUpdateMergeFunction. Mirrors Java's
+        # adjustedReadType plumbing in MergeFileSplitRead.java L154-156.
+        inner_schema = _ProjectedSchemaView(self.table.table_schema, self.inner_read_type)
         merge_function = create_merge_function(
-            self.table.table_schema, self.table.options,
+            inner_schema, self.table.options,
             len(self.trimmed_primary_key))
-        return SortMergeReaderWithMinHeap(readers, self.table.table_schema, merge_function)
+        return SortMergeReaderWithMinHeap(readers, inner_schema, merge_function)
 
     def create_reader(self) -> RecordReader:
         # Create a dict mapping data file name to deletion file reader method
@@ -481,6 +545,14 @@ class MergeFileSplitRead(SplitRead):
             section_readers.append(supplier)
         concat_reader = ConcatRecordReader(section_readers)
         reader = KeyValueUnwrapRecordReader(DropDeleteRecordReader(concat_reader))
+        # Outer projection: when adjust_read_type extended the user's request
+        # with merge-required columns (mv_col, PK, agg columns...), unwrap
+        # rows are inner-width. Project them back to the user's view here
+        # so all downstream consumers (rows path / batch path / filters) see
+        # consistent outer-width rows. Mirrors Java MergeFileSplitRead.
+        # projectOuter (paimon-core MergeFileSplitRead.java L405-410).
+        if self.outer_indices is not None:
+            reader = OuterProjectionRecordReader(reader, self.outer_indices)
         if self.limit is not None:
             reader = LimitedRecordReader(reader, self.limit)
         if self.predicate_for_reader:

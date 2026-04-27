@@ -16,6 +16,8 @@
 # limitations under the License.
 ################################################################################
 
+from typing import List
+
 from pypaimon.common.options.core_options import MergeEngine
 from pypaimon.read.reader.aggregate.partial_update_field_aggregators import (
     for_versioned_partial_update,
@@ -25,6 +27,7 @@ from pypaimon.read.reader.versioned_partial_update_merge_function import (
     MultiVersionColumnMeta,
     VersionedPartialUpdateMergeFunction,
 )
+from pypaimon.schema.data_types import DataField
 
 
 def create_merge_function(schema, options, key_arity):
@@ -43,6 +46,102 @@ def create_merge_function(schema, options, key_arity):
         return _create_versioned_partial_update(schema, options, key_arity)
     else:
         return DeduplicateMergeFunction()
+
+
+def adjust_read_type(read_type: List[DataField], full_table_schema, options) -> List[DataField]:
+    """Adjust the user-facing read_type to one that satisfies the merge engine's
+    structural needs.
+
+    Modeled on Java ``MergeFunctionFactory.adjustReadType`` (paimon-core
+    MergeFunctionFactory.java L38-40 + per-engine overrides). Some merge engines
+    require certain columns to be present in the row layout fed to ``add()`` —
+    e.g. multi-version columns for ``versioned-partial-update``, or sequence-group
+    fields for ``partial-update``. This function strictly extends ``read_type``
+    by appending any such required-but-missing column to the end, preserving the
+    user-requested order otherwise. If nothing must be added, the original list
+    is returned unchanged (identity).
+
+    The pypaimon implementation is a strict superset of Java's: in addition to
+    multi-version columns and primary keys (which Java's
+    ``VersionedPartialUpdateMergeFunction.Factory.adjustReadType`` retains),
+    pypaimon also retains aggregator-configured columns and (when
+    ``fields.default-aggregate-function`` is set) every non-PK non-mv column.
+    This is required because pypaimon's merge function constructs aggregator
+    instances eagerly from the inner schema; missing columns would produce a
+    misaligned aggregator map. Tests in ``test_adjust_read_type.py`` enforce
+    this extended retention.
+
+    The corresponding outer projection that strips these injected columns back
+    out before returning to the user lives in the SplitRead layer (see
+    ``OuterProjectionRecordReader``), modeled on Java's ``projectOuter``.
+
+    Args:
+        read_type: The user-requested fields, post-projection (may be the full
+            schema if no projection was applied).
+        full_table_schema: The table's logical schema (TableSchema-like object
+            with a ``.fields`` attribute holding the complete column list).
+        options: CoreOptions for the table.
+
+    Returns:
+        A potentially-extended list of DataField. Returns the same list
+        instance when no adjustment is needed.
+    """
+    merge_engine = options.merge_engine()
+    if merge_engine == MergeEngine.VERSIONED_PARTIAL_UPDATE:
+        return _adjust_for_versioned_partial_update(read_type, full_table_schema, options)
+    return read_type
+
+
+def _adjust_for_versioned_partial_update(
+    read_type: List[DataField], full_table_schema, options,
+) -> List[DataField]:
+    """Force-retain multi-version columns and primary keys in the merge view.
+
+    Multi-version columns are structurally indispensable for the
+    versioned-partial-update merge function (its three-tuple latest_version /
+    latest_value / all_versioned_values handling assumes the column is
+    present). Primary keys are always required to identify the row.
+    Aggregator-configured columns must also be retained so the aggregator can
+    accumulate values across the merge group.
+    """
+    full_fields = list(full_table_schema.fields)
+    read_names = {f.name for f in read_type}
+
+    partition_keys = (
+        set(full_table_schema.partition_keys)
+        if getattr(full_table_schema, 'partition_keys', None) else set()
+    )
+    raw_pks = list(getattr(full_table_schema, 'primary_keys', []) or [])
+    trimmed_pks = [pk for pk in raw_pks if pk not in partition_keys] or raw_pks
+
+    must_keep = set()
+    must_keep.update(trimmed_pks)
+    for field in full_fields:
+        if _is_multi_version_field(field):
+            must_keep.add(field.name)
+        elif options.field_agg_func(field.name) is not None:
+            must_keep.add(field.name)
+
+    # If a default agg function is configured, every non-mv non-PK column needs
+    # the aggregator and therefore must be retained too. The
+    # default-agg-func-with-mv-columns combination is rejected later by
+    # ``_create_versioned_partial_update`` (mv-list zero-tolerance check); we
+    # don't need to short-circuit here — at most we add some extra columns
+    # that the create-time error would have prevented anyway.
+    if options.fields_default_agg_func() is not None:
+        for field in full_fields:
+            if field.name not in trimmed_pks and not _is_multi_version_field(field):
+                must_keep.add(field.name)
+
+    missing = [name for name in must_keep if name not in read_names]
+    if not missing:
+        return read_type
+
+    # Append in stable schema order to keep behavior deterministic.
+    name_to_full = {f.name: f for f in full_fields}
+    extras = [name_to_full[n] for n in
+              [f.name for f in full_fields] if n in missing]
+    return list(read_type) + extras
 
 
 def _create_versioned_partial_update(schema, options, key_arity):
