@@ -102,10 +102,11 @@ descriptor    DataFileMeta → manifest
 **Driver 端（plan）**：`readForVectorCFSearch()` — 一次 manifest 读取 + DV 扫描 → 纯内存构建 `VectorCFSearchSplit`（每个 vector 文件一个 split，无 per-bucket meta I/O）。Manifest 读取不加 level filter（向量文件始终 L0），但 scalar 文件在 `buildVectorCFSplitsForBucket` 中过滤为 **level >= 1**，确保搜索结果与纯标量查询一致。
 
 **Executor 端（search）**：`VectorCFSearchHelper.createReader()` — 自动选择搜索路径：
-- **索引搜索**：.aindex 存在 → scanner.scan → pkmap PK IN 批量查 → VecDesc 验证 → 返回结果行
-- **暴力搜索**：.aindex 不存在 → 直接读 .vector.bin → 全量距离计算 → topK → pkmap PK IN → 返回结果行
+- **索引搜索**：.aindex 存在 → scanner.scan → 从 .vector.bin 按 rowIndex 排序批量读取向量 → pkmap PK IN 批量查 → VecDesc 验证 → 返回结果行（含实际向量数据）
+- **暴力搜索**：.aindex 不存在 → 直接读 .vector.bin → 全量距离计算 → topK（向量数据已在内存）→ pkmap PK IN → 返回结果行（含实际向量数据）
 - **PK IN 优化**：通过 pkmap（rowIndex→PK 映射）将 O(N) 全表扫描降为 O(topK) 点查
-- **无 pkmap 回退**：两遍 scalar 全表扫描（VecDesc 匹配 + 结果读取）
+- **无 pkmap 回退**：两遍 scalar 全表扫描（VecDesc 匹配 + 结果读取），向量数据通过 rowIndex→vector 映射附加
+- **结果格式**：`ScoredRow(row, score, float[] vector)` — 通过 `ScoredRowIterator.returnedVector()` 访问
 
 ### 3.7 PkMap — rowIndex→PK 映射
 
@@ -115,7 +116,7 @@ pkmap 是向量 rowIndex 到 PK 值的映射文件，用于搜索时从向量侧
 
 **两种构建方式**：
 1. **同步构建**（Phase 1）：flush 时 `DefaultVectorFileWriter.bufferPk()` 缓存 PK → seal 时 `flushPkMap()` 写 sidecar。命名: `vectorFile.pkmap`
-2. **后置补全**（Phase 3）：`CALL sys.build_pkmap(table => '...')` 扫描 scalar 文件反向构建。命名同上: `vectorFile.pkmap`
+2. **后置补全**（Phase 3）：`CALL sys.build_pkmap(table => '...')` 通过 SnapshotReader 获取 DataSplit，Spark `jsc.parallelize` 分布式并行构建，fileName-based 检测向量文件（兼容老数据无 writeCols 的情况）。命名同上: `vectorFile.pkmap`
 
 **两种命名约定**：
 | 来源 | 命名 | 示例 |

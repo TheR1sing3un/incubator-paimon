@@ -230,24 +230,28 @@ per split（= per vector file）:
 
 已索引路径（.aindex 存在）:
   1. 加载 .aindex → search(queryVector, topK) → topK (rowIndex, score)
-  2. 加载 .pkmap → rowIndex → PK 值
+  2. 从 .vector.bin 按 rowIndex 排序批量读取向量数据（顺序 I/O）→ rowIndexToVector
+  3. 加载 .pkmap → rowIndex → PK 值
      命名优先级: sidecar (vectorFile.pkmap) > index-style (vectorFile.aix.c{colId}.{algo}.pkmap)
-  3. PK IN 批量查: table.newReadBuilder().withFilter(pk IN topK_PKs).newRead()
+  4. PK IN 批量查: table.newReadBuilder().withFilter(pk IN topK_PKs).newRead()
      → Paimon 自动: key stats 跳文件 + DV 过滤 + merge engine 去重
      → 只查 L1+ scalar 文件（split 中已过滤）
-  4. 验证 VecDesc: 返回行的 VectorDescriptor 仍指向当前 vector file? → 丢弃 embedding 已变更的行
-  5. 无 pkmap → 回退两遍全表扫描（L1+ scalar 文件）
+  5. 验证 VecDesc: 返回行的 VectorDescriptor 仍指向当前 vector file? → 丢弃 embedding 已变更的行
+  6. 返回 ScoredRow(row, score, float[] vector) — 结果携带实际向量数据
+  7. 无 pkmap → 回退两遍全表扫描（L1+ scalar 文件），向量数据通过 rowIndexToVector 附加
 
 未索引路径（.aindex 不存在 = 暴搜）:
-  1. 打开 .vector.bin stream → 全量距离计算 → topK (rowIndex, score)
-  2. 加载 .pkmap → PK IN 批量查（同上）
-  3. 无 pkmap → 回退两遍 scalar 扫描
+  1. 打开 .vector.bin stream → 全量距离计算 → topK (rowIndex, score, float[] vector)
+     向量数据在距离计算时已读出，直接存入 heap
+  2. 加载 .pkmap → PK IN 批量查（同上）→ 结果携带向量数据
+  3. 无 pkmap → 回退两遍 scalar 扫描，向量数据通过 rowIndexToVector 附加
 
 pkmap 同步构建:
   - Phase 1: flush 时同步写入 — DefaultVectorFileWriter.bufferPk() + flushPkMap()
     每次 writeVector() 前 bufferPk(kv.key())，seal 时调用 PkMapWriter 写 sidecar
   - Phase 3: 老数据补全 — CALL sys.build_pkmap(table => 'db.table')
-    扫描所有向量文件，对没有 .pkmap 的文件通过扫描 scalar 反向构建
+    通过 SnapshotReader 读取 DataSplit，Spark jsc.parallelize 分布式执行，
+    fileName-based 检测向量文件（兼容老数据无 writeCols），对没有 .pkmap 的文件反向构建
 ```
 
 ### 8.5 Reconciler
@@ -337,7 +341,7 @@ pkmap 同步构建:
 |------|------|------|------|
 | P3.1 | pkmap 写入时同步构建 | `DefaultVectorFileWriter.bufferPk()` + `flushPkMap()`，每次 writeVector 同步写 sidecar pkmap | ✅ |
 | P3.2 | 暴力搜索使用 pkmap | `createBruteForceReader` 直接读 .vector.bin → topK → pkmap PK IN → O(topK) 点查 | ✅ |
-| P3.3 | 老数据 pkmap 补全 | `BuildPkMapProcedure` (`CALL sys.build_pkmap`) + `buildPkMapSidecar()` 公共方法 | ✅ |
+| P3.3 | 老数据 pkmap 补全 | `BuildPkMapProcedure` (`CALL sys.build_pkmap`) — SnapshotReader + Spark 分布式执行 + fileName-based 老数据兼容 + `buildPkMapSidecar()` | ✅ |
 | P3.4 | L1+ scalar 过滤 | `buildVectorCFSplitsForBucket` 中 scalar 文件 `level >= 1`，搜索结果与纯标量查询一致 | ✅ |
 
 ### 依赖关系

@@ -660,7 +660,7 @@ CALL sys.search_accelerate_index(
   metric => 'l2',
   partitions => 'pt=1'
 );
--- 期望: pk ∈ [0, 200)（cluster 0），score > 0
+-- 期望: pk ∈ [0, 200)（cluster 0），score > 0，vector=[实际向量数据]（从 .vector.bin 读取）
 -- snapshot_id 可选，不指定默认最新。
 ```
 
@@ -672,9 +672,9 @@ CALL sys.search_accelerate_index(
 ### pkmap 补建（老数据）
 
 ```sql
--- 为没有 .pkmap 的老向量文件补建 sidecar pkmap
+-- 为没有 .pkmap 的老向量文件补建 sidecar pkmap（分布式执行，SnapshotReader + Spark parallelize）
 CALL sys.build_pkmap(table => 'db.user_embeddings');
--- 期望: "Built N pkmap files, skipped M (already exist), failed 0."
+-- 期望: "Built N, skipped M, failed 0 (distributed, B buckets, P parallelism, totalVectorFiles=V)"
 ```
 
 ### 检索流程

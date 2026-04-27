@@ -90,13 +90,13 @@ CALL sys.search_accelerate_index(
     algorithm => 'lumina'
 );
 
--- 3. 补建 pkmap（为旧数据加速搜索反查，新数据 flush 时自动生成）
+-- 3. 补建 pkmap（为旧数据加速搜索反查，新数据 flush 时自动生成，分布式执行）
 CALL sys.build_pkmap(table => 'db.user_embeddings');
 ```
 
 Vector-CF 表的搜索 plan 经过优化，只需一次 manifest 读取即可构建所有搜索 split（无 per-bucket meta 文件读取），在大量 bucket 时性能优势显著。
 
-搜索结果只包含 L1+（已 compacted）的数据，与纯标量查询行为一致。新写入但未 compact 的数据需要 compaction 到 L1 后才可搜索。
+搜索结果包含实际向量数据（从 `.vector.bin` 文件直接读取），输出格式为 `pk=<value> | vector=[...] | score=<float>`。搜索结果只包含 L1+（已 compacted）的数据，与纯标量查询行为一致。
 
 ## 配置参考
 

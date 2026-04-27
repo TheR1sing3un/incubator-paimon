@@ -897,12 +897,18 @@ public class VectorCFAccelerateIndexE2ETest {
                 org.apache.paimon.data.InternalRow row;
                 while ((row = batch.next()) != null) {
                     float score = 0f;
-                    if (batch instanceof org.apache.paimon.reader.ScoreRecordIterator) {
+                    float[] vector = null;
+                    if (batch instanceof VectorCFSearchHelper.ScoredRowIterator) {
+                        VectorCFSearchHelper.ScoredRowIterator scoredIter =
+                                (VectorCFSearchHelper.ScoredRowIterator) batch;
+                        score = scoredIter.returnedScore();
+                        vector = scoredIter.returnedVector();
+                    } else if (batch instanceof org.apache.paimon.reader.ScoreRecordIterator) {
                         score =
                                 ((org.apache.paimon.reader.ScoreRecordIterator<?>) batch)
                                         .returnedScore();
                     }
-                    results.add(new VectorCFSearchHelper.ScoredRow(row, score));
+                    results.add(new VectorCFSearchHelper.ScoredRow(row, score, vector));
                 }
                 batch.releaseBatch();
             }
@@ -1008,6 +1014,90 @@ public class VectorCFAccelerateIndexE2ETest {
         opts.put("lumina.diskann.build.neighbor_count", "32");
         opts.put("lumina.diskann.search.list_size", "32");
         return opts;
+    }
+
+    @Test
+    public void testSearchReturnsVectorData() throws Exception {
+        // Verify that search results include actual vector data (not null)
+        FileStoreTable table = createVectorCFTable("t_vec_data");
+        writeBatch(table, 40, RowKind.INSERT, null);
+
+        AccelerateIndexBuildOrchestrator.BuildRequest request =
+                new AccelerateIndexBuildOrchestrator.BuildRequest(
+                        table,
+                        "vec",
+                        DIM,
+                        "lumina",
+                        "l2",
+                        null,
+                        highRecallBuildOptions(),
+                        1,
+                        0.0,
+                        0,
+                        null);
+        AccelerateIndexBuildOrchestrator.build(request);
+
+        List<DataSplit> splits = table.newSnapshotReader().read().dataSplits();
+        DataSplit split = splits.get(0);
+        Path bucketPath = new Path(split.bucketPath());
+
+        AccelerateIndexMeta meta =
+                AccelerateIndexMetaIO.readOrEmpty(
+                        table.fileIO(),
+                        new Path(bucketPath, AccelerateIndexConstants.META_FILE_NAME));
+        AccelerateIndexEntry readyEntry = null;
+        for (AccelerateIndexEntry e : meta.entries()) {
+            if (e.state() == AccelerateIndexState.READY) {
+                readyEntry = e;
+                break;
+            }
+        }
+        Assumptions.assumeTrue(readyEntry != null, "Need READY entry");
+
+        List<DataFileMeta> scalarFiles = new ArrayList<>();
+        for (DataFileMeta f : split.dataFiles()) {
+            if (!f.isVectorCFFile()) {
+                scalarFiles.add(f);
+            }
+        }
+
+        // Search near cluster 0 center (10,0,0,0)
+        AccelerateIndexSearch search =
+                new AccelerateIndexSearch(
+                        "vec",
+                        CLUSTER_CENTERS[0].clone(),
+                        5,
+                        "lumina",
+                        "l2",
+                        DIM,
+                        Collections.singletonMap("lumina.diskann.search.list_size", "32"),
+                        null);
+
+        VectorCFSearchSplit searchSplit =
+                new VectorCFSearchSplit(
+                        readyEntry.dataFiles().get(0).file(),
+                        scalarFiles,
+                        null,
+                        search,
+                        VECTOR_COLUMN_INDEX,
+                        split.partition(),
+                        split.bucket(),
+                        split.bucketPath(),
+                        table.snapshotManager().latestSnapshotId());
+
+        List<VectorCFSearchHelper.ScoredRow> results = collectSearchResults(searchSplit, table);
+        assertThat(results).isNotEmpty();
+
+        // Verify every result has non-null vector data with correct dimension
+        for (VectorCFSearchHelper.ScoredRow sr : results) {
+            assertThat(sr.vector).as("Search result should include vector data").isNotNull();
+            assertThat(sr.vector.length).isEqualTo(DIM);
+
+            // Results are from cluster 0 (center ~10,0,0,0) — first dim should be near 10
+            assertThat(sr.vector[0])
+                    .as("First dim of cluster 0 vector should be near 10")
+                    .isBetween(9.0f, 11.0f);
+        }
     }
 
     // ---- Phase 3 tests: score ordering, brute-force with deleted index, sidecar pkmap ----

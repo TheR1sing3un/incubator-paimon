@@ -166,9 +166,9 @@ build and search path changes:
   - Sidecar (sync-written during flush): `<vectorFile>.pkmap`
   - Index-style (built during index build): `<vectorFile>.aix.c<columnId>.lumina.pkmap`
 - **PK map sync write**: flush 时 `DefaultVectorFileWriter.bufferPk()` 同步构建 sidecar pkmap
-- **PK map backfill**: `CALL sys.build_pkmap(table => '...')` 为老数据补建 sidecar pkmap
+- **PK map backfill**: `CALL sys.build_pkmap(table => '...')` — SnapshotReader + Spark 分布式执行，fileName-based 检测兼容老数据
 - **Search driver**: zero per-bucket I/O — creates one `VectorCFSearchSplit` per vector file from manifest only. Scalar files filtered to **L1+ only** for consistency with standard search.
-- **Search executor**: derives index/pkmap paths from vector file name → try-open → indexed search (pkmap + PK IN batch query) or brute-force fallback
+- **Search executor**: derives index/pkmap paths from vector file name → try-open → indexed search (pkmap + PK IN + vector batch-read from .vector.bin sorted by rowIndex) or brute-force fallback (vectors captured during distance computation). Results carry actual vector data via `ScoredRow.vector` / `ScoredRowIterator.returnedVector()`.
 - **DV handling**: DV applied on L1+ scalar files via Paimon's standard ReadBuilder (merge engine handles DV)
 
 ```

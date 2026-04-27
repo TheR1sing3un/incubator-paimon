@@ -187,9 +187,39 @@ public class VectorCFSearchHelper {
             }
         }
 
+        // 2.5 Batch-read vectors from .vector.bin (sorted by rowIndex for sequential I/O)
+        Map<Long, float[]> rowIndexToVector = new HashMap<>();
+        {
+            List<Long> sortedIndices = new ArrayList<>(rowIndexToScore.keySet());
+            Collections.sort(sortedIndices);
+            byte[] vecBuf = new byte[bytesPerVector];
+            SeekableInputStream vecStream = null;
+            try {
+                vecStream = fileIO.newInputStream(vectorFilePath);
+                for (long idx : sortedIndices) {
+                    float[] vec =
+                            readVectorFromStream(
+                                    vecStream, idx, dimension, bytesPerVector, vecBuf, elementSize);
+                    if (vec != null) {
+                        rowIndexToVector.put(idx, vec);
+                    }
+                }
+            } catch (Exception e) {
+                LOG.warn("Failed to batch-read vectors for result, vectors will be null", e);
+            } finally {
+                if (vecStream != null) {
+                    try {
+                        vecStream.close();
+                    } catch (IOException ignored) {
+                    }
+                }
+            }
+        }
+
         // 3. Load pkmap → rowIndex → PK values → build PK IN predicate
         boolean usePkMap = false;
         Map<String, Float> pkKeyToScore = null;
+        Map<String, float[]> pkKeyToVector = null;
         Predicate pkInPredicate = null;
 
         try {
@@ -213,6 +243,7 @@ public class VectorCFSearchHelper {
 
                 // Extract PK values from pkmap for each matched rowIndex
                 pkKeyToScore = new HashMap<>();
+                pkKeyToVector = new HashMap<>();
                 // Use Set for O(1) dedup of PK literals (fix: ArrayList.contains was O(N²))
                 java.util.Set<Object> singlePkLiteralSet =
                         pkNames.size() == 1 ? new java.util.LinkedHashSet<>() : null;
@@ -249,6 +280,12 @@ public class VectorCFSearchHelper {
                     Float existing = pkKeyToScore.get(pkKey);
                     if (existing == null || score > existing) {
                         pkKeyToScore.put(pkKey, score);
+                        float[] vec = rowIndexToVector.get(rowIdx);
+                        if (vec != null) {
+                            pkKeyToVector.put(pkKey, vec);
+                        } else {
+                            pkKeyToVector.remove(pkKey);
+                        }
                     }
 
                     if (pkNames.size() == 1) {
@@ -371,6 +408,10 @@ public class VectorCFSearchHelper {
                         if (score == null) {
                             continue;
                         }
+                        float[] vec =
+                                pkKeyToVector != null
+                                        ? pkKeyToVector.get(keyBuilder.toString())
+                                        : null;
 
                         Object[] fields = new Object[resultProjection.length];
                         for (int i = 0; i < resultProjection.length; i++) {
@@ -381,7 +422,7 @@ public class VectorCFSearchHelper {
                         for (int i = 0; i < fields.length; i++) {
                             resultRow.setField(i, fields[i]);
                         }
-                        results.add(new ScoredRow(serializer.copy(resultRow), score));
+                        results.add(new ScoredRow(serializer.copy(resultRow), score, vec));
                     }
                     batch.releaseBatch();
                 }
@@ -419,7 +460,11 @@ public class VectorCFSearchHelper {
                                 if (score != null) {
                                     matchedPositions
                                             .computeIfAbsent("__global__", k -> new ArrayList<>())
-                                            .add(new ScoredScalarPosition(globalRow, score));
+                                            .add(
+                                                    new ScoredScalarPosition(
+                                                            globalRow,
+                                                            score,
+                                                            rowIndexToVector.get(rowIdx)));
                                 }
                             }
                         }
@@ -458,14 +503,17 @@ public class VectorCFSearchHelper {
                     if (currentPos == globalMatches.get(matchIdx).localRow) {
                         results.add(
                                 new ScoredRow(
-                                        serializer.copy(row), globalMatches.get(matchIdx).score));
+                                        serializer.copy(row),
+                                        globalMatches.get(matchIdx).score,
+                                        globalMatches.get(matchIdx).vector));
                         matchIdx++;
                         while (matchIdx < globalMatches.size()
                                 && globalMatches.get(matchIdx).localRow == currentPos) {
                             results.add(
                                     new ScoredRow(
                                             serializer.copy(row),
-                                            globalMatches.get(matchIdx).score));
+                                            globalMatches.get(matchIdx).score,
+                                            globalMatches.get(matchIdx).vector));
                             matchIdx++;
                         }
                     }
@@ -539,10 +587,10 @@ public class VectorCFSearchHelper {
                                 search.queryVector(), vec, search.metric());
                 float score = VectorDistanceUtils.convertDistanceToScore(distance, search.metric());
                 if (heap.size() < search.topK()) {
-                    heap.add(new RowIndexScore(rowIdx, score));
+                    heap.add(new RowIndexScore(rowIdx, score, vec.clone()));
                 } else if (score > heap.peek().score) {
                     heap.poll();
-                    heap.add(new RowIndexScore(rowIdx, score));
+                    heap.add(new RowIndexScore(rowIdx, score, vec.clone()));
                 }
             }
         } finally {
@@ -559,8 +607,12 @@ public class VectorCFSearchHelper {
             return new EmptyRecordReader<>();
         }
 
+        Map<Long, float[]> rowIndexToVector = new HashMap<>();
         for (RowIndexScore ris : heap) {
             topKRowIndexToScore.put(ris.rowIndex, ris.score);
+            if (ris.vector != null) {
+                rowIndexToVector.put(ris.rowIndex, ris.vector);
+            }
         }
 
         // Step 2: Try pkmap + PK IN for scalar row retrieval
@@ -594,6 +646,7 @@ public class VectorCFSearchHelper {
                 // Reuse the same PK IN logic from createIndexedReader
                 boolean usePkMap = false;
                 Map<String, Float> pkKeyToScore = new HashMap<>();
+                Map<String, float[]> pkKeyToVector = new HashMap<>();
                 Predicate pkInPredicate = null;
 
                 PkMapReader pkMapReader = PkMapReader.open(fileIO, pkmapPath);
@@ -640,6 +693,10 @@ public class VectorCFSearchHelper {
                     Float existing = pkKeyToScore.get(pkKey);
                     if (existing == null || score > existing) {
                         pkKeyToScore.put(pkKey, score);
+                        float[] vec = rowIndexToVector.get(rowIdx);
+                        if (vec != null) {
+                            pkKeyToVector.put(pkKey, vec);
+                        }
                     }
 
                     if (pkNames.size() == 1) {
@@ -732,6 +789,7 @@ public class VectorCFSearchHelper {
                                 if (s == null) {
                                     continue;
                                 }
+                                float[] vec2 = pkKeyToVector.get(keyBuilder2.toString());
                                 Object[] fields = new Object[resultProjection.length];
                                 for (int i = 0; i < resultProjection.length; i++) {
                                     fields[i] = resultGetters[i].getFieldOrNull(row);
@@ -741,7 +799,7 @@ public class VectorCFSearchHelper {
                                 for (int i = 0; i < fields.length; i++) {
                                     resultRow.setField(i, fields[i]);
                                 }
-                                pkInResults.add(new ScoredRow(serializer.copy(resultRow), s));
+                                pkInResults.add(new ScoredRow(serializer.copy(resultRow), s, vec2));
                             }
                             batch.releaseBatch();
                         }
@@ -785,7 +843,10 @@ public class VectorCFSearchHelper {
                                     Float score = topKRowIndexToScore.get(rowIndex);
                                     if (score != null) {
                                         matchedPositions.add(
-                                                new ScoredScalarPosition(globalRow, score));
+                                                new ScoredScalarPosition(
+                                                        globalRow,
+                                                        score,
+                                                        rowIndexToVector.get(rowIndex)));
                                     }
                                 }
                             }
@@ -829,7 +890,8 @@ public class VectorCFSearchHelper {
                         results.add(
                                 new ScoredRow(
                                         serializer.copy(row2),
-                                        matchedPositions.get(matchIdx).score));
+                                        matchedPositions.get(matchIdx).score,
+                                        matchedPositions.get(matchIdx).vector));
                         matchIdx++;
                         // Handle duplicate localRow entries
                         while (matchIdx < matchedPositions.size()
@@ -837,7 +899,8 @@ public class VectorCFSearchHelper {
                             results.add(
                                     new ScoredRow(
                                             serializer.copy(row2),
-                                            matchedPositions.get(matchIdx).score));
+                                            matchedPositions.get(matchIdx).score,
+                                            matchedPositions.get(matchIdx).vector));
                             matchIdx++;
                         }
                     }
@@ -953,36 +1016,54 @@ public class VectorCFSearchHelper {
         }
     }
 
-    /** A row index + score pair from the scanner. */
+    /** A row index + score + optional vector data from the scanner or brute-force. */
     private static class RowIndexScore {
         final long rowIndex;
         final float score;
+        @Nullable final float[] vector;
 
         RowIndexScore(long rowIndex, float score) {
+            this(rowIndex, score, null);
+        }
+
+        RowIndexScore(long rowIndex, float score, @Nullable float[] vector) {
             this.rowIndex = rowIndex;
             this.score = score;
+            this.vector = vector;
         }
     }
 
-    /** A row with its search score. */
+    /** A row with its search score and optional vector data. */
     public static class ScoredRow {
         public final InternalRow row;
         public final float score;
+        @Nullable public final float[] vector;
 
         public ScoredRow(InternalRow row, float score) {
+            this(row, score, null);
+        }
+
+        public ScoredRow(InternalRow row, float score, @Nullable float[] vector) {
             this.row = row;
             this.score = score;
+            this.vector = vector;
         }
     }
 
-    /** A scored position within a scalar file scan. */
+    /** A scored position within a scalar file scan, with optional vector data. */
     private static class ScoredScalarPosition {
         final long localRow;
         final float score;
+        @Nullable final float[] vector;
 
         ScoredScalarPosition(long localRow, float score) {
+            this(localRow, score, null);
+        }
+
+        ScoredScalarPosition(long localRow, float score, @Nullable float[] vector) {
             this.localRow = localRow;
             this.score = score;
+            this.vector = vector;
         }
     }
 
@@ -1012,9 +1093,11 @@ public class VectorCFSearchHelper {
         public void close() {}
     }
 
-    private static class ScoredRowIterator implements ScoreRecordIterator<InternalRow> {
+    /** Iterator over scored rows with optional vector data. */
+    public static class ScoredRowIterator implements ScoreRecordIterator<InternalRow> {
         private final Iterator<ScoredRow> iter;
         private float currentScore;
+        @Nullable private float[] currentVector;
 
         ScoredRowIterator(Iterator<ScoredRow> iter) {
             this.iter = iter;
@@ -1026,6 +1109,7 @@ public class VectorCFSearchHelper {
             if (iter.hasNext()) {
                 ScoredRow sr = iter.next();
                 currentScore = sr.score;
+                currentVector = sr.vector;
                 return sr.row;
             }
             return null;
@@ -1034,6 +1118,12 @@ public class VectorCFSearchHelper {
         @Override
         public float returnedScore() {
             return currentScore;
+        }
+
+        /** Get the vector data for the last returned row, or null if not available. */
+        @Nullable
+        public float[] returnedVector() {
+            return currentVector;
         }
 
         @Override

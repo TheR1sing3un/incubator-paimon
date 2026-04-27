@@ -437,6 +437,17 @@ public class SearchAccelerateIndexProcedure extends BaseProcedure {
                                                                     batch)
                                                             .returnedScore();
                                         }
+                                        // Extract vector from ScoredRowIterator if available
+                                        String vectorStr = "N/A";
+                                        if (batch
+                                                instanceof VectorCFSearchHelper.ScoredRowIterator) {
+                                            float[] vec =
+                                                    ((VectorCFSearchHelper.ScoredRowIterator) batch)
+                                                            .returnedVector();
+                                            if (vec != null) {
+                                                vectorStr = formatVector(vec);
+                                            }
+                                        }
                                         StringBuilder pkSb = new StringBuilder();
                                         for (int i = 0; i < finalPkNames.size(); i++) {
                                             if (i > 0) {
@@ -449,7 +460,9 @@ public class SearchAccelerateIndexProcedure extends BaseProcedure {
                                         }
                                         results.add(
                                                 new String[] {
-                                                    pkSb.toString(), "N/A", String.valueOf(score)
+                                                    pkSb.toString(),
+                                                    vectorStr,
+                                                    String.valueOf(score)
                                                 });
                                     }
                                     batch.releaseBatch();
@@ -805,6 +818,26 @@ public class SearchAccelerateIndexProcedure extends BaseProcedure {
     }
 
     // ---- Result row helpers ----
+
+    /** Format float[] vector for display. Shows first 8 dims + total dim count for brevity. */
+    private static String formatVector(float[] vec) {
+        if (vec == null) {
+            return "N/A";
+        }
+        StringBuilder sb = new StringBuilder("[");
+        int show = Math.min(vec.length, 8);
+        for (int i = 0; i < show; i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+            sb.append(String.format("%.4f", vec[i]));
+        }
+        if (vec.length > show) {
+            sb.append(", ...(" + vec.length + " dims)");
+        }
+        sb.append("]");
+        return sb.toString();
+    }
 
     private static SearchResultRow buildResultRow(
             org.apache.paimon.data.InternalRow row,
