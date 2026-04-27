@@ -1475,4 +1475,324 @@ class AccelerateIndexSearchSplitUtilsTest {
         assertThatThrownBy(() -> rb.planAccelerateIndexSearch(null))
                 .isInstanceOf(NullPointerException.class);
     }
+
+    // ---- Comprehensive E2E: planAccelerateIndexSearch vs standard interface ----
+
+    /**
+     * Full E2E test for planAccelerateIndexSearch on a VCF table.
+     *
+     * <p>Setup: 3 partitions x 2 buckets, 60 rows/partition → multiple vector files per bucket.
+     * After compaction, verifies that planAccelerateIndexSearch produces identical splits to the
+     * standard withAccelerateIndexSearch().newScan().plan().splits() flow under various
+     * filter/projection combinations, with precise file name matching.
+     */
+    @Test
+    void testPlanAccelerateIndexSearchE2E_VCF() throws Exception {
+        FileStoreTable table = createVCFTable("t_e2e_vcf", 2);
+        // Write 60 rows per partition across 3 partitions → hash distributes to 2 buckets
+        // target-file-rows=100 → fewer vector files, but multiple flushes → multiple L0 files
+        for (int pt = 1; pt <= 3; pt++) {
+            writeVectorBatch(table, pt, 0, 60);
+            writeVectorBatch(table, pt, 60, 60); // second batch → more sorted runs
+        }
+        // Compact all partition/bucket combos to produce L1+ scalar files
+        for (int pt = 1; pt <= 3; pt++) {
+            for (int bk = 0; bk < 2; bk++) {
+                compactBucket(table, pt, bk);
+            }
+        }
+        table = (FileStoreTable) catalog.getTable(Identifier.create("default", "t_e2e_vcf"));
+
+        float[] query = new float[VEC_DIM];
+        AccelerateIndexSearch search = createVectorSearch(query);
+
+        // ---- Case 1: No filter ----
+        assertSplitsMatch(table, search, null, null, null, "no-filter");
+
+        // ---- Case 2: Partition filter (pt=2) ----
+        org.apache.paimon.types.RowType partType =
+                org.apache.paimon.types.RowType.of(DataTypes.INT());
+        org.apache.paimon.predicate.PredicateBuilder partPredBuilder =
+                new org.apache.paimon.predicate.PredicateBuilder(partType);
+        org.apache.paimon.partition.PartitionPredicate ppPt2 =
+                org.apache.paimon.partition.PartitionPredicate.fromPredicate(
+                        partType, partPredBuilder.equal(0, 2));
+        assertSplitsMatch(table, search, ppPt2, null, null, "pt=2");
+
+        // ---- Case 3: Bucket filter (bucket=0) ----
+        assertSplitsMatch(table, search, null, 0, null, "bucket=0");
+
+        // ---- Case 4: Partition + bucket filter ----
+        assertSplitsMatch(table, search, ppPt2, 1, null, "pt=2,bucket=1");
+
+        // ---- Case 5: With projection (include vector column) ----
+        // projection: [pt, pk, vec] = all columns
+        assertSplitsMatch(table, search, null, null, new int[] {0, 1, 2}, "proj-all");
+
+        // ---- Case 6: With projection (exclude vector column) ----
+        // projection: [pt, pk] = scalar only
+        assertSplitsMatch(table, search, null, null, new int[] {0, 1}, "proj-scalar-only");
+
+        // ---- Case 7: Partition filter (pt=1) + projection (scalar only) ----
+        org.apache.paimon.partition.PartitionPredicate ppPt1 =
+                org.apache.paimon.partition.PartitionPredicate.fromPredicate(
+                        partType, partPredBuilder.equal(0, 1));
+        assertSplitsMatch(table, search, ppPt1, null, new int[] {0, 1}, "pt=1,proj-scalar");
+    }
+
+    /**
+     * Full E2E test for planAccelerateIndexSearch on a non-VCF table (standard PK table, no
+     * vector-column-family). Verifies AccelerateIndexSplit results match between the two APIs.
+     */
+    @Test
+    void testPlanAccelerateIndexSearchE2E_NonVCF() throws Exception {
+        // Create non-VCF table with standard (pt, pk, val) schema — same as createTable helper
+        FileStoreTable table = createTable("t_e2e_nonvcf", false, true);
+
+        // Write multiple batches for more sorted runs
+        writeInsertBatch(table, 0, 30);
+        writeInsertBatch(table, 30, 30);
+
+        // Compact to get L1+ files
+        compactBucket(table, 1, 0);
+        table = (FileStoreTable) catalog.getTable(Identifier.create("default", "t_e2e_nonvcf"));
+
+        // Search on "val" column (non-VCF path)
+        float[] query = new float[] {1.0f, 2.0f, 3.0f, 4.0f};
+        AccelerateIndexSearch search =
+                new AccelerateIndexSearch(
+                        "val", query, 10, "lumina", "l2", 4, Collections.emptyMap(), null);
+
+        // ---- No filter ----
+        assertSplitsMatchNonVCF(table, search, null, null, "no-filter");
+
+        // ---- Bucket filter ----
+        assertSplitsMatchNonVCF(table, search, null, 0, "bucket=0");
+    }
+
+    /**
+     * Asserts that planAccelerateIndexSearch produces identical splits to the standard flow for VCF
+     * tables. Compares: split count, split type, vectorFileName, scalarFiles (by name), partition,
+     * bucket.
+     */
+    private void assertSplitsMatch(
+            FileStoreTable table,
+            AccelerateIndexSearch search,
+            @javax.annotation.Nullable
+                    org.apache.paimon.partition.PartitionPredicate partitionFilter,
+            @javax.annotation.Nullable Integer bucket,
+            @javax.annotation.Nullable int[] projection,
+            String caseLabel)
+            throws Exception {
+        // Build the two ReadBuilders with identical config
+        ReadBuilder rbNew = table.newReadBuilder();
+        ReadBuilder rbStd = table.newReadBuilder();
+        if (partitionFilter != null) {
+            rbNew.withPartitionFilter(partitionFilter);
+            rbStd.withPartitionFilter(partitionFilter);
+        }
+        if (bucket != null) {
+            rbNew.withBucket(bucket);
+            rbStd.withBucket(bucket);
+        }
+        if (projection != null) {
+            rbNew.withProjection(projection);
+            rbStd.withProjection(projection);
+        }
+
+        // New API
+        List<Split> newSplits = rbNew.planAccelerateIndexSearch(search);
+        // Standard API
+        rbStd.withAccelerateIndexSearch(search);
+        List<Split> stdSplits = rbStd.newScan().plan().splits();
+
+        // Same count
+        assertThat(newSplits).as("[%s] split count", caseLabel).hasSameSizeAs(stdSplits);
+
+        // Sort both lists by vectorFileName for deterministic comparison
+        List<VectorCFSearchSplit> newVcf = sortVCFSplits(newSplits, caseLabel);
+        List<VectorCFSearchSplit> stdVcf = sortVCFSplits(stdSplits, caseLabel);
+
+        for (int i = 0; i < newVcf.size(); i++) {
+            VectorCFSearchSplit nSplit = newVcf.get(i);
+            VectorCFSearchSplit sSplit = stdVcf.get(i);
+
+            // Vector file name must match exactly
+            assertThat(nSplit.vectorFileName())
+                    .as("[%s] split[%d] vectorFileName", caseLabel, i)
+                    .isEqualTo(sSplit.vectorFileName())
+                    .endsWith(".vector.bin");
+
+            // Scalar files: same count, same names
+            Set<String> nScalarNames =
+                    nSplit.scalarFiles().stream()
+                            .map(DataFileMeta::fileName)
+                            .collect(Collectors.toSet());
+            Set<String> sScalarNames =
+                    sSplit.scalarFiles().stream()
+                            .map(DataFileMeta::fileName)
+                            .collect(Collectors.toSet());
+            assertThat(nScalarNames)
+                    .as("[%s] split[%d] scalarFiles", caseLabel, i)
+                    .isEqualTo(sScalarNames);
+            // All scalar files must NOT be vector files
+            for (String sf : nScalarNames) {
+                assertThat(sf)
+                        .as("[%s] scalar file should not be .vector.bin", caseLabel)
+                        .doesNotContain(".vector.");
+            }
+
+            // Partition, bucket, snapshotId must match
+            assertThat(nSplit.partition().getInt(0))
+                    .as("[%s] split[%d] partition", caseLabel, i)
+                    .isEqualTo(sSplit.partition().getInt(0));
+            assertThat(nSplit.bucket())
+                    .as("[%s] split[%d] bucket", caseLabel, i)
+                    .isEqualTo(sSplit.bucket());
+            assertThat(nSplit.snapshotId())
+                    .as("[%s] split[%d] snapshotId", caseLabel, i)
+                    .isEqualTo(sSplit.snapshotId());
+            assertThat(nSplit.columnId())
+                    .as("[%s] split[%d] columnId", caseLabel, i)
+                    .isEqualTo(sSplit.columnId());
+
+            // Verify partition filter was applied
+            if (partitionFilter != null) {
+                assertThat(partitionFilter.test(nSplit.partition()))
+                        .as("[%s] partition filter should match split partition", caseLabel)
+                        .isTrue();
+            }
+            // Verify bucket filter was applied
+            if (bucket != null) {
+                assertThat(nSplit.bucket())
+                        .as("[%s] bucket filter should match", caseLabel)
+                        .isEqualTo(bucket.intValue());
+            }
+        }
+    }
+
+    /** Same as assertSplitsMatch but for non-VCF (AccelerateIndexSplit) tables. */
+    private void assertSplitsMatchNonVCF(
+            FileStoreTable table,
+            AccelerateIndexSearch search,
+            @javax.annotation.Nullable
+                    org.apache.paimon.partition.PartitionPredicate partitionFilter,
+            @javax.annotation.Nullable Integer bucket,
+            String caseLabel)
+            throws Exception {
+        ReadBuilder rbNew = table.newReadBuilder();
+        ReadBuilder rbStd = table.newReadBuilder();
+        if (partitionFilter != null) {
+            rbNew.withPartitionFilter(partitionFilter);
+            rbStd.withPartitionFilter(partitionFilter);
+        }
+        if (bucket != null) {
+            rbNew.withBucket(bucket);
+            rbStd.withBucket(bucket);
+        }
+
+        List<Split> newSplits = rbNew.planAccelerateIndexSearch(search);
+        rbStd.withAccelerateIndexSearch(search);
+        List<Split> stdSplits = rbStd.newScan().plan().splits();
+
+        assertThat(newSplits).as("[%s] split count", caseLabel).hasSameSizeAs(stdSplits);
+
+        // Sort by bucketPath + first data file name for deterministic comparison
+        List<AccelerateIndexSplit> newAi = sortAISplits(newSplits, caseLabel);
+        List<AccelerateIndexSplit> stdAi = sortAISplits(stdSplits, caseLabel);
+
+        for (int i = 0; i < newAi.size(); i++) {
+            AccelerateIndexSplit nSplit = newAi.get(i);
+            AccelerateIndexSplit sSplit = stdAi.get(i);
+
+            // isUncovered should match
+            assertThat(nSplit.isUncovered())
+                    .as("[%s] split[%d] isUncovered", caseLabel, i)
+                    .isEqualTo(sSplit.isUncovered());
+
+            // Data files should match exactly
+            Set<String> nFileNames =
+                    nSplit.dataSplit().dataFiles().stream()
+                            .map(DataFileMeta::fileName)
+                            .collect(Collectors.toSet());
+            Set<String> sFileNames =
+                    sSplit.dataSplit().dataFiles().stream()
+                            .map(DataFileMeta::fileName)
+                            .collect(Collectors.toSet());
+            assertThat(nFileNames)
+                    .as("[%s] split[%d] dataFiles", caseLabel, i)
+                    .isEqualTo(sFileNames);
+
+            // Partition, bucket match
+            assertThat(nSplit.dataSplit().partition().getInt(0))
+                    .as("[%s] split[%d] partition", caseLabel, i)
+                    .isEqualTo(sSplit.dataSplit().partition().getInt(0));
+            assertThat(nSplit.dataSplit().bucket())
+                    .as("[%s] split[%d] bucket", caseLabel, i)
+                    .isEqualTo(sSplit.dataSplit().bucket());
+
+            if (bucket != null) {
+                assertThat(nSplit.dataSplit().bucket())
+                        .as("[%s] bucket filter", caseLabel)
+                        .isEqualTo(bucket.intValue());
+            }
+        }
+    }
+
+    private List<VectorCFSearchSplit> sortVCFSplits(List<Split> splits, String caseLabel) {
+        List<VectorCFSearchSplit> result = new ArrayList<>();
+        for (Split s : splits) {
+            assertThat(s)
+                    .as("[%s] expected VectorCFSearchSplit", caseLabel)
+                    .isInstanceOf(VectorCFSearchSplit.class);
+            result.add((VectorCFSearchSplit) s);
+        }
+        result.sort(
+                (a, b) -> {
+                    int cmp = Integer.compare(a.partition().getInt(0), b.partition().getInt(0));
+                    if (cmp != 0) {
+                        return cmp;
+                    }
+                    cmp = Integer.compare(a.bucket(), b.bucket());
+                    if (cmp != 0) {
+                        return cmp;
+                    }
+                    return a.vectorFileName().compareTo(b.vectorFileName());
+                });
+        return result;
+    }
+
+    private List<AccelerateIndexSplit> sortAISplits(List<Split> splits, String caseLabel) {
+        List<AccelerateIndexSplit> result = new ArrayList<>();
+        for (Split s : splits) {
+            assertThat(s)
+                    .as("[%s] expected AccelerateIndexSplit", caseLabel)
+                    .isInstanceOf(AccelerateIndexSplit.class);
+            result.add((AccelerateIndexSplit) s);
+        }
+        result.sort(
+                (a, b) -> {
+                    int cmp =
+                            Integer.compare(
+                                    a.dataSplit().partition().getInt(0),
+                                    b.dataSplit().partition().getInt(0));
+                    if (cmp != 0) {
+                        return cmp;
+                    }
+                    cmp = Integer.compare(a.dataSplit().bucket(), b.dataSplit().bucket());
+                    if (cmp != 0) {
+                        return cmp;
+                    }
+                    String af =
+                            a.dataSplit().dataFiles().isEmpty()
+                                    ? ""
+                                    : a.dataSplit().dataFiles().get(0).fileName();
+                    String bf =
+                            b.dataSplit().dataFiles().isEmpty()
+                                    ? ""
+                                    : b.dataSplit().dataFiles().get(0).fileName();
+                    return af.compareTo(bf);
+                });
+        return result;
+    }
 }
