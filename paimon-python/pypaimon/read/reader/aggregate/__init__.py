@@ -54,6 +54,10 @@ def create_field_aggregator(field_type, field_name, agg_func_name, options) -> F
     return factory(field_type, field_name, options)
 
 
+# Trigger built-in aggregator registration. Each aggregator class registers
+# itself when the aggregators module is imported.
+from pypaimon.read.reader.aggregate import aggregators  # noqa: F401, E402
+
 __all__ = [
     "FieldAggregator",
     "register_aggregator",
