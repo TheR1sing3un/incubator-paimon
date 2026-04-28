@@ -355,7 +355,9 @@ class LuceneAccelerateIndexScannerTest {
         org.apache.lucene.search.Query query = parser.parse("{\"prefix\":{\"version\":\"v5\"}}");
 
         assertThat(query).isInstanceOf(org.apache.lucene.search.PrefixQuery.class);
-        assertThat(query.toString()).contains("version:v5");
+        org.apache.lucene.search.PrefixQuery pq = (org.apache.lucene.search.PrefixQuery) query;
+        assertThat(pq.getPrefix().field()).isEqualTo("version");
+        assertThat(pq.getPrefix().text()).isEqualTo("v5");
     }
 
     @Test
@@ -365,7 +367,9 @@ class LuceneAccelerateIndexScannerTest {
                 parser.parse("{\"wildcard\":{\"version\":\"v5.*\"}}");
 
         assertThat(query).isInstanceOf(org.apache.lucene.search.WildcardQuery.class);
-        assertThat(query.toString()).contains("version:v5.*");
+        org.apache.lucene.search.WildcardQuery wq = (org.apache.lucene.search.WildcardQuery) query;
+        assertThat(wq.getTerm().field()).isEqualTo("version");
+        assertThat(wq.getTerm().text()).isEqualTo("v5.*");
     }
 
     @Test
@@ -384,7 +388,10 @@ class LuceneAccelerateIndexScannerTest {
         org.apache.lucene.search.Query query = parser.parse("{\"fuzzy\":{\"version\":\"v5.8.o\"}}");
 
         assertThat(query).isInstanceOf(org.apache.lucene.search.FuzzyQuery.class);
-        assertThat(query.toString()).contains("version:v5.8.o");
+        org.apache.lucene.search.FuzzyQuery fq = (org.apache.lucene.search.FuzzyQuery) query;
+        assertThat(fq.getTerm().field()).isEqualTo("version");
+        assertThat(fq.getTerm().text()).isEqualTo("v5.8.o");
+        assertThat(fq.getMaxEdits()).isEqualTo(2);
     }
 
     @Test
@@ -396,6 +403,17 @@ class LuceneAccelerateIndexScannerTest {
         assertThat(query).isInstanceOf(org.apache.lucene.search.FuzzyQuery.class);
         org.apache.lucene.search.FuzzyQuery fq = (org.apache.lucene.search.FuzzyQuery) query;
         assertThat(fq.getMaxEdits()).isEqualTo(1);
+    }
+
+    @Test
+    void testDslParserFuzzyQueryRejectsInvalidFuzziness() {
+        LuceneQueryDslParser parser = new LuceneQueryDslParser();
+        assertThatThrownBy(
+                        () ->
+                                parser.parse(
+                                        "{\"fuzzy\":{\"version\":{\"value\":\"v5.8.o\",\"fuzziness\":3}}}"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("fuzziness must be 0, 1, or 2");
     }
 
     @Test
@@ -425,6 +443,25 @@ class LuceneAccelerateIndexScannerTest {
     }
 
     @Test
+    void testDslParserMatchPhraseEmptyTokens() throws Exception {
+        // Use an analyzer with stop words to produce empty token list
+        org.apache.lucene.analysis.CharArraySet stopWords =
+                new org.apache.lucene.analysis.CharArraySet(
+                        java.util.Arrays.asList("the", "a", "an"), true);
+        org.apache.lucene.analysis.Analyzer stopAnalyzer =
+                new org.apache.lucene.analysis.standard.StandardAnalyzer(stopWords);
+        LuceneQueryDslParser parser =
+                new LuceneQueryDslParser(stopAnalyzer, Collections.emptyMap());
+        org.apache.lucene.search.Query query =
+                parser.parse("{\"match_phrase\":{\"contextEn\":\"the\"}}");
+
+        // "the" is a stop word → 0 tokens → match-none BooleanQuery
+        assertThat(query).isInstanceOf(org.apache.lucene.search.BooleanQuery.class);
+        org.apache.lucene.search.BooleanQuery bq = (org.apache.lucene.search.BooleanQuery) query;
+        assertThat(bq.clauses()).isEmpty();
+    }
+
+    @Test
     void testPrefixQueryRejectsNumericField() {
         java.util.Map<String, String> fieldTypes = new java.util.HashMap<>();
         fieldTypes.put("score", "int");
@@ -451,6 +488,45 @@ class LuceneAccelerateIndexScannerTest {
     }
 
     @Test
+    void testRegexpQueryRejectsNumericField() {
+        java.util.Map<String, String> fieldTypes = new java.util.HashMap<>();
+        fieldTypes.put("score", "int");
+        LuceneQueryDslParser parser =
+                new LuceneQueryDslParser(
+                        new org.apache.lucene.analysis.standard.StandardAnalyzer(), fieldTypes);
+
+        assertThatThrownBy(() -> parser.parse("{\"regexp\":{\"score\":\"[0-9]+\"}}"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Cannot use 'regexp' on numeric field");
+    }
+
+    @Test
+    void testFuzzyQueryRejectsNumericField() {
+        java.util.Map<String, String> fieldTypes = new java.util.HashMap<>();
+        fieldTypes.put("score", "int");
+        LuceneQueryDslParser parser =
+                new LuceneQueryDslParser(
+                        new org.apache.lucene.analysis.standard.StandardAnalyzer(), fieldTypes);
+
+        assertThatThrownBy(() -> parser.parse("{\"fuzzy\":{\"score\":\"5\"}}"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Cannot use 'fuzzy' on numeric field");
+    }
+
+    @Test
+    void testMatchPhraseRejectsNumericField() {
+        java.util.Map<String, String> fieldTypes = new java.util.HashMap<>();
+        fieldTypes.put("score", "int");
+        LuceneQueryDslParser parser =
+                new LuceneQueryDslParser(
+                        new org.apache.lucene.analysis.standard.StandardAnalyzer(), fieldTypes);
+
+        assertThatThrownBy(() -> parser.parse("{\"match_phrase\":{\"score\":\"5 6\"}}"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Cannot use 'match_phrase' on numeric field");
+    }
+
+    @Test
     void testCombinedNewQueryTypesInBool() throws Exception {
         LuceneQueryDslParser parser = new LuceneQueryDslParser();
         org.apache.lucene.search.Query query =
@@ -463,8 +539,12 @@ class LuceneAccelerateIndexScannerTest {
         assertThat(queryStr).contains("contextEn:\"save document\"");
     }
 
+    // --- End-to-end search tests for new query types ---
+
     @Test
     void testPrefixSearchEndToEnd() throws Exception {
+        // Row 0: children [{ctx, v5.8.0}, {ctx, v6.0.0}, {ctx, v5.9.0}]
+        // prefix "v5." → matches child 0 (v5.8.0) and child 2 (v5.9.0), both in row 0
         Map<String, List<InternalArray>> fileData = new LinkedHashMap<>();
         fileData.put(
                 "file-0.parquet",
@@ -477,16 +557,22 @@ class LuceneAccelerateIndexScannerTest {
                                 })));
 
         BuildAndScanContext bsc = buildIndex(fileData);
+        AccelerateIndexScanResult result = scan(bsc, "{\"prefix\":{\"version\":\"v5.\"}}", 10);
 
-        // prefix search on keyword field "version" for "v5"
-        AccelerateIndexScanResult result = scan(bsc, "{\"prefix\":{\"version\":\"v5\"}}", 10);
-
-        // Should match nested elements with version starting with "v5": v5.8.0 and v5.9.0
-        assertThat(result.totalMatches()).isGreaterThanOrEqualTo(1);
+        assertThat(result.totalMatches()).isEqualTo(1);
+        assertThat(result.fileSelections()).hasSize(1);
+        long[] positions = result.fileSelections().values().iterator().next();
+        assertThat(positions).containsExactly(0L);
+        // Child offsets: 0 (v5.8.0) and 2 (v5.9.0) matched
+        int[][] offsets = result.nestedOffsets().values().iterator().next();
+        assertThat(offsets).hasNumberOfRows(1);
+        assertThat(offsets[0]).containsExactly(0, 2);
     }
 
     @Test
     void testWildcardSearchEndToEnd() throws Exception {
+        // Row 0: [{ctx, v5.8.0}, {ctx, v6.0.0}]
+        // wildcard "v?.8.0" → matches only "v5.8.0" (child 0)
         Map<String, List<InternalArray>> fileData = new LinkedHashMap<>();
         fileData.put(
                 "file-0.parquet",
@@ -498,15 +584,20 @@ class LuceneAccelerateIndexScannerTest {
                                 })));
 
         BuildAndScanContext bsc = buildIndex(fileData);
+        AccelerateIndexScanResult result = scan(bsc, "{\"wildcard\":{\"version\":\"v?.8.0\"}}", 10);
 
-        // wildcard search: version matches v?.*.0
-        AccelerateIndexScanResult result = scan(bsc, "{\"wildcard\":{\"version\":\"v?.*.0\"}}", 10);
-
-        assertThat(result.totalMatches()).isGreaterThanOrEqualTo(1);
+        assertThat(result.totalMatches()).isEqualTo(1);
+        long[] positions = result.fileSelections().values().iterator().next();
+        assertThat(positions).containsExactly(0L);
+        int[][] offsets = result.nestedOffsets().values().iterator().next();
+        assertThat(offsets).hasNumberOfRows(1);
+        assertThat(offsets[0]).containsExactly(0);
     }
 
     @Test
     void testFuzzySearchEndToEnd() throws Exception {
+        // Row 0: [{ctx, v5.8.0}, {ctx, v6.0.0}]
+        // fuzzy "v5.8.o" (edit distance 1 from "v5.8.0") → matches child 0
         Map<String, List<InternalArray>> fileData = new LinkedHashMap<>();
         fileData.put(
                 "file-0.parquet",
@@ -518,11 +609,76 @@ class LuceneAccelerateIndexScannerTest {
                                 })));
 
         BuildAndScanContext bsc = buildIndex(fileData);
-
-        // fuzzy search: "v5.8.o" should match "v5.8.0" with edit distance 1
         AccelerateIndexScanResult result = scan(bsc, "{\"fuzzy\":{\"version\":\"v5.8.o\"}}", 10);
 
-        assertThat(result.totalMatches()).isGreaterThanOrEqualTo(1);
+        assertThat(result.totalMatches()).isEqualTo(1);
+        long[] positions = result.fileSelections().values().iterator().next();
+        assertThat(positions).containsExactly(0L);
+        int[][] offsets = result.nestedOffsets().values().iterator().next();
+        assertThat(offsets).hasNumberOfRows(1);
+        assertThat(offsets[0]).containsExactly(0);
+    }
+
+    @Test
+    void testMatchPhraseSearchEndToEnd() throws Exception {
+        // Row 0: [{"Save Document Now", kw}, {"Open Document", kw}]
+        // Row 1: [{"Save File", kw}, {"Document Save", kw}]
+        // match_phrase "save document" (slop=0) → must have "save" then "document" in order
+        //   → matches row 0 child 0 only ("Save Document Now" → tokens: save, document, now)
+        Map<String, List<InternalArray>> fileData = new LinkedHashMap<>();
+        fileData.put(
+                "file-0.parquet",
+                Arrays.asList(
+                        createNestedArray(
+                                new String[][] {
+                                    {"Save Document Now", "v1.0"},
+                                    {"Open Document", "v2.0"},
+                                }),
+                        createNestedArray(
+                                new String[][] {
+                                    {"Save File", "v3.0"},
+                                    {"Document Save", "v4.0"},
+                                })));
+
+        BuildAndScanContext bsc = buildIndex(fileData);
+        AccelerateIndexScanResult result =
+                scan(bsc, "{\"match_phrase\":{\"contextEn\":\"Save Document\"}}", 10);
+
+        assertThat(result.totalMatches()).isEqualTo(1);
+        long[] positions = result.fileSelections().values().iterator().next();
+        assertThat(positions).containsExactly(0L);
+        int[][] offsets = result.nestedOffsets().values().iterator().next();
+        assertThat(offsets).hasNumberOfRows(1);
+        assertThat(offsets[0]).containsExactly(0);
+    }
+
+    @Test
+    void testRegexpSearchEndToEnd() throws Exception {
+        // Row 0: [{ctx, abc123}, {ctx, def456}]
+        // Row 1: [{ctx, abc789}, {ctx, xyz000}]
+        // regexp "abc[0-9]+" → matches child 0 in both rows
+        Map<String, List<InternalArray>> fileData = new LinkedHashMap<>();
+        fileData.put(
+                "file-0.parquet",
+                Arrays.asList(
+                        createNestedArray(
+                                new String[][] {
+                                    {"Hello", "abc123"},
+                                    {"World", "def456"},
+                                }),
+                        createNestedArray(
+                                new String[][] {
+                                    {"Foo", "abc789"},
+                                    {"Bar", "xyz000"},
+                                })));
+
+        BuildAndScanContext bsc = buildIndex(fileData);
+        AccelerateIndexScanResult result =
+                scan(bsc, "{\"regexp\":{\"version\":\"abc[0-9]+\"}}", 10);
+
+        assertThat(result.totalMatches()).isEqualTo(2);
+        long[] positions = result.fileSelections().values().iterator().next();
+        assertThat(positions).containsExactly(0L, 1L);
     }
 
     static class BuildAndScanContext {

@@ -254,6 +254,9 @@ public class LuceneQueryDslParser {
         }
 
         java.util.List<String> tokens = tokenize(fieldName, text);
+        if (tokens.isEmpty()) {
+            return new BooleanQuery.Builder().build();
+        }
         PhraseQuery.Builder builder = new PhraseQuery.Builder();
         builder.setSlop(slop);
         for (int i = 0; i < tokens.size(); i++) {
@@ -301,6 +304,8 @@ public class LuceneQueryDslParser {
      * <p>Simple form: {@code {"fuzzy": {"version": "v5.8.o"}}}
      *
      * <p>With fuzziness: {@code {"fuzzy": {"version": {"value": "v5.8.o", "fuzziness": 1}}}}
+     *
+     * <p>Note: fuzziness must be 0, 1, or 2 (Lucene LevenshteinAutomata limit).
      */
     private Query parseFuzzy(JsonNode fuzzyNode) {
         Map.Entry<String, JsonNode> field = extractSingleField(fuzzyNode, "fuzzy");
@@ -317,6 +322,10 @@ public class LuceneQueryDslParser {
             }
         } else {
             text = valueNode.asText();
+        }
+
+        if (maxEdits < 0 || maxEdits > 2) {
+            throw new IllegalArgumentException("fuzziness must be 0, 1, or 2, got " + maxEdits);
         }
 
         return new FuzzyQuery(new Term(fieldName, text), maxEdits);

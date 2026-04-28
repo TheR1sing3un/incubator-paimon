@@ -3101,18 +3101,22 @@ public class LuceneAccelerateIndexE2ETest {
                 buildIndex(fileIO, bucketPath, dataFileInfos, table, split);
         AccelerateIndexEntry entry = createEntry(dataFileInfos, buildResult);
 
-        // Prefix "v5." matches "v5.0" and "v5.1" → pk=5
+        // Prefix "v5." matches "v5.0" and "v5.1" → pk=5, both children
         AccelerateIndexScanResult result =
                 scanIndex(fileIO, bucketPath, entry, "{\"prefix\":{\"version\":\"v5.\"}}", 10);
 
         assertThat(result.totalMatches()).isEqualTo(1);
         Map.Entry<String, long[]> sel = result.fileSelections().entrySet().iterator().next();
         assertThat(sel.getValue()).containsExactly(5L);
+        // Both children of pk=5 match prefix "v5.": "v5.0" and "v5.1"
+        int[][] offsets = result.nestedOffsets().get(sel.getKey());
+        assertThat(offsets).hasNumberOfRows(1);
+        assertThat(offsets[0]).containsExactly(0, 1);
     }
 
     /**
-     * Tests wildcard search on keyword field "version". Wildcard "v1?" should match "v10" through
-     * "v19" prefixed versions.
+     * Tests wildcard search on keyword field "version". Wildcard "v1?.0" should match "v10.0"
+     * through "v19.0" → pks 10-19, each has child 0 matched.
      */
     @Test
     public void testWildcardSearch() throws Exception {
@@ -3134,11 +3138,20 @@ public class LuceneAccelerateIndexE2ETest {
                 scanIndex(fileIO, bucketPath, entry, "{\"wildcard\":{\"version\":\"v1?.0\"}}", 20);
 
         assertThat(result.totalMatches()).isEqualTo(10);
+        long[] positions = result.fileSelections().values().iterator().next();
+        // pks 10-19 are at positions 10-19 in sorted PK table
+        assertThat(positions).containsExactly(10L, 11L, 12L, 13L, 14L, 15L, 16L, 17L, 18L, 19L);
+        // Each matched parent has child 0 matched (version "v{pk}.0")
+        int[][] offsets = result.nestedOffsets().values().iterator().next();
+        assertThat(offsets).hasNumberOfRows(10);
+        for (int[] childOffsets : offsets) {
+            assertThat(childOffsets).containsExactly(0);
+        }
     }
 
     /**
-     * Tests fuzzy search on keyword field "version". "v5.0" with 1 edit should match "v5.0"
-     * exactly, and "v5.o" (o instead of 0) with edit distance 1 should also match.
+     * Tests fuzzy search on keyword field "version". Fuzzy "v5.o" (edit distance 1 from "v5.0")
+     * should match pk=5 (version "v5.0" and "v5.1" are both within edit distance 2).
      */
     @Test
     public void testFuzzySearch() throws Exception {
@@ -3155,11 +3168,18 @@ public class LuceneAccelerateIndexE2ETest {
                 buildIndex(fileIO, bucketPath, dataFileInfos, table, split);
         AccelerateIndexEntry entry = createEntry(dataFileInfos, buildResult);
 
-        // Fuzzy "v5.o" with default maxEdits=2 should match "v5.0" and "v5.1"
+        // Fuzzy "v5.o" with fuzziness=1: only "v5.0" is within edit distance 1 → pk=5, child 0
         AccelerateIndexScanResult result =
-                scanIndex(fileIO, bucketPath, entry, "{\"fuzzy\":{\"version\":\"v5.o\"}}", 10);
+                scanIndex(
+                        fileIO,
+                        bucketPath,
+                        entry,
+                        "{\"fuzzy\":{\"version\":{\"value\":\"v5.o\",\"fuzziness\":1}}}",
+                        10);
 
         assertThat(result.totalMatches()).isGreaterThanOrEqualTo(1);
+        long[] positions = result.fileSelections().values().iterator().next();
+        assertThat(positions).contains(5L);
     }
 
     /**
@@ -3183,6 +3203,7 @@ public class LuceneAccelerateIndexE2ETest {
         AccelerateIndexEntry entry = createEntry(dataFileInfos, buildResult);
 
         // Phrase "Word 5" → tokens ["word", "5"] in order → matches pk=5
+        // Both children contain phrase "word 5": "Word 5 0" and "Word 5 1"
         AccelerateIndexScanResult result =
                 scanIndex(
                         fileIO,
@@ -3194,11 +3215,15 @@ public class LuceneAccelerateIndexE2ETest {
         assertThat(result.totalMatches()).isEqualTo(1);
         Map.Entry<String, long[]> sel = result.fileSelections().entrySet().iterator().next();
         assertThat(sel.getValue()).containsExactly(5L);
+        // Both children of pk=5 match the phrase
+        int[][] offsets = result.nestedOffsets().get(sel.getKey());
+        assertThat(offsets).hasNumberOfRows(1);
+        assertThat(offsets[0]).containsExactly(0, 1);
     }
 
     /**
      * Tests regexp search on keyword field "version". Regexp "v[5-7]\\.0" should match "v5.0",
-     * "v6.0", "v7.0".
+     * "v6.0", "v7.0" → pks 5, 6, 7 at positions 5, 6, 7.
      */
     @Test
     public void testRegexpSearch() throws Exception {
@@ -3225,6 +3250,14 @@ public class LuceneAccelerateIndexE2ETest {
                         20);
 
         assertThat(result.totalMatches()).isEqualTo(3);
+        long[] positions = result.fileSelections().values().iterator().next();
+        assertThat(positions).containsExactly(5L, 6L, 7L);
+        // Each matched parent has child 0 matched (version "v{pk}.0")
+        int[][] offsets = result.nestedOffsets().values().iterator().next();
+        assertThat(offsets).hasNumberOfRows(3);
+        for (int[] childOffsets : offsets) {
+            assertThat(childOffsets).containsExactly(0);
+        }
     }
 
     /** Tests combining new query types (prefix + match_phrase) in a must boolean. */
