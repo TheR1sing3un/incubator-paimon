@@ -21,6 +21,7 @@ package org.apache.paimon.rest.server.handlers;
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.Identifier;
+import org.apache.paimon.operation.BranchDiffOperation;
 import org.apache.paimon.rest.RESTResponse;
 import org.apache.paimon.rest.requests.CreateBranchRequest;
 import org.apache.paimon.rest.requests.MergeBranchRequest;
@@ -32,6 +33,7 @@ import org.apache.paimon.rest.server.Router;
 import org.apache.paimon.rest.server.utils.MetricsHelper;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Table;
+import org.apache.paimon.utils.BranchManager;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
 import org.slf4j.Logger;
@@ -40,6 +42,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.apache.paimon.rest.server.handlers.HandlerUtils.pathWith;
 
@@ -57,12 +60,22 @@ public class BranchHandler implements RouteRegistrar {
     @Override
     public void registerRoutes(Router router, @Nullable String prefix) {
         String base = "databases/{database}/tables/{table}";
+        String diffPath = pathWith(prefix, base + "/diff");
         String branchMergePath = pathWith(prefix, base + "/branches/{branch}/merge");
         String branchForwardPath = pathWith(prefix, base + "/branches/{branch}/forward");
         String branchPath = pathWith(prefix, base + "/branches/{branch}");
         String branchesPath = pathWith(prefix, base + "/branches");
 
         // More-specific routes first
+        router.get(
+                diffPath,
+                (auth, vars, params, body) -> {
+                    Identifier id = Identifier.create(vars.get("database"), vars.get("table"));
+                    RESTResponse response =
+                            MetricsHelper.wrapCatalogOp(
+                                    "branch_diff", id.getFullName(), () -> branchDiff(id, params));
+                    return new RouteResult(200, response);
+                });
         router.post(
                 branchMergePath,
                 (auth, vars, params, body) -> {
@@ -190,5 +203,46 @@ public class BranchHandler implements RouteRegistrar {
         }
 
         return new GetBranchResponse(branchName, latestSnapshotId, latestSchemaId);
+    }
+
+    /**
+     * Branch diff: post-fork divergence view of source and target. Returns each branch's snapshots
+     * since the fork point; clients computing "what a future merge would bring in" filter {@code
+     * sourceCommits} by {@code id > lastMergedSourceSnapshotId}. Read-only; no lock.
+     */
+    public RESTResponse branchDiff(Identifier identifier, Map<String, String> params)
+            throws Exception {
+        String source = params.get("source");
+        String target = params.get("target");
+        if (source == null || target == null) {
+            throw new IllegalArgumentException(
+                    "Both 'source' and 'target' query parameters are required for diff.");
+        }
+        String sourceBranch = BranchManager.normalizeBranch(source);
+        String targetBranch = BranchManager.normalizeBranch(target);
+        LOG.info(
+                "Branch diff for table: {} (source={}, target={})",
+                identifier.getFullName(),
+                sourceBranch,
+                targetBranch);
+
+        Table table = catalog.getTable(identifier);
+        if (!(table instanceof FileStoreTable)) {
+            throw new UnsupportedOperationException(
+                    "Branch diff is only supported for FileStoreTable, got: "
+                            + table.getClass().getSimpleName());
+        }
+        FileStoreTable fst = (FileStoreTable) table;
+
+        BranchManager branchMgr = fst.branchManager();
+        if (!BranchManager.isMainBranch(sourceBranch) && !branchMgr.branchExists(sourceBranch)) {
+            throw new Catalog.BranchNotExistException(identifier, sourceBranch);
+        }
+        if (!BranchManager.isMainBranch(targetBranch) && !branchMgr.branchExists(targetBranch)) {
+            throw new Catalog.BranchNotExistException(identifier, targetBranch);
+        }
+
+        BranchDiffOperation op = new BranchDiffOperation(fst.store().snapshotManager(), branchMgr);
+        return op.diff(sourceBranch, targetBranch);
     }
 }

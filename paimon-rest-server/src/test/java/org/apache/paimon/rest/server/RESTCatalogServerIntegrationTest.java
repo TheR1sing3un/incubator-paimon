@@ -618,7 +618,7 @@ class RESTCatalogServerIntegrationTest {
         String tablePath = "/v1/test-prefix/databases/diff_db/tables/diff_tbl";
 
         // Diff with nonexistent branch should return 404
-        int status = httpGetStatus(tablePath + "/diff?left=main&right=dev");
+        int status = httpGetStatus(tablePath + "/diff?source=main&target=dev");
         assertThat(status).isEqualTo(404);
 
         // Clean up

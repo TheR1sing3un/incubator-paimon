@@ -79,9 +79,11 @@ V4 替代 V2 成为落地设计。
 
 ### 4.1 问题定义
 
-给定源分支和目标分支，需要回答：**源和目标的共同祖先是哪个 snapshot**？以此为基准，计算源侧"目标尚未拥有"的文件集合。
+给定源分支和目标分支，需要回答：**合并的起点是哪个 snapshot**？以此为基准，计算源侧"目标尚未拥有"的文件集合。
 
-V4 把合并基准简单定为 **fork 点**——不记忆历史合并点。这样做的代价是每次合并都基于 fork 点重算整个源侧的存活文件差集；正确性由集合差集的幂等性保证（见 §5）。后续如果遇到超大 source 分支的性能问题，可以增量引入 `merge.known_tips` 缓存上次合并推进到的位置；首版不做这件事。
+合并基准的首选来源：**target 的最近一次有效 merge audit**。V4 合并时会把 `merge.source_branch / merge.source_snapshot_id / merge.source_uuid` 写进目标 snapshot 的 properties（§6.3）。下次合并时从 target.latest 向上扫这条链，取最近一条 `merge.source_branch == <本次source>` 且 source 侧对应 snapshot 的 `commitUuid` 仍匹配的记录——把那条记录里的 `source_snapshot_id` 对应的 source 侧 snapshot 作为 baseline。
+
+没有有效 audit 时（首次合并、或每条 audit 都被 source 侧 rollback 作废）fallback 到 **fork 点**：沿 FORK_INFO 链从 source 回溯到 target 分支，得到 target 上对应的 fork 点 snapshot。
 
 ### 4.2 最简场景：首次 merge
 
@@ -95,45 +97,49 @@ feature:                       f1 ── f2 ── f3
 
 feature 从 main:s4 fork，合并基准 = main:s4。需要搬运的内容：feature 从 fork 点到 f3 的文件集合增量。
 
-### 4.3 后续 merge（不记忆历史合并点）
+### 4.3 后续 merge（用 audit 记忆推进）
 
-feature 上又提交了 f4、f5 后再次合并。V4 **不记**"上次已合并到 f3"，合并基准仍然是 fork 点 main:s4。
+feature 上又提交了 f4、f5 后再次合并。V4 从 target.latest 向上扫 audit 记录，发现"上次已合并到 feature:f3"这条仍有效（`merge.source_uuid` 匹配 feature 当前 f3 的 `commitUuid`），于是：
 
-计算过程：
-- 源侧增量 = `feature.f5 存活文件 − feature 在 fork 点继承的文件` = f1~f5 新增的全部
-- 真正要加 = 源侧增量 − `target.latest 的存活文件`
-- 其中 f1~f3 新增的文件上次合并已进入 target 的 baseManifestList，本次差集自然排除
-- 最终写入 target 的是 f4、f5 的新增文件
+- baseSnapshot = feature:f3（source 侧 snapshot 而不是 target 侧 fork 点）
+- 这一次的 realAdd 由 `effectiveLive(feature, f5) − effectiveLive(feature, f3) − effectiveLive(main, main.latest)` 给出，自然只包含 f4、f5 相对 f3 的增量文件
 
-换言之，V4 把"增量记忆"的职责交给集合差集运算本身，不依赖元数据。
+**audit 的作用是跨 merge 的"文件交付记忆"**——它记录上次合并时我们把 source 的哪个版本交付给了 target。target 端的 compaction 会把以前 merge 带进来的小文件替换为 identifier 不同的大文件，导致 `target.latest.live` 丢失"我们交付过什么"的物理证据。此时只有 audit baseline 还能告诉算法"这些文件源分支早已交付过"，避免把同一批行的旧 identifier 再交付一次、在 target 上制造同行双份的物理文件。
+
+在 non-deduplicate merge engine 下（first-row / aggregation / partial-update），同行双份文件会按 `commitSnapshotId` 错误裁决——譬如 first-row 会选到旧 identifier 上已被后续更新覆盖掉的旧值。所以 audit baseline 不是性能优化，而是**正确性基础**。
+
+对应地，为了保证"audit 所指向的 source 侧 snapshot 在下次 merge 前不被 expire 清理"，每次 merge 成功后在 source 分支上打/更新一个 `__sys.last_merge.<target>.<source>` 系统 tag 指向本次的 source tip——见 §6.2.2。
+
+如果 source 侧发生过 rollback 导致 `merge.source_uuid` 对不上，这条 audit 失效，继续向上扫更早的 audit；都失效就退回 fork 点。
 
 ### 4.4 深 fork 链
 
 子分支形成链式 fork 关系时（branch-c fork 自 branch-b、branch-b fork 自 branch-a、branch-a fork 自 main），合并 branch-c 到 main：
 
-```
-resolve(source=branch-c, target=main):
-  1. 沿 FORK_INFO 构建 fork 链：main -> branch-a -> branch-b -> branch-c
-  2. 对链上每一段（(parent, child) 对），段增量 = child 在 tip 的存活文件 - child 在其 fork 点继承的文件
-  3. 总源侧增量 = 所有段增量的并集
-  4. 真正要加 = 总源侧增量 - target.latest 的存活文件
-```
+- 有有效 audit（之前合并过 branch-c 到 main）→ 走 §4.3 路径，baseSnapshot 就是 audit 记录的 branch-c 侧 snapshot
+- 无有效 audit（首次合并深链） → 沿 FORK_INFO 从 branch-c 一路追到 main，得到 main 上的 fork 点 snapshot 作为 baseSnapshot
 
-首次合并时，每段都要真正搬运其分支 fork 之后的所有新增文件。后续合并时，target 已有的大部分会在最后的 `- target.latest` 步骤被差集消掉，只剩真正新增的。
+**关于"中间分支的数据怎么带过来"**：Paimon 子分支创建时不会物理拷贝父分支的 snapshot 到自己的目录（`createBranch(name, null)` 只写 FORK_INFO + 复制 schema + 打 `__sys.fork.*` tag），所以 `L(branch-c.tip)`——branch-c 磁盘上的存活文件集合——**不包含** branch-a / branch-b 的贡献。直接做 `L(branch-c.tip) − L(fork-point-on-main)` 会漏掉中间分支的数据。
+
+正确的做法：把每一侧的"存活文件集合"替换为**沿 FORK_INFO 链向上聚合的 effective 存活集合**。参见 §5.1。
 
 ### 4.5 合并基准算法
 
 ```
-resolve(source, target):
-  forkChain = 沿 FORK_INFO 从共同祖先到 source 的分支链
-  sourceAccumulated = ∅
-  for each (parent, child) in forkChain:
-    sourceAccumulated ∪= (child.tip 存活文件 − child 在 fork 点继承的文件)
-  realIncrement = sourceAccumulated − target.latest 存活文件
-  return realIncrement
+resolveMergeBase(source, target):
+  lastMergedSid = findLastMergedSourceSnapshotId(source, target)
+      # 从 target.latest 向上扫 snapshot 链
+      # 找最近一条 merge.source_branch == source 且
+      # source 侧 merge.source_snapshot_id 的 commitUuid 仍等于 merge.source_uuid
+      # 的 audit 记录
+  if lastMergedSid != null:
+    return (source, sourceSm.snapshot(lastMergedSid))    # baseline 在 source 分支上
+  # fallback：FORK_INFO 沿链找到 target 上的 fork 点
+  forkSnapshotId = resolveForkPointOnTarget(source, target)
+  return (target, targetSm.snapshot(forkSnapshotId))     # baseline 在 target 分支上
 ```
 
-不读取 target 历史 snapshot 的 properties，不维护 knowledge map。合并基准的"记忆"完全来自 FORK_INFO 和 `target.latest` 本身。
+返回值带上 baseline 所在分支，后面算 `effective live` 时要用它来启动 FORK_INFO walk。
 
 ## 5. 合成新 Snapshot（Compose）
 
@@ -143,18 +149,37 @@ resolve(source, target):
 - **base**：该 snapshot 时刻所有"存活"数据文件的完整集合
 - **delta**：本次提交相对上一 snapshot 的增量
 
-Merge 语义只关心"存活文件集合"。对 fork 链上每个分支段，需要计算：
+Merge 的核心是一次三元集合差集：
 
 ```
-该段增量文件 = 该分支在 段结束版本 的存活文件集合
-            − 该分支在 段合并基准 的存活文件集合
+realAdd = effectiveLive(source, source.tip)
+        − effectiveLive(baseBranch, baseSnapshot)
+        − effectiveLive(target, target.latest)
 ```
 
-这个差集可以通过扫 manifest 直接得到——读两个 snapshot 的 base manifest list，按文件路径做集合差。产出是一批 **ADD 类型** 的 manifest entry（纯增量，不含 DELETE）。
+其中 `baseBranch / baseSnapshot` 来自 §4.5 的 `resolveMergeBase`。
 
-**为什么结果一定是纯 ADD**：
+**effectiveLive 的定义**：一个 snapshot 在它所在分支**逻辑上**能看到的全部存活文件，等于它自己磁盘上的 live 集合，加上沿 FORK_INFO 链往上每一跳 fork 点 snapshot 的 live 集合。
+
+```
+effectiveLive(branch, snapshotId):
+  result = L(branch, snapshotId)                         # 本分支磁盘上的存活文件
+  cur = branch
+  while (info = FORK_INFO(cur)) != null:                 # 走到 main 的 FORK_INFO 为 null 停止
+    result = result ∪ L(info.parent, info.forkSnapshotId)
+    cur = info.parent
+  return result
+```
+
+为什么必须沿链聚合：Paimon 的 `createBranch(name, null)` 不物理拷贝父分支 snapshot，子分支 tip 的 `L` 只含自己的写入。对深链 branch-c → branch-b → main，`L(c.tip)` 里没有 branch-b 的文件——单纯做 `L(c.tip) − L(main.fork)` 会漏掉 branch-b 的贡献。沿 FORK_INFO 链并上每一跳的 fork 点 live 集合后，中间分支的数据按定义进入 source 侧的 effective 集合，三元差集正确。
+
+**链上每个 fork 点 snapshot 都被 `__sys.fork.<childBranch>` tag 保护**（§6.2.1），walk 过程中读到的每一跳都必然可读。
+
+**冗余自动对消**：走到 main 的 fork 点时，main 的那段贡献在 source、base、target 三个 effective 集合里都会出现，三元差集把它们消掉，对正确性没有负面影响，只是多读一份 manifest。链深度一般 ≤ 3，manifest 读有并行，代价可控；先求正确、性能留到未来优化。
+
+**产出是纯 ADD**：
 - 源分支从合并基准到段结束版本之间，所有提交都是由业务产生的 APPEND snapshot 或 compaction。
-- APPEND 只增加文件；compaction 移除小文件、产生大文件，但 compaction 产物整体等价于被替代的小文件集合——当我们做"最终存活集合的差集"时，compaction 对集合的净影响是"中性等价替换"，差集里看到的是 compaction 后的大文件，看不到被 compaction 替代的小文件。
+- APPEND 只增加文件；compaction 移除小文件、产生大文件，但 compaction 产物整体等价于被替代的小文件集合——当我们做"最终存活集合的差集"时，compaction 对集合的净影响是"中性等价替换"。
 - OVERWRITE 会破坏这个性质（主动删除数据），所以需要单独拒绝——见 5.3。
 
 ### 5.2 单 snapshot 合成
@@ -267,6 +292,25 @@ Paimon 已有的 tag 机制会阻止 tag 指向的 snapshot 及其 base manifest
 - **生命周期对齐**：fork 点在逻辑上属于子分支生命周期，由子分支的"生死"控制对应元数据和文件的保留
 - **错误模型简单**：只有两种状态——分支活着 → fork 点可读；分支不存在 → 什么都不需要保障
 
+### 6.2.2 Audit baseline 保护：last-merge 系统 tag
+
+V4 的 audit baseline（§4.3）指向 source 分支上"上次合并到的那个 snapshot"。这份数据同样是下一次 merge 的正确性前提（target 端 compaction 场景下尤其关键）。为此，**每次 merge 成功后在 source 分支上打/更新一个系统 tag**：
+
+| 项 | 规则 |
+|----|------|
+| tag 命名 | `__sys.last_merge.<targetBranch>.<sourceBranch>` |
+| tag 位置 | source 分支（注意不是 target） |
+| tag 指向 | 本次合并对应的 source tip snapshot（= `merge.source_snapshot_id` 属性所引用的 snapshot） |
+| 创建/更新时机 | `commitMergedSnapshot` 写入 target snapshot 成功之后 |
+| 冲突处理 | tag 已存在则 replace；不存在则 create |
+| 失败处理 | tag 写入失败**不回滚 merge**——log warn 继续；下一次 merge 若发现 audit baseline 不可读则直接报错，不静默 fallback 到 fork 点（fallback 在 target compaction 场景下会制造重复文件） |
+| 生命周期 | source 分支 drop 时随分支目录一起删除（tag 文件在 source 分支内部） |
+| 可见性 | 同 `__sys.` 前缀过滤规则 |
+
+tag 写入是 snapshot commit 之后的"best-effort"步骤，独立于 snapshot 原子性——这点在 §7.1 详述。
+
+一张表对每一对 (targetBranch, sourceBranch) 有且最多一个该 tag。每次成功合并会原位更新 tag 指向新的 source tip，**不累积历史记录**——只有最近一次 merge 的 baseline 需要保护。
+
 ### 6.3 合并元数据：Snapshot Properties 的审计标记
 
 合并操作产出的目标 snapshot，其 `properties` 字段额外写入一组 `merge.*` key。这些字段**只用于审计**（合并 preview、运维查询、调试），**不参与合并基准计算**——§4 已说明合并基准完全由 FORK_INFO 决定。
@@ -287,7 +331,7 @@ Paimon 已有的 tag 机制会阻止 tag 指向的 snapshot 及其 base manifest
 - **不支撑合并算法**：合并基准只看 FORK_INFO，即使所有 `merge.*` properties 都丢失也能正确合并（只是审计信息没了）
 - **目标侧生命周期绑定**：target 的 rollback/expire 自动清掉对应 properties，无需专门机制
 - **写路径无额外锁**：随 snapshot commit 原子落盘
-- **向前兼容**：后续如果引入 `merge.known_tips` 做增量优化（见 §10），在同一 properties namespace 下添加字段即可，不破坏现有审计字段
+- **向前兼容**：后续扩展（如深 fork 链下列出各分支段的 audit）可在同一 properties namespace 下添加字段，不破坏现有审计字段
 
 ## 7. 提交协议与并发
 
@@ -298,12 +342,14 @@ V4 的提交退化为 Paimon 已有的单 snapshot commit 流程——合并元�
 1. **写 manifest**：把增量文件集合写成新的 manifest，manifest 文件名基于 UUID，不冲突
 2. **CAS 写 snapshot 文件**：按 Paimon 现有 commit 路径写 `snapshot/snapshot-N`，该 snapshot 的 `properties` 已含 `merge.*` 字段。CAS 失败（并发写入，通常是分支锁 TTL 过期被其他进程接管）时直接抛错返回，**不在 V4 实现内部 retry**——由调用方（REST 客户端、Spark/Flink procedure 等）决定是否重跑整个 merge。理由是分支级锁正常持有时 CAS 不会失败，触发失败意味着锁机制出了问题，静默 retry 会掩盖锁问题；显式抛错有利于上层感知并告警。
 3. **更新 LATEST hint**
+4. **Best-effort 打 / 更新 last-merge 系统 tag**（§6.2.2）。tag 位于 source 分支，指向本次合并对应的 source tip。**tag 写入失败不回滚前三步**，当次 merge 已成功；只是对"下一次 merge 的 audit baseline"少一份保护。若下一次 merge 发现 audit baseline 已被 expire 清理，直接报错，**不静默 fallback 到 fork 点**——fallback 在 target compaction 场景下会带入重复文件。
 
 失败处理：
 - Step 1/2 失败：没有副作用（manifest 是 orphan，由 orphan cleanup 清理）
 - Step 3 失败：`findLatest` 目录扫描自愈
+- Step 4 失败：当次 merge 成功，只是保护层缺失；下次若碰到 expire 再显式报错
 
-相比 V2 的"写 N 个 snapshot + 管理 N 个回滚 + 维护 MERGE_LINEAGE backup"，V4 的提交协议只是普通单 snapshot commit，无任何额外步骤。
+相比 V2 的"写 N 个 snapshot + 管理 N 个回滚 + 维护 MERGE_LINEAGE backup"，V4 的提交协议只是普通单 snapshot commit + 一个 best-effort tag，无事务性捆绑。
 
 ### 7.2 分支级并发锁（基于文件系统的分布式锁）
 
@@ -325,6 +371,15 @@ REST Catalog 模式下使用 `FileBasedBranchLock` 做分支级互斥。锁文�
 | 写 main + merge 到 main | **串行**——目标相同 |
 
 `FileBasedBranchLock` 跨进程有效——多实例 REST Server 部署不需要把同表请求路由到同一实例。该机制已在 2026-04 落地（commit `2cce869ea`），V4 直接沿用，不需要新工作。
+
+#### JVM 层包装
+
+`RESTFileSystemCatalog` 在 `FileBasedBranchLock` 外再套一层 `BranchLockEntry`（JVM 内 map，key 是 `db.table#branch`）做两件事：
+
+- **同进程多线程共享一次 HDFS 锁**：同一 JVM 中并发命中同一 (db, table, branch) 时，只有第一个线程实际去抢 HDFS 锁，其他线程在 `executionLock`（JVM 层 `ReentrantLock`）上排队。等候计数归零后一并释放 HDFS 锁。避免重复 acquire/release 的 IO 开销
+- **TTL 续租**：HDFS 锁的 TTL 较短（分钟级），长事务可能超时被接管。`isLockNearExpiry`（`LOCK_TTL_SAFETY_RATIO = 0.8` 阈值）检测剩余时间不足时主动释放并重新获取，降低"自己持锁中 TTL 过期被别人抢走"的概率
+
+这一层对跨进程并发没有任何作用，纯粹是同进程性能/柔性优化。`branchLockEntries` map 不做自动回收——entry 数量以 (db, table, branch) 三元组为界，在正常工作负载下是有界的，当前不认为是泄漏问题。
 
 V4 相比 V2 在锁层面的简化：V2 除了分支锁还需要对 MERGE_LINEAGE 文件做 read-modify-write（哪怕是在分支锁内部）；V4 的合并元数据随 snapshot commit 原子落盘，**不存在独立的元数据写入点，也就不需要额外同步**。
 
@@ -378,11 +433,11 @@ Response: 200 OK
 | 不支持 schema evolution | 保持源/目标 schema 一致 |
 | 不支持 INSERT OVERWRITE | 源侧若出现 OVERWRITE，会被拒绝 |
 | 不支持 changelog 传播 | 下游 CDC 消费看不到 merge 变更 |
-| 每次合并都基于 fork 点重算存活文件差集 | 对超大 source 分支会引入可观 I/O；见 §10 规划的 `known_tips` 增量优化 |
 | fork 点保护 tag 占用存储 | fork 点 snapshot 对应的数据文件在分支存续期间不被 expire；分支 drop 时自动释放 |
+| last-merge 保护 tag 占用存储 | 源分支上每个"(target, source) 对"最多一个 `__sys.last_merge.*` tag，指向最近一次合并的 source tip；源分支 drop 时随目录删除 |
 
 对比 V2 明确去掉的限制：
-- **源侧中间 snapshot 过期不再是拒绝合并的理由**（V4 只读 fork 点和 tip 两处）
+- **源侧中间 snapshot（非 audit baseline）过期不再是拒绝合并的理由**（V4 读 fork 点和 audit baseline，两者都由系统 tag 锁定，见 §6.2.1 / §6.2.2）
 - **fork 点过期导致拒绝合并不再发生**（由系统 tag 锁定，§6.2.1）
 - **"多 merge snapshot 对读者非原子可见"这一条消失**（V4 只产生 1 个 snapshot，原子可见）
 - **"并发依赖单 REST Server 进程"这一条消失**（已由 `FileBasedBranchLock` 解决，V4 沿用）
@@ -392,6 +447,101 @@ Response: 200 OK
 **Merge 是 append-only 操作**（同 V2）。一旦数据合入目标，源分支的 rollback 不会撤销目标已落盘的数据。如需撤销，必须对目标执行 rollback。
 
 **源分支提交历史不可追溯**（相对 V2 的取舍）。目标上只能看到"本次合并把源推进到了 `merge.source_snapshot_id = X`"，看不到源上每次单独提交的内容。若业务需要按源的单次提交回滚，应使用分支级 rollback 而不是依赖 merge 映射。
+
+### 8.1 Branch Diff（merge preview）
+
+Branch diff 是 merge 的只读配套 API，用来回答：**"如果现在把 source 合并到 target，会带进来 source 分支上哪些 commit？"**
+
+#### REST API
+
+```
+GET /v1/{prefix}/databases/{db}/tables/{table}/diff?source=<sourceBranch>&target=<targetBranch>
+```
+
+- 参数 `source` / `target` 指定两个分支，回答"从 fork 点以来两侧分别提交了什么"
+- 路径保留 `/diff`，和 V2 兼容
+- 只读，不加分支锁
+
+#### 语义定位
+
+Diff 是**对称的分叉视图**——fork 点之后，source 和 target 各自独立演化的 commit 列表分别列出。上层（UI、运维工具、回归验证）可以基于这两个列表回答多个问题：
+
+- "merge 会带什么进来" → `sourceCommits` 中 `id > lastMergedSourceSnapshotId` 的部分
+- "target 自己独立做了哪些事" → `targetCommits`
+- "feature 领先 N、落后 M" → 两侧长度对比
+
+注意不是"单向 merge preview"——sourceCommits 包含所有 fork 点以来的 source 提交，包括已经被上次 merge 合并过的那些。这样设计的目的是让 diff 的两侧语义对称、易理解，不与"merge 去向"耦合。
+
+#### Response 结构
+
+```json
+{
+  "source_branch": "feature",
+  "target_branch": "main",
+  "source_tip_snapshot_id": 12,
+  "target_tip_snapshot_id": 20,
+  "last_merged_source_snapshot_id": 7,
+  "fork_snapshot_id": 5,
+  "source_commits": [
+    {
+      "id": 8,
+      "schema_id": 0,
+      "commit_kind": "APPEND",
+      "commit_user": "flink-job-007",
+      "commit_identifier": 1714000000001,
+      "commit_uuid": "a7...",
+      "time_millis": 1714000000012,
+      "total_record_count": 4096,
+      "delta_record_count": 128,
+      "changelog_record_count": null
+    },
+    { "id": 9, ... }
+  ],
+  "target_commits": [
+    { "id": 6, "commit_kind": "APPEND", ... },
+    { "id": 7, "commit_kind": "APPEND", ... }
+  ]
+}
+```
+
+字段语义：
+
+| 字段 | 含义 |
+|------|------|
+| `source_branch` / `target_branch` | 请求的两个分支名 |
+| `source_tip_snapshot_id` / `target_tip_snapshot_id` | 两侧当前的最新 snapshot id |
+| `last_merged_source_snapshot_id` | target 最近一次有效 merge audit 记录的 source 侧 snapshot id；没有有效 audit 则为 `null`。供客户端计算"自上次 merge 以来新增"用 |
+| `fork_snapshot_id` | 沿 FORK_INFO 解析得到的 fork 点（target 侧 snapshot id） |
+| `source_commits` | source 分支自 fork 点（不含）到 tip 的 snapshot 列表，按 id 升序。若 source 从 tag 创建，fork 点的 snapshot 在 source 上被原样拷贝为 earliest——这条也会出现在列表里，作为"继承自祖先"的第一条 |
+| `target_commits` | target 分支自 fork 点（不含）到 tip 的 snapshot 列表，按 id 升序。包含 target 自己的 APPEND、target 接收的其他 source 的 merge snapshot、target 的 COMPACT 等 |
+
+#### 算法
+
+```
+diff(source, target):
+  forkSnapshotId = resolveForkPointOnTarget(source, target)
+  lastMergedSid  = findLastMergedSourceSnapshotId(source, target)   # 仅作元信息返回，不参与列表生成
+
+  sourceCommits = []
+  for id in (sourceSm.earliestSnapshotId .. sourceSm.latestSnapshotId):
+    if sourceSm.snapshotExists(id):
+      sourceCommits.append(snapshot metadata)
+
+  targetCommits = []
+  for id in (forkSnapshotId + 1 .. targetSm.latestSnapshotId):
+    if targetSm.snapshotExists(id):
+      targetCommits.append(snapshot metadata)
+
+  return BranchDiffResponse(..., sourceCommits, targetCommits)
+```
+
+#### 语义边界
+
+- **source 从未写入**：`source_commits = []`、`source_tip_snapshot_id = null`；`target_commits` 仍反映 target 的独立演化
+- **source 侧发生 rollback**：`findLastMergedSourceSnapshotId` 的 UUID 校验会跳过失效的 audit；`last_merged_source_snapshot_id` 可能为 `null` 或指向更早的版本，但 `source_commits` 照样是完整的 fork 点到 tip 列表
+- **深 fork 链（首版局限）**：首版 `source_commits` 只包含 **source 分支自己**的 snapshot。深链（branch-c→branch-b→branch-a→main）下，merge 会把上游分支段的数据也搬过来，但 diff 不单独列出 branch-a / branch-b 的 commit。后续如有需要再扩展为按分支分组（§10 后续规划）
+- **非 descend 关系**：source 不是 target 的后代（FORK_INFO 找不到通路）→ 返回错误（与 merge 行为一致）
+- **Catalog 接口暴露**：Diff 不进 `Catalog` 接口，仅通过 REST handler 层提供——这是运维/UI 类功能，不是核心数据操作
 
 ## 9. V2 → V4 迁移影响清单
 
@@ -438,27 +588,22 @@ Response: 200 OK
 | 项 | 说明 | 工作量 |
 |----|------|--------|
 | 旧 MERGE_LINEAGE 文件清理（可选） | 由于 V4 合并基准不依赖历史合并记录，遗留的 MERGE_LINEAGE 文件不会被读取。若项目未上线，直接删除老文件即可；若已有线上数据，可写一次性清理工具 | 小 |
-| snapshot properties 的 `merge.*` key 规范文档 | 在 Paimon 主文档里登记保留 key prefix（供将来扩展 `merge.known_tips` 等优化字段） | 小 |
+| snapshot properties 的 `merge.*` key 规范文档 | 在 Paimon 主文档里登记 `merge.*` 保留前缀 | 小 |
 
-### Branch Diff（d6ab953db / 74d825499）
+### Branch Diff
 
-- d6ab953db 引入的 `BranchDiffOperation` 在 V2 下暴露"两分支各自独有的 commit 列表"，这在 Rebase 语义下有意义。V4 下，源侧对目标的"待合并差"只是"一个文件集合"，更合理的 diff 展现是：
-  - 源侧从 fork 点到 tip 的文件/行级 diff
-  - 可选：用 `merge.source_snapshot_id` 标记"上次合并到哪"作为展示辅助
-- 74d825499 的修复（用 MERGE_LINEAGE 计算 merge preview、过滤 replay snapshot、properties 标记）在 V4 下**整体不需要**——V4 不再有"replay snapshot"这个概念，preview 就是"源侧从 fork 点之后的文件集合差"，不需要后处理过滤。
-
-**结论**：这两个 commit 也一并 revert，diff API 跟随 V4 新设计重做，工作量比在 V2 上打补丁小。
+V2 的 `BranchDiffOperation` + `DiffResponse` 返回"两分支各自独有的 commit 列表"，在 Rebase 语义下有意义。V4 下重新定义为 **merge preview**：返回 source 分支从"上次合并点（或 fork 点）到 tip"之间的 commit 级元数据列表，回答"如果现在合并会带进来哪些 commit"。详细 API 与算法见 §8.1。
 
 ## 10. 后续规划
 
 | 方向 | 说明 |
 |------|------|
-| **`merge.known_tips` 增量优化** | 在目标 merge snapshot 的 properties 里缓存"上次合并推进到的源版本 + UUID"。下次合并时从缓存读起而不是从 fork 点；UUID 校验处理 source rollback。仅当实测发现超大 source 分支导致合并 I/O 明显时才做，向前兼容——老 snapshot 没有该字段时退化到 fork 点兜底 |
 | Spark / Flink Procedure | `CALL sys.merge_branch('db.table', 'source', 'target')`（同 V2 规划） |
 | Schema evolution | 合并时同步拷贝 schema 文件，允许 source/target schema id 不一致但兼容 |
 | DV 表支持 | 合并时把源侧 index manifest 一并并入 |
 | Changelog 传播 | 为新 snapshot 生成 changelog，下游 CDC 消费 |
 | 分区表支持 | 扩展为分区级的文件集合差集运算 |
+| 深 fork 链下的 diff 分段展现 | 首版 diff 只列 source 自己的 commit；深链（branch-c→branch-b→branch-a→main）下把上游分支段的 commit 按分支分组展示 |
 
 ---
 

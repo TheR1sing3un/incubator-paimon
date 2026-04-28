@@ -1094,7 +1094,22 @@ public class SparkSQLWithRestCatalogE2ETest {
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("GET");
         conn.setRequestProperty("Authorization", "Bearer anonymous");
-        assertThat(conn.getResponseCode()).isEqualTo(200);
+        int code = conn.getResponseCode();
+        if (code != 200) {
+            StringBuilder err = new StringBuilder();
+            if (conn.getErrorStream() != null) {
+                try (BufferedReader reader =
+                        new BufferedReader(
+                                new InputStreamReader(
+                                        conn.getErrorStream(), StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        err.append(line);
+                    }
+                }
+            }
+            throw new AssertionError("GET " + path + " -> " + code + " body=" + err);
+        }
         try (BufferedReader reader =
                 new BufferedReader(
                         new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
@@ -1569,6 +1584,11 @@ public class SparkSQLWithRestCatalogE2ETest {
 
         // 通过 REST API 合并 source -> main
         // URL {branch} = target (main), body source_branch = source
+        long mainLatestBeforeMerge =
+                spark.sql("SELECT max(snapshot_id) FROM `t_merge$snapshots`")
+                        .collectAsList()
+                        .get(0)
+                        .getLong(0);
         String mergePath = "/databases/" + DB_NAME + "/tables/t_merge/branches/main/merge";
         String mergeBody = "{\"source_branch\":\"source\"}";
         restPost(mergePath, mergeBody);
@@ -1582,5 +1602,67 @@ public class SparkSQLWithRestCatalogE2ETest {
         assertThat(rows.get(1).getString(1)).isEqualTo("from_main");
         assertThat(rows.get(2).getInt(0)).isEqualTo(3);
         assertThat(rows.get(2).getString(1)).isEqualTo("from_source");
+
+        // Merge 必须在 main 上产生恰好一个新 snapshot（§5.2 原子可见性保证）。
+        long mainLatestAfterMerge =
+                spark.sql("SELECT max(snapshot_id) FROM `t_merge$snapshots`")
+                        .collectAsList()
+                        .get(0)
+                        .getLong(0);
+        assertThat(mainLatestAfterMerge).isEqualTo(mainLatestBeforeMerge + 1);
+
+        // Note: snapshot.properties (where merge.* audit keys live) is NOT exposed by Spark's
+        // `$snapshots` system table. Audit-property content is verified at the unit level in
+        // BranchMergeTest.testMergeAuditProperties; here we only verify the REST-end-to-end
+        // observable effect — exactly one new snapshot on target.
+    }
+
+    // ------------------------------------------------------------------
+    // CASE 39: branchDiff — 通过 REST API 查询 source 相对 target 的待合并 commit 列表
+    // ------------------------------------------------------------------
+    @Test
+    void testBranchDiff() throws Exception {
+        spark.sql(
+                "CREATE TABLE t_diff (pk INT, val STRING) USING paimon "
+                        + "TBLPROPERTIES ("
+                        + "'primary-key'='pk', 'bucket'='1', "
+                        + "'merge-engine'='deduplicate', "
+                        + "'sequence.snapshot-ordering'='true'"
+                        + ")");
+
+        spark.sql("INSERT INTO t_diff VALUES (1, 'initial')");
+
+        spark.sql(
+                "CALL "
+                        + CATALOG_NAME
+                        + ".sys.create_tag(table => '"
+                        + DB_NAME
+                        + ".t_diff', tag => 'ancestor', snapshot => 1)");
+        spark.sql(
+                "CALL "
+                        + CATALOG_NAME
+                        + ".sys.create_branch(table => '"
+                        + DB_NAME
+                        + ".t_diff', branch => 'feature', tag => 'ancestor')");
+
+        // feature 侧两次提交（先合并前预览 diff 会列出这两条）
+        spark.sql("INSERT INTO `t_diff$branch_feature` VALUES (2, 'a')");
+        spark.sql("INSERT INTO `t_diff$branch_feature` VALUES (3, 'b')");
+
+        String diffPath =
+                "/databases/" + DB_NAME + "/tables/t_diff/diff?source=feature&target=main";
+        String resp = restGet(diffPath);
+
+        // 解析 JSON 断言字段值，不依赖序列化格式（空格、换行）
+        JsonNode root = MAPPER.readTree(resp);
+        assertThat(root.get("sourceBranch").asText()).isEqualTo("feature");
+        assertThat(root.get("targetBranch").asText()).isEqualTo("main");
+        assertThat(root.get("sourceCommits").isArray()).isTrue();
+        assertThat(root.get("sourceCommits").size()).isGreaterThanOrEqualTo(2);
+        for (JsonNode commit : root.get("sourceCommits")) {
+            assertThat(commit.get("commitKind").asText()).isEqualTo("APPEND");
+        }
+        // 从未 merge 过 → lastMergedSourceSnapshotId 字段被 NON_NULL 过滤
+        assertThat(root.has("lastMergedSourceSnapshotId")).isFalse();
     }
 }
