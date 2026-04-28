@@ -18,6 +18,8 @@
 
 package org.apache.paimon.accelerateindex;
 
+import java.time.Duration;
+
 /** Constants for accelerate index sidecar files. */
 public final class AccelerateIndexConstants {
 
@@ -50,5 +52,23 @@ public final class AccelerateIndexConstants {
     /** Pkmap sidecar file name for sync-written pkmap (vector file → .pkmap). */
     public static String pkmapSidecarName(String vectorFileName) {
         return vectorFileName + ".pkmap";
+    }
+
+    // ==================== Build lock ==========================
+
+    public static final String BUILD_LOCK_TYPE = "accelerate_index_build";
+
+    public static final Duration BUILD_LOCK_TTL = Duration.ofMinutes(10);
+
+    public static final Duration BUILD_LOCK_ACQUIRE_TIMEOUT = Duration.ofMinutes(8);
+
+    public static final Duration BUILD_LOCK_CHECK_MAX_SLEEP = Duration.ofSeconds(8);
+
+    public static final Duration BUILD_LOCK_HEARTBEAT_INTERVAL = Duration.ofMinutes(3);
+
+    public static String buildLockName(String column, String algorithm) {
+        String safeColumn = column.replaceAll("[^a-zA-Z0-9_]", "_");
+        String safeAlgorithm = algorithm.replaceAll("[^a-zA-Z0-9_]", "_");
+        return safeColumn + "_" + safeAlgorithm;
     }
 }

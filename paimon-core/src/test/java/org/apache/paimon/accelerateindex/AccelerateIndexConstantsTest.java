@@ -48,4 +48,26 @@ class AccelerateIndexConstantsTest {
         assertThat(AccelerateIndexConstants.META_FILE_NAME)
                 .isEqualTo("__accelerate_index_meta.json");
     }
+
+    @Test
+    void testBuildLockNameNormalCase() {
+        assertThat(AccelerateIndexConstants.buildLockName("embedding", "lumina"))
+                .isEqualTo("embedding_lumina");
+    }
+
+    @Test
+    void testBuildLockNameColumnSanitized() {
+        // special chars in column name should be replaced with underscore
+        assertThat(AccelerateIndexConstants.buildLockName("vec.col-1", "lumina"))
+                .isEqualTo("vec_col_1_lumina");
+    }
+
+    @Test
+    void testBuildLockNameAlgorithmSanitized() {
+        // special chars in algorithm should also be replaced
+        assertThat(AccelerateIndexConstants.buildLockName("col", "algo/v2"))
+                .isEqualTo("col_algo_v2");
+        assertThat(AccelerateIndexConstants.buildLockName("col", "algo..name"))
+                .isEqualTo("col_algo__name");
+    }
 }

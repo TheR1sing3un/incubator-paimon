@@ -23,9 +23,13 @@ import org.apache.paimon.accelerateindex.AccelerateIndexBuildOrchestrator.BuildR
 import org.apache.paimon.accelerateindex.AccelerateIndexBuildOrchestrator.BuildResult;
 import org.apache.paimon.accelerateindex.AccelerateIndexBuildOrchestrator.ResolvedBuild;
 import org.apache.paimon.accelerateindex.AccelerateIndexBuildOrchestrator.SplitBuildContext;
+import org.apache.paimon.accelerateindex.AccelerateIndexConstants;
 import org.apache.paimon.accelerateindex.AccelerateIndexDefinition;
 import org.apache.paimon.accelerateindex.AccelerateIndexDefinitionManager;
+import org.apache.paimon.catalog.FileBasedLock;
 import org.apache.paimon.catalog.Identifier;
+import org.apache.paimon.fs.FileIO;
+import org.apache.paimon.fs.Path;
 import org.apache.paimon.io.DataInputDeserializer;
 import org.apache.paimon.io.DataOutputSerializer;
 import org.apache.paimon.spark.catalog.WithPaimonCatalog;
@@ -41,10 +45,16 @@ import org.apache.spark.sql.types.Metadata;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.unsafe.types.UTF8String;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 import static org.apache.spark.sql.types.DataTypes.IntegerType;
 import static org.apache.spark.sql.types.DataTypes.LongType;
@@ -63,6 +73,8 @@ import static org.apache.spark.sql.types.DataTypes.StringType;
  * </code></pre>
  */
 public class BuildAccelerateIndexProcedure extends BaseProcedure {
+
+    private static final Logger LOG = LoggerFactory.getLogger(BuildAccelerateIndexProcedure.class);
 
     private static final ProcedureParameter[] PARAMETERS =
             new ProcedureParameter[] {
@@ -136,30 +148,64 @@ public class BuildAccelerateIndexProcedure extends BaseProcedure {
 
                         registerDefinitionIfAbsent(fileStoreTable, column, dim, algorithm, metric);
 
-                        BuildRequest request =
-                                new BuildRequest(
-                                        fileStoreTable,
-                                        column,
-                                        dim,
-                                        algorithm,
-                                        metric,
-                                        partitions,
-                                        optionsMap,
-                                        effectiveMinValidRows,
-                                        effectiveMinValidRatio,
-                                        maxRowsPerIndex,
-                                        snapshotId);
+                        FileIO tableFileIO = fileStoreTable.fileIO();
+                        Path tablePath = fileStoreTable.location();
+                        String lockName = AccelerateIndexConstants.buildLockName(column, algorithm);
 
-                        // Use shared resolveContext to avoid duplicating resolution logic
-                        ResolvedBuild resolved =
-                                AccelerateIndexBuildOrchestrator.resolveContext(request);
-                        if (resolved == null) {
-                            return toResult(
-                                    "No snapshot or L1+ data files found for "
-                                            + fileStoreTable.name());
+                        FileBasedLock buildLock =
+                                new FileBasedLock(
+                                        tableFileIO,
+                                        AccelerateIndexConstants.BUILD_LOCK_TYPE,
+                                        AccelerateIndexConstants.BUILD_LOCK_ACQUIRE_TIMEOUT,
+                                        AccelerateIndexConstants.BUILD_LOCK_CHECK_MAX_SLEEP,
+                                        AccelerateIndexConstants.BUILD_LOCK_TTL);
+
+                        Path acquiredPath = buildLock.acquire(tablePath, lockName);
+                        ScheduledExecutorService heartbeat =
+                                startHeartbeat(buildLock, acquiredPath);
+                        try {
+                            BuildRequest request =
+                                    new BuildRequest(
+                                            fileStoreTable,
+                                            column,
+                                            dim,
+                                            algorithm,
+                                            metric,
+                                            partitions,
+                                            optionsMap,
+                                            effectiveMinValidRows,
+                                            effectiveMinValidRatio,
+                                            maxRowsPerIndex,
+                                            snapshotId);
+
+                            ResolvedBuild resolved =
+                                    AccelerateIndexBuildOrchestrator.resolveContext(request);
+                            if (resolved == null) {
+                                return toResult(
+                                        "No snapshot or L1+ data files found for "
+                                                + fileStoreTable.name());
+                            }
+
+                            if (buildLock.isLockLost()) {
+                                throw new IOException(
+                                        "Build lock lost before distributed build for "
+                                                + fileStoreTable.name());
+                            }
+
+                            InternalRow[] result = distributedBuild(resolved);
+
+                            if (buildLock.isLockLost()) {
+                                LOG.warn(
+                                        "Build lock was lost during distributed build for {}. "
+                                                + "Results may conflict with another build.",
+                                        fileStoreTable.name());
+                            }
+
+                            return result;
+                        } finally {
+                            stopHeartbeat(heartbeat);
+                            buildLock.release(acquiredPath);
                         }
-
-                        return distributedBuild(resolved);
                     } catch (Exception e) {
                         throw new RuntimeException(e);
                     }
@@ -216,6 +262,43 @@ public class BuildAccelerateIndexProcedure extends BaseProcedure {
                         + " buckets, "
                         + parallelism
                         + " parallelism)");
+    }
+
+    private static ScheduledExecutorService startHeartbeat(FileBasedLock lock, Path lockPath) {
+        ScheduledExecutorService scheduler =
+                Executors.newSingleThreadScheduledExecutor(
+                        r -> {
+                            Thread t = new Thread(r, "accelerate-index-build-lock-heartbeat");
+                            t.setDaemon(true);
+                            return t;
+                        });
+        long intervalMs = AccelerateIndexConstants.BUILD_LOCK_HEARTBEAT_INTERVAL.toMillis();
+        scheduler.scheduleAtFixedRate(
+                () -> {
+                    if (lock.isLockLost()) {
+                        return;
+                    }
+                    try {
+                        lock.renew(lockPath);
+                    } catch (Exception e) {
+                        LOG.warn("Failed to renew build lock: {}", lockPath, e);
+                    }
+                },
+                intervalMs,
+                intervalMs,
+                TimeUnit.MILLISECONDS);
+        return scheduler;
+    }
+
+    private static void stopHeartbeat(ScheduledExecutorService heartbeat) {
+        if (heartbeat != null) {
+            heartbeat.shutdownNow();
+            try {
+                heartbeat.awaitTermination(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
     }
 
     private static byte[] serializeSplitGroup(List<DataSplit> splits) {
