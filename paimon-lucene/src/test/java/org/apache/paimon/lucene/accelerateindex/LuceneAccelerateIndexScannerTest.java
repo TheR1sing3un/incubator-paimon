@@ -40,10 +40,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link LuceneAccelerateIndexScanner} and {@link LuceneQueryDslParser}. */
 class LuceneAccelerateIndexScannerTest {
@@ -343,6 +345,184 @@ class LuceneAccelerateIndexScannerTest {
     void testProviderCreateScanner() {
         LuceneAccelerateIndexProvider provider = new LuceneAccelerateIndexProvider();
         assertThat(provider.createScanner()).isInstanceOf(LuceneAccelerateIndexScanner.class);
+    }
+
+    // --- New query type DSL parser tests ---
+
+    @Test
+    void testDslParserPrefixQuery() throws Exception {
+        LuceneQueryDslParser parser = new LuceneQueryDslParser();
+        org.apache.lucene.search.Query query = parser.parse("{\"prefix\":{\"version\":\"v5\"}}");
+
+        assertThat(query).isInstanceOf(org.apache.lucene.search.PrefixQuery.class);
+        assertThat(query.toString()).contains("version:v5");
+    }
+
+    @Test
+    void testDslParserWildcardQuery() throws Exception {
+        LuceneQueryDslParser parser = new LuceneQueryDslParser();
+        org.apache.lucene.search.Query query =
+                parser.parse("{\"wildcard\":{\"version\":\"v5.*\"}}");
+
+        assertThat(query).isInstanceOf(org.apache.lucene.search.WildcardQuery.class);
+        assertThat(query.toString()).contains("version:v5.*");
+    }
+
+    @Test
+    void testDslParserRegexpQuery() throws Exception {
+        LuceneQueryDslParser parser = new LuceneQueryDslParser();
+        org.apache.lucene.search.Query query =
+                parser.parse("{\"regexp\":{\"version\":\"v[0-9]+\\\\.8\\\\.0\"}}");
+
+        assertThat(query).isInstanceOf(org.apache.lucene.search.RegexpQuery.class);
+        assertThat(query.toString()).contains("version:");
+    }
+
+    @Test
+    void testDslParserFuzzyQuerySimple() throws Exception {
+        LuceneQueryDslParser parser = new LuceneQueryDslParser();
+        org.apache.lucene.search.Query query = parser.parse("{\"fuzzy\":{\"version\":\"v5.8.o\"}}");
+
+        assertThat(query).isInstanceOf(org.apache.lucene.search.FuzzyQuery.class);
+        assertThat(query.toString()).contains("version:v5.8.o");
+    }
+
+    @Test
+    void testDslParserFuzzyQueryWithFuzziness() throws Exception {
+        LuceneQueryDslParser parser = new LuceneQueryDslParser();
+        org.apache.lucene.search.Query query =
+                parser.parse("{\"fuzzy\":{\"version\":{\"value\":\"v5.8.o\",\"fuzziness\":1}}}");
+
+        assertThat(query).isInstanceOf(org.apache.lucene.search.FuzzyQuery.class);
+        org.apache.lucene.search.FuzzyQuery fq = (org.apache.lucene.search.FuzzyQuery) query;
+        assertThat(fq.getMaxEdits()).isEqualTo(1);
+    }
+
+    @Test
+    void testDslParserMatchPhraseQuery() throws Exception {
+        LuceneQueryDslParser parser = new LuceneQueryDslParser();
+        org.apache.lucene.search.Query query =
+                parser.parse("{\"match_phrase\":{\"contextEn\":\"Save Document\"}}");
+
+        assertThat(query).isInstanceOf(org.apache.lucene.search.PhraseQuery.class);
+        org.apache.lucene.search.PhraseQuery pq = (org.apache.lucene.search.PhraseQuery) query;
+        assertThat(pq.getTerms()).hasSize(2);
+        assertThat(pq.getTerms()[0].text()).isEqualTo("save");
+        assertThat(pq.getTerms()[1].text()).isEqualTo("document");
+        assertThat(pq.getSlop()).isEqualTo(0);
+    }
+
+    @Test
+    void testDslParserMatchPhraseWithSlop() throws Exception {
+        LuceneQueryDslParser parser = new LuceneQueryDslParser();
+        org.apache.lucene.search.Query query =
+                parser.parse(
+                        "{\"match_phrase\":{\"contextEn\":{\"query\":\"Save Document\",\"slop\":2}}}");
+
+        assertThat(query).isInstanceOf(org.apache.lucene.search.PhraseQuery.class);
+        org.apache.lucene.search.PhraseQuery pq = (org.apache.lucene.search.PhraseQuery) query;
+        assertThat(pq.getSlop()).isEqualTo(2);
+    }
+
+    @Test
+    void testPrefixQueryRejectsNumericField() {
+        java.util.Map<String, String> fieldTypes = new java.util.HashMap<>();
+        fieldTypes.put("score", "int");
+        LuceneQueryDslParser parser =
+                new LuceneQueryDslParser(
+                        new org.apache.lucene.analysis.standard.StandardAnalyzer(), fieldTypes);
+
+        assertThatThrownBy(() -> parser.parse("{\"prefix\":{\"score\":\"5\"}}"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Cannot use 'prefix' on numeric field");
+    }
+
+    @Test
+    void testWildcardQueryRejectsNumericField() {
+        java.util.Map<String, String> fieldTypes = new java.util.HashMap<>();
+        fieldTypes.put("score", "int");
+        LuceneQueryDslParser parser =
+                new LuceneQueryDslParser(
+                        new org.apache.lucene.analysis.standard.StandardAnalyzer(), fieldTypes);
+
+        assertThatThrownBy(() -> parser.parse("{\"wildcard\":{\"score\":\"5*\"}}"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Cannot use 'wildcard' on numeric field");
+    }
+
+    @Test
+    void testCombinedNewQueryTypesInBool() throws Exception {
+        LuceneQueryDslParser parser = new LuceneQueryDslParser();
+        org.apache.lucene.search.Query query =
+                parser.parse(
+                        "{\"must\":[{\"prefix\":{\"version\":\"v5\"}},{\"match_phrase\":{\"contextEn\":\"Save Document\"}}]}");
+
+        assertThat(query).isInstanceOf(org.apache.lucene.search.BooleanQuery.class);
+        String queryStr = query.toString();
+        assertThat(queryStr).contains("version:v5");
+        assertThat(queryStr).contains("contextEn:\"save document\"");
+    }
+
+    @Test
+    void testPrefixSearchEndToEnd() throws Exception {
+        Map<String, List<InternalArray>> fileData = new LinkedHashMap<>();
+        fileData.put(
+                "file-0.parquet",
+                Collections.singletonList(
+                        createNestedArray(
+                                new String[][] {
+                                    {"Word prefix alpha", "v5.8.0"},
+                                    {"Word prefix beta", "v6.0.0"},
+                                    {"Another text", "v5.9.0"},
+                                })));
+
+        BuildAndScanContext bsc = buildIndex(fileData);
+
+        // prefix search on keyword field "version" for "v5"
+        AccelerateIndexScanResult result = scan(bsc, "{\"prefix\":{\"version\":\"v5\"}}", 10);
+
+        // Should match nested elements with version starting with "v5": v5.8.0 and v5.9.0
+        assertThat(result.totalMatches()).isGreaterThanOrEqualTo(1);
+    }
+
+    @Test
+    void testWildcardSearchEndToEnd() throws Exception {
+        Map<String, List<InternalArray>> fileData = new LinkedHashMap<>();
+        fileData.put(
+                "file-0.parquet",
+                Collections.singletonList(
+                        createNestedArray(
+                                new String[][] {
+                                    {"Hello World", "v5.8.0"},
+                                    {"Hello Earth", "v6.0.0"},
+                                })));
+
+        BuildAndScanContext bsc = buildIndex(fileData);
+
+        // wildcard search: version matches v?.*.0
+        AccelerateIndexScanResult result = scan(bsc, "{\"wildcard\":{\"version\":\"v?.*.0\"}}", 10);
+
+        assertThat(result.totalMatches()).isGreaterThanOrEqualTo(1);
+    }
+
+    @Test
+    void testFuzzySearchEndToEnd() throws Exception {
+        Map<String, List<InternalArray>> fileData = new LinkedHashMap<>();
+        fileData.put(
+                "file-0.parquet",
+                Collections.singletonList(
+                        createNestedArray(
+                                new String[][] {
+                                    {"Hello World", "v5.8.0"},
+                                    {"Goodbye World", "v6.0.0"},
+                                })));
+
+        BuildAndScanContext bsc = buildIndex(fileData);
+
+        // fuzzy search: "v5.8.o" should match "v5.8.0" with edit distance 1
+        AccelerateIndexScanResult result = scan(bsc, "{\"fuzzy\":{\"version\":\"v5.8.o\"}}", 10);
+
+        assertThat(result.totalMatches()).isGreaterThanOrEqualTo(1);
     }
 
     static class BuildAndScanContext {

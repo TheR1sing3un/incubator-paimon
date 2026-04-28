@@ -30,8 +30,13 @@ import org.apache.lucene.document.LongPoint;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
+import org.apache.lucene.search.FuzzyQuery;
+import org.apache.lucene.search.PhraseQuery;
+import org.apache.lucene.search.PrefixQuery;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.RegexpQuery;
 import org.apache.lucene.search.TermQuery;
+import org.apache.lucene.search.WildcardQuery;
 
 import java.io.IOException;
 import java.util.Collections;
@@ -45,7 +50,12 @@ import java.util.Map;
  *
  * <ul>
  *   <li>{@code match} - full-text match (tokenized via configured analyzer)
+ *   <li>{@code match_phrase} - phrase match (all tokens must appear in order; optional slop)
  *   <li>{@code term} - exact match (no tokenization for text; exact value for numeric)
+ *   <li>{@code prefix} - prefix match on text/keyword fields
+ *   <li>{@code wildcard} - wildcard match ({@code *} = any sequence, {@code ?} = single char)
+ *   <li>{@code regexp} - regular expression match on text/keyword fields
+ *   <li>{@code fuzzy} - fuzzy match based on edit distance (optional fuzziness parameter)
  *   <li>{@code range} - numeric range query (supports gt/gte/lt/lte)
  *   <li>{@code must} - boolean AND
  *   <li>{@code should} - boolean OR
@@ -58,7 +68,12 @@ import java.util.Map;
  * {
  *   "must": [
  *     {"match": {"contextEn": "Document"}},
+ *     {"match_phrase": {"contextEn": "Save Document"}},
  *     {"term": {"version": "v5.8.0"}},
+ *     {"prefix": {"version": "v5"}},
+ *     {"wildcard": {"version": "v5.*"}},
+ *     {"regexp": {"version": "v[0-9]+\\.8\\.0"}},
+ *     {"fuzzy": {"version": "v5.8.o"}},
  *     {"range": {"score": {"gte": 5, "lt": 10}}}
  *   ]
  * }
@@ -120,8 +135,18 @@ public class LuceneQueryDslParser {
     private Query parseClause(JsonNode clause) {
         if (clause.has("match")) {
             return parseMatch(clause.get("match"));
+        } else if (clause.has("match_phrase")) {
+            return parseMatchPhrase(clause.get("match_phrase"));
         } else if (clause.has("term")) {
             return parseTerm(clause.get("term"));
+        } else if (clause.has("prefix")) {
+            return parsePrefix(clause.get("prefix"));
+        } else if (clause.has("wildcard")) {
+            return parseWildcard(clause.get("wildcard"));
+        } else if (clause.has("regexp")) {
+            return parseRegexp(clause.get("regexp"));
+        } else if (clause.has("fuzzy")) {
+            return parseFuzzy(clause.get("fuzzy"));
         } else if (clause.has("range")) {
             return parseRange(clause.get("range"));
         } else {
@@ -190,6 +215,130 @@ public class LuceneQueryDslParser {
                 return DoublePoint.newExactQuery(fieldName, field.getValue().asDouble());
             default:
                 return new TermQuery(new Term(fieldName, field.getValue().asText()));
+        }
+    }
+
+    /**
+     * Parses a "match_phrase" clause: tokenizes the value and creates a PhraseQuery requiring all
+     * tokens to appear in order. Supports optional {@code slop} parameter.
+     *
+     * <p>Example: {@code {"match_phrase": {"contextEn": "Save Document"}}} or {@code
+     * {"match_phrase": {"contextEn": {"query": "Save Document", "slop": 1}}}}
+     */
+    private Query parseMatchPhrase(JsonNode matchPhraseNode) {
+        Iterator<Map.Entry<String, JsonNode>> fields = matchPhraseNode.fields();
+        if (!fields.hasNext()) {
+            throw new IllegalArgumentException("Empty match_phrase clause");
+        }
+        Map.Entry<String, JsonNode> field = fields.next();
+        String fieldName = field.getKey();
+        JsonNode valueNode = field.getValue();
+
+        String text;
+        int slop = 0;
+        if (valueNode.isObject()) {
+            text = valueNode.get("query").asText();
+            if (valueNode.has("slop")) {
+                slop = valueNode.get("slop").asInt();
+            }
+        } else {
+            text = valueNode.asText();
+        }
+
+        String fieldType = fieldTypeMap.getOrDefault(fieldName, "text");
+        if (isNumericType(fieldType)) {
+            throw new IllegalArgumentException(
+                    "Cannot use 'match_phrase' on numeric field '"
+                            + fieldName
+                            + "'. Use 'term' or 'range' instead.");
+        }
+
+        java.util.List<String> tokens = tokenize(fieldName, text);
+        PhraseQuery.Builder builder = new PhraseQuery.Builder();
+        builder.setSlop(slop);
+        for (int i = 0; i < tokens.size(); i++) {
+            builder.add(new Term(fieldName, tokens.get(i)), i);
+        }
+        return builder.build();
+    }
+
+    /**
+     * Parses a "prefix" clause: matches terms starting with the given prefix.
+     *
+     * <p>Example: {@code {"prefix": {"version": "v5"}}}
+     */
+    private Query parsePrefix(JsonNode prefixNode) {
+        Map.Entry<String, JsonNode> field = extractSingleField(prefixNode, "prefix");
+        rejectNumericField(field.getKey(), "prefix");
+        return new PrefixQuery(new Term(field.getKey(), field.getValue().asText()));
+    }
+
+    /**
+     * Parses a "wildcard" clause: {@code *} matches any sequence, {@code ?} matches single char.
+     *
+     * <p>Example: {@code {"wildcard": {"version": "v5.*"}}}
+     */
+    private Query parseWildcard(JsonNode wildcardNode) {
+        Map.Entry<String, JsonNode> field = extractSingleField(wildcardNode, "wildcard");
+        rejectNumericField(field.getKey(), "wildcard");
+        return new WildcardQuery(new Term(field.getKey(), field.getValue().asText()));
+    }
+
+    /**
+     * Parses a "regexp" clause: matches terms against a regular expression.
+     *
+     * <p>Example: {@code {"regexp": {"version": "v[0-9]+\\.8\\.0"}}}
+     */
+    private Query parseRegexp(JsonNode regexpNode) {
+        Map.Entry<String, JsonNode> field = extractSingleField(regexpNode, "regexp");
+        rejectNumericField(field.getKey(), "regexp");
+        return new RegexpQuery(new Term(field.getKey(), field.getValue().asText()));
+    }
+
+    /**
+     * Parses a "fuzzy" clause: matches terms within an edit distance (Levenshtein).
+     *
+     * <p>Simple form: {@code {"fuzzy": {"version": "v5.8.o"}}}
+     *
+     * <p>With fuzziness: {@code {"fuzzy": {"version": {"value": "v5.8.o", "fuzziness": 1}}}}
+     */
+    private Query parseFuzzy(JsonNode fuzzyNode) {
+        Map.Entry<String, JsonNode> field = extractSingleField(fuzzyNode, "fuzzy");
+        rejectNumericField(field.getKey(), "fuzzy");
+        String fieldName = field.getKey();
+        JsonNode valueNode = field.getValue();
+
+        String text;
+        int maxEdits = 2;
+        if (valueNode.isObject()) {
+            text = valueNode.get("value").asText();
+            if (valueNode.has("fuzziness")) {
+                maxEdits = valueNode.get("fuzziness").asInt();
+            }
+        } else {
+            text = valueNode.asText();
+        }
+
+        return new FuzzyQuery(new Term(fieldName, text), maxEdits);
+    }
+
+    private Map.Entry<String, JsonNode> extractSingleField(JsonNode node, String clauseType) {
+        Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
+        if (!fields.hasNext()) {
+            throw new IllegalArgumentException("Empty " + clauseType + " clause");
+        }
+        return fields.next();
+    }
+
+    private void rejectNumericField(String fieldName, String clauseType) {
+        String fieldType = fieldTypeMap.getOrDefault(fieldName, "text");
+        if (isNumericType(fieldType)) {
+            throw new IllegalArgumentException(
+                    "Cannot use '"
+                            + clauseType
+                            + "' on numeric field '"
+                            + fieldName
+                            + "'. Use 'term' or 'range' instead.");
         }
     }
 

@@ -3079,4 +3079,185 @@ public class LuceneAccelerateIndexE2ETest {
             return scanner.scan(scanCtx);
         }
     }
+
+    // ---- New query type E2E tests ----
+
+    /**
+     * Tests prefix search on keyword field "version". Data: version values are "v{pk}.0" and
+     * "v{pk}.1". Prefix "v5." should match pk=5 children only.
+     */
+    @Test
+    public void testPrefixSearch() throws Exception {
+        FileStoreTable table = createTable("prefix_test");
+        writeInsertBatch(table, 0, 20, Collections.emptySet());
+
+        List<DataSplit> splits = table.newSnapshotReader().read().dataSplits();
+        DataSplit split = splits.get(0);
+        FileIO fileIO = table.fileIO();
+        Path bucketPath = new Path(split.bucketPath());
+        List<AccelerateIndexDataFileInfo> dataFileInfos = toDataFileInfos(split);
+
+        AccelerateIndexBuildResult buildResult =
+                buildIndex(fileIO, bucketPath, dataFileInfos, table, split);
+        AccelerateIndexEntry entry = createEntry(dataFileInfos, buildResult);
+
+        // Prefix "v5." matches "v5.0" and "v5.1" → pk=5
+        AccelerateIndexScanResult result =
+                scanIndex(fileIO, bucketPath, entry, "{\"prefix\":{\"version\":\"v5.\"}}", 10);
+
+        assertThat(result.totalMatches()).isEqualTo(1);
+        Map.Entry<String, long[]> sel = result.fileSelections().entrySet().iterator().next();
+        assertThat(sel.getValue()).containsExactly(5L);
+    }
+
+    /**
+     * Tests wildcard search on keyword field "version". Wildcard "v1?" should match "v10" through
+     * "v19" prefixed versions.
+     */
+    @Test
+    public void testWildcardSearch() throws Exception {
+        FileStoreTable table = createTable("wildcard_test");
+        writeInsertBatch(table, 0, 20, Collections.emptySet());
+
+        List<DataSplit> splits = table.newSnapshotReader().read().dataSplits();
+        DataSplit split = splits.get(0);
+        FileIO fileIO = table.fileIO();
+        Path bucketPath = new Path(split.bucketPath());
+        List<AccelerateIndexDataFileInfo> dataFileInfos = toDataFileInfos(split);
+
+        AccelerateIndexBuildResult buildResult =
+                buildIndex(fileIO, bucketPath, dataFileInfos, table, split);
+        AccelerateIndexEntry entry = createEntry(dataFileInfos, buildResult);
+
+        // Wildcard "v1?.0" matches "v10.0" through "v19.0" → pks 10-19, each has child 0
+        AccelerateIndexScanResult result =
+                scanIndex(fileIO, bucketPath, entry, "{\"wildcard\":{\"version\":\"v1?.0\"}}", 20);
+
+        assertThat(result.totalMatches()).isEqualTo(10);
+    }
+
+    /**
+     * Tests fuzzy search on keyword field "version". "v5.0" with 1 edit should match "v5.0"
+     * exactly, and "v5.o" (o instead of 0) with edit distance 1 should also match.
+     */
+    @Test
+    public void testFuzzySearch() throws Exception {
+        FileStoreTable table = createTable("fuzzy_test");
+        writeInsertBatch(table, 0, 20, Collections.emptySet());
+
+        List<DataSplit> splits = table.newSnapshotReader().read().dataSplits();
+        DataSplit split = splits.get(0);
+        FileIO fileIO = table.fileIO();
+        Path bucketPath = new Path(split.bucketPath());
+        List<AccelerateIndexDataFileInfo> dataFileInfos = toDataFileInfos(split);
+
+        AccelerateIndexBuildResult buildResult =
+                buildIndex(fileIO, bucketPath, dataFileInfos, table, split);
+        AccelerateIndexEntry entry = createEntry(dataFileInfos, buildResult);
+
+        // Fuzzy "v5.o" with default maxEdits=2 should match "v5.0" and "v5.1"
+        AccelerateIndexScanResult result =
+                scanIndex(fileIO, bucketPath, entry, "{\"fuzzy\":{\"version\":\"v5.o\"}}", 10);
+
+        assertThat(result.totalMatches()).isGreaterThanOrEqualTo(1);
+    }
+
+    /**
+     * Tests match_phrase search on text field "contextEn". Data: "Word {pk} 0", "Word {pk} 1".
+     * Phrase "Word 5" should match pk=5 children (both "Word 5 0" and "Word 5 1" contain the phrase
+     * "word 5" after lowercasing).
+     */
+    @Test
+    public void testMatchPhraseSearch() throws Exception {
+        FileStoreTable table = createTable("phrase_test");
+        writeInsertBatch(table, 0, 20, Collections.emptySet());
+
+        List<DataSplit> splits = table.newSnapshotReader().read().dataSplits();
+        DataSplit split = splits.get(0);
+        FileIO fileIO = table.fileIO();
+        Path bucketPath = new Path(split.bucketPath());
+        List<AccelerateIndexDataFileInfo> dataFileInfos = toDataFileInfos(split);
+
+        AccelerateIndexBuildResult buildResult =
+                buildIndex(fileIO, bucketPath, dataFileInfos, table, split);
+        AccelerateIndexEntry entry = createEntry(dataFileInfos, buildResult);
+
+        // Phrase "Word 5" → tokens ["word", "5"] in order → matches pk=5
+        AccelerateIndexScanResult result =
+                scanIndex(
+                        fileIO,
+                        bucketPath,
+                        entry,
+                        "{\"match_phrase\":{\"contextEn\":\"Word 5\"}}",
+                        10);
+
+        assertThat(result.totalMatches()).isEqualTo(1);
+        Map.Entry<String, long[]> sel = result.fileSelections().entrySet().iterator().next();
+        assertThat(sel.getValue()).containsExactly(5L);
+    }
+
+    /**
+     * Tests regexp search on keyword field "version". Regexp "v[5-7]\\.0" should match "v5.0",
+     * "v6.0", "v7.0".
+     */
+    @Test
+    public void testRegexpSearch() throws Exception {
+        FileStoreTable table = createTable("regexp_test");
+        writeInsertBatch(table, 0, 20, Collections.emptySet());
+
+        List<DataSplit> splits = table.newSnapshotReader().read().dataSplits();
+        DataSplit split = splits.get(0);
+        FileIO fileIO = table.fileIO();
+        Path bucketPath = new Path(split.bucketPath());
+        List<AccelerateIndexDataFileInfo> dataFileInfos = toDataFileInfos(split);
+
+        AccelerateIndexBuildResult buildResult =
+                buildIndex(fileIO, bucketPath, dataFileInfos, table, split);
+        AccelerateIndexEntry entry = createEntry(dataFileInfos, buildResult);
+
+        // Regexp "v[5-7]\\.0" matches versions "v5.0", "v6.0", "v7.0" → pks 5, 6, 7
+        AccelerateIndexScanResult result =
+                scanIndex(
+                        fileIO,
+                        bucketPath,
+                        entry,
+                        "{\"regexp\":{\"version\":\"v[5-7]\\\\.0\"}}",
+                        20);
+
+        assertThat(result.totalMatches()).isEqualTo(3);
+    }
+
+    /** Tests combining new query types (prefix + match_phrase) in a must boolean. */
+    @Test
+    public void testCombinedNewQueryTypes() throws Exception {
+        FileStoreTable table = createTable("combined_new_test");
+        writeInsertBatch(table, 0, 20, Collections.emptySet());
+
+        List<DataSplit> splits = table.newSnapshotReader().read().dataSplits();
+        DataSplit split = splits.get(0);
+        FileIO fileIO = table.fileIO();
+        Path bucketPath = new Path(split.bucketPath());
+        List<AccelerateIndexDataFileInfo> dataFileInfos = toDataFileInfos(split);
+
+        AccelerateIndexBuildResult buildResult =
+                buildIndex(fileIO, bucketPath, dataFileInfos, table, split);
+        AccelerateIndexEntry entry = createEntry(dataFileInfos, buildResult);
+
+        // must: prefix "v5." on version AND match_phrase "Word 5" on contextEn
+        // Both conditions point to pk=5
+        AccelerateIndexScanResult result =
+                scanIndex(
+                        fileIO,
+                        bucketPath,
+                        entry,
+                        "{\"must\":["
+                                + "{\"prefix\":{\"version\":\"v5.\"}},"
+                                + "{\"match_phrase\":{\"contextEn\":\"Word 5\"}}"
+                                + "]}",
+                        10);
+
+        assertThat(result.totalMatches()).isEqualTo(1);
+        Map.Entry<String, long[]> sel = result.fileSelections().entrySet().iterator().next();
+        assertThat(sel.getValue()).containsExactly(5L);
+    }
 }
