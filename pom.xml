@@ -650,6 +650,7 @@ under the License.
                         <exclude>paimon-python/pypaimon/sample/data/**</exclude>
                         <!-- Frontend module (node_modules, dist, generated files) -->
                         <exclude>paimon-frontend/**</exclude>
+                        <exclude>.gitattributes</exclude>
                     </excludes>
                 </configuration>
             </plugin>
