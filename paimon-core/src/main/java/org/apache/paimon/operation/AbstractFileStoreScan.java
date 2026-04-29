@@ -39,6 +39,7 @@ import org.apache.paimon.schema.SchemaManager;
 import org.apache.paimon.schema.TableSchema;
 import org.apache.paimon.table.source.ScanMode;
 import org.apache.paimon.types.RowType;
+import org.apache.paimon.types.VectorType;
 import org.apache.paimon.utils.BiFilter;
 import org.apache.paimon.utils.Filter;
 import org.apache.paimon.utils.ListUtils;
@@ -551,7 +552,10 @@ public abstract class AbstractFileStoreScan implements FileStoreScan {
             }
 
             if (levelFilter != null && !levelFilter.test(level)) {
-                return false;
+                String fileName = fileNameGetter.apply(row);
+                if (!VectorType.isVectorStoreFile(fileName)) {
+                    return false;
+                }
             }
 
             return fileNameFilter == null || fileNameFilter.test((fileNameGetter.apply(row)));
