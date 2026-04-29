@@ -246,6 +246,28 @@ This section introduce all available spark procedures about paimon.
       <td>CALL sys.migrate_table(source_type => 'hive', table => 'default.T', options => 'file.format=parquet', options_map => map('k1','v1'), parallelism => 6)</td>
     </tr>
     <tr>
+      <td>load_file</td>
+      <td>
+         Load CSV or JSONL files from a distributed filesystem (e.g. HDFS) into an existing Paimon table, in parallel.
+         The reader uses the target table's schema as the source schema — missing columns become null, extra columns
+         are dropped, and type mismatches follow Paimon's normal write-path analysis. The write goes through Spark's
+         V2 <code>writeTo().append()</code>, so read and write are both distributed and the commit is atomic.
+         Arguments:
+            <li>table: target Paimon table identifier (e.g. <code>db.tbl</code>). Cannot be empty.</li>
+            <li>path: input path on the filesystem. Can be a single file or a directory (all files under it are read). Cannot be empty.</li>
+            <li>format: <code>csv</code> or <code>jsonl</code>. Cannot be empty. No auto-detection by suffix — pass it explicitly to avoid misreading mixed directories.</li>
+            <li>options: optional map of reader options passed verbatim to <code>spark.read.options(...)</code> (e.g. <code>header</code>, <code>delimiter</code>, <code>timestampFormat</code>). Parser <code>mode</code> defaults to <code>FAILFAST</code> — malformed rows abort the job; pass <code>mode => 'PERMISSIVE'</code> (or <code>'DROPMALFORMED'</code>) to override.</li>
+         <br>
+         Write mode is always append. To overwrite or clean partitions, run the corresponding SQL statement first.
+         Partition tables and non-partition tables are handled identically: Paimon routes rows by the partition column
+         values carried in the DataFrame.
+      </td>
+      <td>
+          CALL sys.load_file(table => 'db.T', path => 'hdfs:///tmp/in', format => 'csv', options => map('header','true'))<br/><br/>
+          CALL sys.load_file(table => 'db.T', path => 'hdfs:///tmp/in', format => 'jsonl')
+      </td>
+    </tr>
+    <tr>
       <td>remove_orphan_files</td>
       <td>
          To remove the orphan data files and metadata files. Arguments:
