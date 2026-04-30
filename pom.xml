@@ -646,6 +646,7 @@ under the License.
                         <!-- antlr grammar files -->
                         <exclude>paimon-common/src/main/antlr4/**</exclude>
                         <exclude>paimon-core/src/test/resources/compatibility/**</exclude>
+                        <exclude>paimon-common/src/test/resources/compatible/**</exclude>
                         <exclude>paimon-faiss/paimon-faiss-jni/build/**</exclude>
                         <exclude>paimon-python/pypaimon/sample/data/**</exclude>
                         <!-- Frontend module (node_modules, dist, generated files) -->
