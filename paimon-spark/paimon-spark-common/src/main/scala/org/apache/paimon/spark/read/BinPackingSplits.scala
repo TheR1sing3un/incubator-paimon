@@ -161,7 +161,8 @@ case class BinPackingSplits(coreOptions: CoreOptions, readRowSizeRatio: Double =
       dataFiles: Seq[DataFileMeta],
       deletionFiles: Seq[DeletionFile]): DataSplit = {
     // Re-attach vector CF files to the new split for VectorCFReaderContext resolution
-    val allFiles = dataFiles ++ vectorCFFiles(split)
+    val vecFiles = vectorCFFiles(split)
+    val allFiles = dataFiles ++ vecFiles
     val builder = DataSplit
       .builder()
       .withSnapshot(split.snapshotId())
@@ -172,7 +173,9 @@ case class BinPackingSplits(coreOptions: CoreOptions, readRowSizeRatio: Double =
       .rawConvertible(split.rawConvertible)
       .withBucketPath(split.bucketPath)
     if (deletionVectors) {
-      builder.withDataDeletionFiles(deletionFiles.toList.asJava)
+      // Pad deletion files with nulls for vector CF files (they have no DVs)
+      val paddedDeletionFiles = deletionFiles ++ vecFiles.map(_ => null)
+      builder.withDataDeletionFiles(paddedDeletionFiles.toList.asJava)
     }
     builder.build()
   }

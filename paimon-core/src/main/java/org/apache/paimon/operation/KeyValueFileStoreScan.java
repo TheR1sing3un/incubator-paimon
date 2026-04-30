@@ -137,6 +137,12 @@ public class KeyValueFileStoreScan extends AbstractFileStoreScan {
     /** Note: Keep this thread-safe. */
     @Override
     protected boolean filterByStats(ManifestEntry entry) {
+        // Vector CF files (level=0, .vector.* name) are sidecar metadata files that don't
+        // participate in LSM key/value stats filtering. Always keep them.
+        if (entry.file().isVectorCFFile()) {
+            return true;
+        }
+
         if (isValueFilterEnabled()) {
             // Reaching here means the caller explicitly opted in to value-stats pruning via
             // enableValueFilter() — currently only DataTableBatchScan / DataTableStreamScan do
