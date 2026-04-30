@@ -125,7 +125,9 @@ public class DataSplit implements Split {
     public long rowCount() {
         long rowCount = 0;
         for (DataFileMeta file : dataFiles) {
-            rowCount += file.rowCount();
+            if (!file.isVectorCFFile()) {
+                rowCount += file.rowCount();
+            }
         }
         return rowCount;
     }
@@ -152,6 +154,9 @@ public class DataSplit implements Split {
         long sum = 0L;
         for (int i = 0; i < dataFiles.size(); i++) {
             DataFileMeta file = dataFiles.get(i);
+            if (file.isVectorCFFile()) {
+                continue;
+            }
             DeletionFile deletionFile = dataDeletionFiles == null ? null : dataDeletionFiles.get(i);
             Long cardinality = deletionFile == null ? null : deletionFile.cardinality();
             if (deletionFile == null) {
@@ -249,6 +254,7 @@ public class DataSplit implements Split {
         if (rawConvertible) {
             return Optional.of(
                     dataFiles.stream()
+                            .filter(f -> !f.isVectorCFFile())
                             .map(f -> makeRawTableFile(bucketPath, f))
                             .collect(Collectors.toList()));
         } else {

@@ -361,6 +361,9 @@ public class KeyValueFileStoreScan extends AbstractFileStoreScan {
 
         Integer previousLevel = null;
         for (ManifestEntry entry : entries) {
+            if (entry.file().isVectorCFFile()) {
+                continue;
+            }
             int level = entry.file().level();
             // level 0 files have overlapping
             if (level == 0) {
