@@ -95,7 +95,7 @@ public class VectorCFReaderContextBuilder {
     public static List<DataFileMeta> filterScalarFiles(List<DataFileMeta> allFiles) {
         List<DataFileMeta> scalar = new ArrayList<>(allFiles.size());
         for (DataFileMeta file : allFiles) {
-            if (!file.isVectorCFFile()) {
+            if (!file.isVectorCFFile() && !VectorType.isVectorStoreFile(file.fileName())) {
                 scalar.add(file);
             }
         }
