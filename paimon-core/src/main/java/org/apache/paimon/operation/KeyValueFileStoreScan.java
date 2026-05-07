@@ -324,6 +324,10 @@ public class KeyValueFileStoreScan extends AbstractFileStoreScan {
     }
 
     private boolean filterByValueFilter(ManifestEntry entry) {
+        if (entry.file().isVectorCFFile()) {
+            return true;
+        }
+
         if (entry instanceof FilteredManifestEntry) {
             return ((FilteredManifestEntry) entry).selected();
         }
