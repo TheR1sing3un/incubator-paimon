@@ -87,6 +87,7 @@ public class AccelerateIndexBuildOrchestrator {
         private final double minValidRatio;
         private final long maxRowsPerIndex;
         @Nullable private final Long snapshotId;
+        private final boolean includeUnfilled;
 
         public BuildRequest(
                 FileStoreTable table,
@@ -100,6 +101,34 @@ public class AccelerateIndexBuildOrchestrator {
                 double minValidRatio,
                 long maxRowsPerIndex,
                 @Nullable Long snapshotId) {
+            this(
+                    table,
+                    column,
+                    dim,
+                    algorithm,
+                    metric,
+                    partitions,
+                    options,
+                    minValidRows,
+                    minValidRatio,
+                    maxRowsPerIndex,
+                    snapshotId,
+                    false);
+        }
+
+        public BuildRequest(
+                FileStoreTable table,
+                String column,
+                int dim,
+                String algorithm,
+                String metric,
+                @Nullable String partitions,
+                Map<String, String> options,
+                int minValidRows,
+                double minValidRatio,
+                long maxRowsPerIndex,
+                @Nullable Long snapshotId,
+                boolean includeUnfilled) {
             this.table = table;
             this.column = column;
             this.dim = dim;
@@ -111,6 +140,7 @@ public class AccelerateIndexBuildOrchestrator {
             this.minValidRatio = minValidRatio;
             this.maxRowsPerIndex = maxRowsPerIndex;
             this.snapshotId = snapshotId;
+            this.includeUnfilled = includeUnfilled;
         }
 
         public FileStoreTable table() {
@@ -158,6 +188,10 @@ public class AccelerateIndexBuildOrchestrator {
         public Long snapshotId() {
             return snapshotId;
         }
+
+        public boolean includeUnfilled() {
+            return includeUnfilled;
+        }
     }
 
     /**
@@ -166,7 +200,7 @@ public class AccelerateIndexBuildOrchestrator {
      * executors.
      */
     public static class SplitBuildContext implements Serializable {
-        private static final long serialVersionUID = 2L;
+        private static final long serialVersionUID = 3L;
 
         private final FileStoreTable table;
         private final int columnId;
@@ -185,6 +219,7 @@ public class AccelerateIndexBuildOrchestrator {
         private final int bytesPerVector;
         private final long vectorCFTargetFileSize;
         private final long vectorCFTargetFileRows;
+        private final boolean includeUnfilled;
 
         public SplitBuildContext(
                 FileStoreTable table,
@@ -234,6 +269,44 @@ public class AccelerateIndexBuildOrchestrator {
                 int bytesPerVector,
                 long vectorCFTargetFileSize,
                 long vectorCFTargetFileRows) {
+            this(
+                    table,
+                    columnId,
+                    vectorColumnIndex,
+                    dim,
+                    algorithm,
+                    metric,
+                    buildOptions,
+                    minValidRows,
+                    minValidRatio,
+                    maxRowsPerIndex,
+                    snapshotId,
+                    vectorCF,
+                    vectorColumnName,
+                    bytesPerVector,
+                    vectorCFTargetFileSize,
+                    vectorCFTargetFileRows,
+                    false);
+        }
+
+        public SplitBuildContext(
+                FileStoreTable table,
+                int columnId,
+                int vectorColumnIndex,
+                int dim,
+                String algorithm,
+                String metric,
+                Map<String, String> buildOptions,
+                int minValidRows,
+                double minValidRatio,
+                long maxRowsPerIndex,
+                long snapshotId,
+                boolean vectorCF,
+                String vectorColumnName,
+                int bytesPerVector,
+                long vectorCFTargetFileSize,
+                long vectorCFTargetFileRows,
+                boolean includeUnfilled) {
             this.table = table;
             this.columnId = columnId;
             this.vectorColumnIndex = vectorColumnIndex;
@@ -250,6 +323,7 @@ public class AccelerateIndexBuildOrchestrator {
             this.bytesPerVector = bytesPerVector;
             this.vectorCFTargetFileSize = vectorCFTargetFileSize;
             this.vectorCFTargetFileRows = vectorCFTargetFileRows;
+            this.includeUnfilled = includeUnfilled;
         }
 
         public FileStoreTable table() {
@@ -315,6 +389,10 @@ public class AccelerateIndexBuildOrchestrator {
 
         public long vectorCFTargetFileRows() {
             return vectorCFTargetFileRows;
+        }
+
+        public boolean includeUnfilled() {
+            return includeUnfilled;
         }
     }
 
@@ -456,7 +534,8 @@ public class AccelerateIndexBuildOrchestrator {
                         vectorColumnName,
                         bytesPerVector,
                         vectorCFTargetFileSize,
-                        vectorCFTargetFileRows);
+                        vectorCFTargetFileRows,
+                        request.includeUnfilled());
         return new ResolvedBuild(ctx, mergedSplits, bucketGroups);
     }
 
@@ -563,7 +642,9 @@ public class AccelerateIndexBuildOrchestrator {
 
         AccelerateIndexMeta meta = AccelerateIndexMetaIO.readOrEmpty(fileIO, metaPath);
 
-        // Collect sealed vector CF files matching the target column
+        boolean includeUnfilled = ctx.includeUnfilled();
+
+        // Collect vector CF files matching the target column
         List<Map.Entry<DataFileMeta, Long>> vectorFilesWithSize =
                 collectVectorCFFiles(
                         splitsInBucket,
@@ -572,7 +653,8 @@ public class AccelerateIndexBuildOrchestrator {
                         bucketPath,
                         targetFileSize,
                         targetFileRows,
-                        bytesPerVector);
+                        bytesPerVector,
+                        includeUnfilled);
         if (vectorFilesWithSize.isEmpty()) {
             return new BuildResult(0, 0, 0);
         }
@@ -612,8 +694,23 @@ public class AccelerateIndexBuildOrchestrator {
             AccelerateIndexEntry coveredEntry =
                     findCoveredEntry(meta, singleFileInfo, columnId, algorithm, snapshotId);
             if (coveredEntry != null && coveredEntry.buildSnapshotId() <= snapshotId) {
-                skipped++;
-                continue;
+                if (includeUnfilled
+                        && coveredEntry.state() == AccelerateIndexState.READY
+                        && !coveredEntry.dataFiles().isEmpty()) {
+                    long indexedRows = coveredEntry.dataFiles().get(0).rowCount();
+                    if (indexedRows != actualRowCount) {
+                        // File has grown since last build — delete old index and rebuild
+                        deleteOldIndexFile(fileIO, bucketPath, coveredEntry);
+                        casRemoveEntryById(fileIO, metaPath, coveredEntry.indexId());
+                        meta = AccelerateIndexMetaIO.readOrEmpty(fileIO, metaPath);
+                    } else {
+                        skipped++;
+                        continue;
+                    }
+                } else {
+                    skipped++;
+                    continue;
+                }
             }
 
             long startTime = System.currentTimeMillis();
@@ -983,8 +1080,9 @@ public class AccelerateIndexBuildOrchestrator {
     }
 
     /**
-     * Collect vector CF files from splits that match the target column and are sealed (actual file
-     * size >= targetFileSize). Returns pairs of (DataFileMeta, actualFileSize).
+     * Collect vector CF files from splits that match the target column. When {@code
+     * includeUnfilled} is false (default), only sealed files (actual size >= target) are returned.
+     * When true, all vector files are returned regardless of size.
      */
     static List<Map.Entry<DataFileMeta, Long>> collectVectorCFFiles(
             List<DataSplit> splits,
@@ -993,7 +1091,8 @@ public class AccelerateIndexBuildOrchestrator {
             Path bucketPath,
             long targetFileSize,
             long targetFileRows,
-            int bytesPerVector) {
+            int bytesPerVector,
+            boolean includeUnfilled) {
         // Deduplicate vector files (same file appears in every DataSplit)
         Map<String, DataFileMeta> seen = new LinkedHashMap<>();
         for (DataSplit split : splits) {
@@ -1008,23 +1107,27 @@ public class AccelerateIndexBuildOrchestrator {
         }
 
         // Filter for sealed files (check actual file size on filesystem)
-        List<Map.Entry<DataFileMeta, Long>> sealed = new ArrayList<>();
+        List<Map.Entry<DataFileMeta, Long>> result = new ArrayList<>();
         for (DataFileMeta meta : seen.values()) {
             try {
                 Path filePath = new Path(bucketPath, meta.fileName());
                 long actualSize = fileIO.getFileSize(filePath);
-                long actualRows = bytesPerVector > 0 ? actualSize / bytesPerVector : 0;
-                boolean noLimit = targetFileSize <= 0 && targetFileRows <= 0;
-                boolean sealedBySize = targetFileSize > 0 && actualSize >= targetFileSize;
-                boolean sealedByRows = targetFileRows > 0 && actualRows >= targetFileRows;
-                if (noLimit || sealedBySize || sealedByRows) {
-                    sealed.add(new java.util.AbstractMap.SimpleEntry<>(meta, actualSize));
+                if (includeUnfilled) {
+                    result.add(new java.util.AbstractMap.SimpleEntry<>(meta, actualSize));
+                } else {
+                    long actualRows = bytesPerVector > 0 ? actualSize / bytesPerVector : 0;
+                    boolean noLimit = targetFileSize <= 0 && targetFileRows <= 0;
+                    boolean sealedBySize = targetFileSize > 0 && actualSize >= targetFileSize;
+                    boolean sealedByRows = targetFileRows > 0 && actualRows >= targetFileRows;
+                    if (noLimit || sealedBySize || sealedByRows) {
+                        result.add(new java.util.AbstractMap.SimpleEntry<>(meta, actualSize));
+                    }
                 }
             } catch (IOException e) {
                 LOG.warn("Cannot check file size for {}, skipping", meta.fileName(), e);
             }
         }
-        return sealed;
+        return result;
     }
 
     /**
@@ -1546,6 +1649,35 @@ public class AccelerateIndexBuildOrchestrator {
                 });
         // Return a meta with the updated entries, avoiding an extra readOrEmpty round-trip
         return new AccelerateIndexMeta(0, System.currentTimeMillis(), updatedEntries.get());
+    }
+
+    private static void deleteOldIndexFile(
+            FileIO fileIO, Path bucketPath, AccelerateIndexEntry entry) {
+        if (entry.indexFile() == null || entry.indexFile().isEmpty()) {
+            return;
+        }
+        try {
+            Path indexPath = new Path(bucketPath, entry.indexFile());
+            fileIO.deleteQuietly(indexPath);
+        } catch (Exception e) {
+            LOG.warn("Failed to delete old index file: {}", entry.indexFile(), e);
+        }
+    }
+
+    private static void casRemoveEntryById(FileIO fileIO, Path metaPath, String indexId)
+            throws IOException {
+        AccelerateIndexMetaIO.casUpdate(
+                fileIO,
+                metaPath,
+                currentMeta -> {
+                    List<AccelerateIndexEntry> entries = new ArrayList<>();
+                    for (AccelerateIndexEntry e : currentMeta.entries()) {
+                        if (!e.indexId().equals(indexId)) {
+                            entries.add(e);
+                        }
+                    }
+                    return entries;
+                });
     }
 
     /**

@@ -56,6 +56,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import static org.apache.spark.sql.types.DataTypes.BooleanType;
 import static org.apache.spark.sql.types.DataTypes.IntegerType;
 import static org.apache.spark.sql.types.DataTypes.LongType;
 import static org.apache.spark.sql.types.DataTypes.StringType;
@@ -88,7 +89,8 @@ public class BuildAccelerateIndexProcedure extends BaseProcedure {
                 ProcedureParameter.optional("min_valid_rows", IntegerType),
                 ProcedureParameter.optional("min_valid_ratio", StringType),
                 ProcedureParameter.optional("max_rows_per_index", IntegerType),
-                ProcedureParameter.optional("snapshot_id", LongType)
+                ProcedureParameter.optional("snapshot_id", LongType),
+                ProcedureParameter.optional("include_unfilled", BooleanType)
             };
 
     private static final StructType OUTPUT_TYPE =
@@ -129,6 +131,7 @@ public class BuildAccelerateIndexProcedure extends BaseProcedure {
                         : Double.parseDouble(args.getString(8));
         long maxRowsPerIndex = args.isNullAt(9) ? 0L : (long) args.getInt(9);
         Long snapshotId = args.isNullAt(10) ? null : args.getLong(10);
+        boolean includeUnfilled = !args.isNullAt(11) && args.getBoolean(11);
 
         if (!"lucene".equals(algorithm) && dim <= 0) {
             throw new IllegalArgumentException(
@@ -176,7 +179,8 @@ public class BuildAccelerateIndexProcedure extends BaseProcedure {
                                             effectiveMinValidRows,
                                             effectiveMinValidRatio,
                                             maxRowsPerIndex,
-                                            snapshotId);
+                                            snapshotId,
+                                            includeUnfilled);
 
                             ResolvedBuild resolved =
                                     AccelerateIndexBuildOrchestrator.resolveContext(request);

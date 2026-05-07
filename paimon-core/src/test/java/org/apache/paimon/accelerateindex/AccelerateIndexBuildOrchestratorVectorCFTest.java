@@ -77,7 +77,8 @@ public class AccelerateIndexBuildOrchestratorVectorCFTest {
                         bucketPath,
                         0, // no target file size (all sealed)
                         -1, // no target file rows
-                        BYTES_PER_VECTOR);
+                        BYTES_PER_VECTOR,
+                        false);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getKey().fileName()).isEqualTo("data-1.vector.bin");
@@ -114,7 +115,8 @@ public class AccelerateIndexBuildOrchestratorVectorCFTest {
                         bucketPath,
                         5 * BYTES_PER_VECTOR, // 80 bytes target
                         -1,
-                        BYTES_PER_VECTOR);
+                        BYTES_PER_VECTOR,
+                        false);
 
         // Only the large file passes the sealed check
         assertThat(result).hasSize(1);
@@ -155,7 +157,8 @@ public class AccelerateIndexBuildOrchestratorVectorCFTest {
                         bucketPath,
                         0,
                         -1,
-                        BYTES_PER_VECTOR);
+                        BYTES_PER_VECTOR,
+                        false);
 
         assertThat(result).as("Duplicate files should be deduplicated").hasSize(1);
     }
@@ -213,6 +216,61 @@ public class AccelerateIndexBuildOrchestratorVectorCFTest {
         assertThat(chunks).hasSize(1);
         assertThat(chunks.get(0)).hasSize(2);
         assertThat(chunks.get(0).get(1).offset()).isEqualTo(100);
+    }
+
+    @Test
+    public void testCollectVectorCFFilesIncludeUnfilled() throws Exception {
+        FileIO fileIO = new LocalFileIO();
+        Path bucketPath = new Path(tempDir.toString());
+
+        createVectorFile(fileIO, bucketPath, "sealed.vector.bin", 10);
+        createVectorFile(fileIO, bucketPath, "unfilled.vector.bin", 1);
+
+        DataFileMeta sealed =
+                createVectorFileMeta("sealed.vector.bin", 10 * BYTES_PER_VECTOR, "emb");
+        DataFileMeta unfilled =
+                createVectorFileMeta("unfilled.vector.bin", 1 * BYTES_PER_VECTOR, "emb");
+
+        DataSplit split =
+                DataSplit.builder()
+                        .withSnapshot(1)
+                        .withPartition(BinaryRow.EMPTY_ROW)
+                        .withBucket(0)
+                        .withBucketPath(bucketPath.toString())
+                        .withDataFiles(Arrays.asList(sealed, unfilled))
+                        .build();
+
+        // Without includeUnfilled — only sealed
+        List<Map.Entry<DataFileMeta, Long>> sealedOnly =
+                AccelerateIndexBuildOrchestrator.collectVectorCFFiles(
+                        Collections.singletonList(split),
+                        "emb",
+                        fileIO,
+                        bucketPath,
+                        5 * BYTES_PER_VECTOR,
+                        -1,
+                        BYTES_PER_VECTOR,
+                        false);
+        assertThat(sealedOnly).hasSize(1);
+        assertThat(sealedOnly.get(0).getKey().fileName()).isEqualTo("sealed.vector.bin");
+
+        // With includeUnfilled — both files
+        List<Map.Entry<DataFileMeta, Long>> all =
+                AccelerateIndexBuildOrchestrator.collectVectorCFFiles(
+                        Collections.singletonList(split),
+                        "emb",
+                        fileIO,
+                        bucketPath,
+                        5 * BYTES_PER_VECTOR,
+                        -1,
+                        BYTES_PER_VECTOR,
+                        true);
+        assertThat(all).hasSize(2);
+        List<String> names = new ArrayList<>();
+        for (Map.Entry<DataFileMeta, Long> e : all) {
+            names.add(e.getKey().fileName());
+        }
+        assertThat(names).containsExactlyInAnyOrder("sealed.vector.bin", "unfilled.vector.bin");
     }
 
     // ---- helpers ----
