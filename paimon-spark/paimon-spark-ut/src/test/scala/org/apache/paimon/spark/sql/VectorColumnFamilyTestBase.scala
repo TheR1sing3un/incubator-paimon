@@ -492,6 +492,18 @@ class VectorColumnFamilyTestBase extends PaimonSparkTestBase {
         sql("SELECT pk, name FROM t ORDER BY pk"),
         Seq(Row(1, "alice"), Row(2, "bob"), Row(3, "charlie"))
       )
+
+      // Verify predicate pushdown with vector columns works (exercises filterByValueFilter)
+      checkAnswer(
+        sql("SELECT pk, embedding FROM t WHERE name = 'alice'"),
+        Seq(Row(1, Seq(1.0f, 2.0f, 3.0f, 4.0f)))
+      )
+
+      // Verify predicate pushdown on scalar-only query
+      checkAnswer(
+        sql("SELECT pk FROM t WHERE name = 'bob'"),
+        Seq(Row(2))
+      )
     }
   }
 

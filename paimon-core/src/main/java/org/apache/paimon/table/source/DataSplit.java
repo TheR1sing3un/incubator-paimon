@@ -170,6 +170,9 @@ public class DataSplit implements Split {
 
     private boolean dataEvolutionRowCountAvailable() {
         for (DataFileMeta file : dataFiles) {
+            if (file.isVectorCFFile()) {
+                continue;
+            }
             if (file.firstRowId() == null) {
                 return false;
             }
@@ -179,8 +182,14 @@ public class DataSplit implements Split {
 
     private long dataEvolutionMergedRowCount() {
         long sum = 0L;
+        List<DataFileMeta> scalarFiles = new ArrayList<>();
+        for (DataFileMeta file : dataFiles) {
+            if (!file.isVectorCFFile()) {
+                scalarFiles.add(file);
+            }
+        }
         RangeHelper<DataFileMeta> rangeHelper = new RangeHelper<>(DataFileMeta::nonNullRowIdRange);
-        List<List<DataFileMeta>> ranges = rangeHelper.mergeOverlappingRanges(dataFiles);
+        List<List<DataFileMeta>> ranges = rangeHelper.mergeOverlappingRanges(scalarFiles);
         for (List<DataFileMeta> group : ranges) {
             long maxCount = 0;
             for (DataFileMeta file : group) {
@@ -194,6 +203,9 @@ public class DataSplit implements Split {
     public Object minValue(int fieldIndex, DataField dataField, SimpleStatsEvolutions evolutions) {
         Object minValue = null;
         for (DataFileMeta dataFile : dataFiles) {
+            if (dataFile.isVectorCFFile()) {
+                continue;
+            }
             SimpleStatsEvolution evolution = evolutions.getOrCreate(dataFile.schemaId());
             InternalRow minValues =
                     evolution.evolution(
@@ -213,6 +225,9 @@ public class DataSplit implements Split {
     public Object maxValue(int fieldIndex, DataField dataField, SimpleStatsEvolutions evolutions) {
         Object maxValue = null;
         for (DataFileMeta dataFile : dataFiles) {
+            if (dataFile.isVectorCFFile()) {
+                continue;
+            }
             SimpleStatsEvolution evolution = evolutions.getOrCreate(dataFile.schemaId());
             InternalRow maxValues =
                     evolution.evolution(
@@ -232,6 +247,9 @@ public class DataSplit implements Split {
     public Long nullCount(int fieldIndex, SimpleStatsEvolutions evolutions) {
         Long sum = null;
         for (DataFileMeta dataFile : dataFiles) {
+            if (dataFile.isVectorCFFile()) {
+                continue;
+            }
             SimpleStatsEvolution evolution = evolutions.getOrCreate(dataFile.schemaId());
             InternalArray nullCounts =
                     evolution.evolution(

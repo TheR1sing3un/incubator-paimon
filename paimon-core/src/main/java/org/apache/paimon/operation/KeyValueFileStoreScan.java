@@ -279,6 +279,10 @@ public class KeyValueFileStoreScan extends AbstractFileStoreScan {
             List<ManifestEntry> entries, AtomicLong currentRowCount) {
         List<ManifestEntry> result = new ArrayList<>();
         for (ManifestEntry entry : entries) {
+            if (entry.file().isVectorCFFile()) {
+                result.add(entry);
+                continue;
+            }
             boolean hasDeleteRows =
                     entry.file().deleteRowCount().map(count -> count > 0L).orElse(false);
             if (hasDeleteRows) {
