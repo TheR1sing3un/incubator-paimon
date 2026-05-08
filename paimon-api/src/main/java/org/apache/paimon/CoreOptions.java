@@ -481,10 +481,11 @@ public class CoreOptions implements Serializable {
                             "The legacy partition name is using `toString` fpr all types. If false, using "
                                     + "cast to string for all types.");
 
+    @Documentation.OverrideDefault("infinite")
     public static final ConfigOption<Integer> SNAPSHOT_NUM_RETAINED_MIN =
             key("snapshot.num-retained.min")
                     .intType()
-                    .defaultValue(10)
+                    .defaultValue(Integer.MAX_VALUE)
                     .withDescription(
                             "The minimum number of completed snapshots to retain. Should be greater than or equal to 1.");
 
