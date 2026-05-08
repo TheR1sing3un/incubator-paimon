@@ -147,7 +147,8 @@ public class MergeTreeCompactManagerFactory implements KvCompactionManagerFactor
             int bucket,
             ExecutorService compactExecutor,
             List<DataFileMeta> restoreFiles,
-            @Nullable BucketedDvMaintainer dvMaintainer) {
+            @Nullable BucketedDvMaintainer dvMaintainer,
+            List<DataFileMeta> bucketVectorFiles) {
         if (options.writeOnly()) {
             return new NoopCompactManager();
         }
@@ -163,7 +164,8 @@ public class MergeTreeCompactManagerFactory implements KvCompactionManagerFactor
                         keyComparator,
                         userDefinedSeqComparator,
                         levels,
-                        dvMaintainer);
+                        dvMaintainer,
+                        bucketVectorFiles);
         CompactionMetrics.Reporter metricsReporter =
                 compactionMetrics == null
                         ? null
@@ -228,7 +230,8 @@ public class MergeTreeCompactManagerFactory implements KvCompactionManagerFactor
             Comparator<InternalRow> keyComparator,
             @Nullable FieldsComparator userDefinedSeqComparator,
             Levels levels,
-            @Nullable BucketedDvMaintainer dvMaintainer) {
+            @Nullable BucketedDvMaintainer dvMaintainer,
+            List<DataFileMeta> bucketVectorFiles) {
         DeletionVector.Factory dvFactory = DeletionVector.factory(dvMaintainer);
         KeyValueFileReaderFactory keyReaderFactory =
                 readerFactoryBuilder.build(partition, bucket, dvFactory);
@@ -318,6 +321,21 @@ public class MergeTreeCompactManagerFactory implements KvCompactionManagerFactor
                     options,
                     remoteLookupFileManager);
         } else {
+            if (options.vectorColumnFamilyEnabled() && options.vectorCFCompactEnabled()) {
+                return new VectorCFCompactRewriter(
+                        readerFactory,
+                        writerFactory,
+                        keyComparator,
+                        userDefinedSeqComparator,
+                        mfFactory,
+                        mergeSorter,
+                        options.snapshotSequenceOrdering(),
+                        options,
+                        fileIO,
+                        valueType,
+                        maxLevel,
+                        bucketVectorFiles);
+            }
             return new MergeTreeCompactRewriter(
                     readerFactory,
                     writerFactory,

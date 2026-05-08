@@ -2466,6 +2466,32 @@ public class CoreOptions implements Serializable {
                             "Target row count of a vector column family file. "
                                     + "When set, target-file-size is ignored.");
 
+    public static final ConfigOption<Boolean> VECTOR_COLUMN_FAMILY_COMPACT_ENABLED =
+            key("vector-column-family.compact.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether to compact vector CF files during full compaction. "
+                                    + "When enabled, vector files with low valid-data ratio "
+                                    + "are merged into new files and VectorDescriptor references "
+                                    + "in scalar files are updated.");
+
+    public static final ConfigOption<Double> VECTOR_COLUMN_FAMILY_COMPACT_VALID_RATIO =
+            key("vector-column-family.compact.valid-ratio-threshold")
+                    .doubleType()
+                    .defaultValue(0.5)
+                    .withDescription(
+                            "Vector files with valid-data ratio below this threshold "
+                                    + "will be merged during full compaction.");
+
+    public static final ConfigOption<Integer> VECTOR_COLUMN_FAMILY_COMPACT_MIN_FILES =
+            key("vector-column-family.compact.min-files-to-merge")
+                    .intType()
+                    .defaultValue(2)
+                    .withDescription(
+                            "Minimum number of low-ratio vector files required "
+                                    + "to trigger merging during full compaction.");
+
     private final Options options;
 
     public CoreOptions(Map<String, String> options) {
@@ -3867,6 +3893,18 @@ public class CoreOptions implements Serializable {
 
     public long vectorColumnFamilyTargetFileRows() {
         return options.getOptional(VECTOR_COLUMN_FAMILY_TARGET_FILE_ROWS).orElse(-1L);
+    }
+
+    public boolean vectorCFCompactEnabled() {
+        return options.get(VECTOR_COLUMN_FAMILY_COMPACT_ENABLED);
+    }
+
+    public double vectorCFCompactValidRatioThreshold() {
+        return options.get(VECTOR_COLUMN_FAMILY_COMPACT_VALID_RATIO);
+    }
+
+    public int vectorCFCompactMinFiles() {
+        return options.get(VECTOR_COLUMN_FAMILY_COMPACT_MIN_FILES);
     }
 
     /** Specifies the merge engine for table with primary key. */

@@ -41,6 +41,7 @@ import org.apache.paimon.utils.FieldsComparator;
 import javax.annotation.Nullable;
 
 import java.io.Closeable;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -93,5 +94,21 @@ public interface KvCompactionManagerFactory extends Closeable {
             int bucket,
             ExecutorService compactExecutor,
             List<DataFileMeta> restoreFiles,
-            @Nullable BucketedDvMaintainer dvMaintainer);
+            @Nullable BucketedDvMaintainer dvMaintainer,
+            List<DataFileMeta> bucketVectorFiles);
+
+    default CompactManager create(
+            BinaryRow partition,
+            int bucket,
+            ExecutorService compactExecutor,
+            List<DataFileMeta> restoreFiles,
+            @Nullable BucketedDvMaintainer dvMaintainer) {
+        return create(
+                partition,
+                bucket,
+                compactExecutor,
+                restoreFiles,
+                dvMaintainer,
+                Collections.emptyList());
+    }
 }

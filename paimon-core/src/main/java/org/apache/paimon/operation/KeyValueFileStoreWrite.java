@@ -208,9 +208,15 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
         KeyValueFileWriterFactory writerFactory =
                 writerFactoryBuilder.build(partition, bucket, options);
         Comparator<InternalRow> keyComparator = keyComparatorSupplier.get();
+
         CompactManager compactManager =
                 compactManagerFactory.create(
-                        partition, bucket, compactExecutor, restoreFiles, dvMaintainer);
+                        partition,
+                        bucket,
+                        compactExecutor,
+                        restoreFiles,
+                        dvMaintainer,
+                        lastRestoredVectorCFFiles);
 
         VersionedMergeMode mergeMode = VersionedMergeMode.UPSERT;
         if (options.mergeEngine() == CoreOptions.MergeEngine.VERSIONED_PARTIAL_UPDATE) {
