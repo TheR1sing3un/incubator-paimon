@@ -579,7 +579,11 @@ public abstract class SimpleTableTestBase {
     @Test
     public void testCopyWithLatestSchema() throws Exception {
         FileStoreTable table =
-                createFileStoreTable(conf -> conf.set(SNAPSHOT_NUM_RETAINED_MAX, 100));
+                createFileStoreTable(
+                        conf -> {
+                            conf.set(SNAPSHOT_NUM_RETAINED_MIN, 10);
+                            conf.set(SNAPSHOT_NUM_RETAINED_MAX, 100);
+                        });
         StreamTableWrite write = table.newWrite(commitUser);
         StreamTableCommit commit = table.newCommit(commitUser);
 

@@ -57,6 +57,7 @@ public class ChangelogExpireTest extends IndexFileExpireTableTest {
                         .primaryKey("pk", "pt")
                         .option("changelog-producer", "input")
                         .option("changelog.num-retained.max", "40")
+                        .option("snapshot.num-retained.min", "10")
                         .option("snapshot.num-retained.max", "39")
                         .options(tableOptions().toMap())
                         .build();

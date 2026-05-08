@@ -458,6 +458,7 @@ public class LocalOrphanFilesCleanTest {
     public void testCleanOrphanFilesWithChangelogDecoupled(String changelogProducer)
             throws Exception {
         Options options = new Options();
+        options.set(CoreOptions.SNAPSHOT_NUM_RETAINED_MIN, 10);
         options.set(CoreOptions.SNAPSHOT_NUM_RETAINED_MAX, 15);
         options.set(CoreOptions.CHANGELOG_NUM_RETAINED_MAX, 20);
         options.set(CoreOptions.CHANGELOG_PRODUCER.key(), changelogProducer);
@@ -469,6 +470,7 @@ public class LocalOrphanFilesCleanTest {
     public void testCleanOrphanFilesWithChangelogDecoupledWithExternalPath(String changelogProducer)
             throws Exception {
         Options options = new Options();
+        options.set(CoreOptions.SNAPSHOT_NUM_RETAINED_MIN, 10);
         options.set(CoreOptions.SNAPSHOT_NUM_RETAINED_MAX, 15);
         options.set(CoreOptions.CHANGELOG_NUM_RETAINED_MAX, 20);
         options.set(CoreOptions.CHANGELOG_PRODUCER.key(), changelogProducer);
