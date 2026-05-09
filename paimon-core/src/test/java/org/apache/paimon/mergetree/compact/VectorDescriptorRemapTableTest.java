@@ -140,4 +140,42 @@ public class VectorDescriptorRemapTableTest {
         byte[] unmapped = new VectorDescriptor(oldFileId, 1L).serialize();
         assertThat(table.remap(unmapped)).isNull();
     }
+
+    @Test
+    public void testMergeFromThrowsOnCollision() {
+        VectorDescriptorRemapTable table1 = new VectorDescriptorRemapTable();
+        int sharedFileId = 42;
+        Map<Long, Long> mapping1 = new HashMap<>();
+        mapping1.put(0L, 0L);
+        table1.addFileMapping(sharedFileId, 100, mapping1);
+
+        VectorDescriptorRemapTable table2 = new VectorDescriptorRemapTable();
+        Map<Long, Long> mapping2 = new HashMap<>();
+        mapping2.put(0L, 0L);
+        table2.addFileMapping(sharedFileId, 200, mapping2);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> table1.mergeFrom(table2))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("collision");
+    }
+
+    @Test
+    public void testFileIds() {
+        VectorDescriptorRemapTable table = new VectorDescriptorRemapTable();
+        assertThat(table.fileIds()).isEmpty();
+
+        Map<Long, Long> m = new HashMap<>();
+        m.put(0L, 0L);
+        table.addFileMapping(10, 100, m);
+        table.addFileMapping(20, 200, m);
+
+        assertThat(table.fileIds()).containsExactlyInAnyOrder(10, 20);
+    }
+
+    @Test
+    public void testRemapEmptyTable() {
+        VectorDescriptorRemapTable table = new VectorDescriptorRemapTable();
+        byte[] desc = new VectorDescriptor(123, 0L).serialize();
+        assertThat(table.remap(desc)).isNull();
+    }
 }

@@ -43,7 +43,16 @@ public class VectorDescriptorRemapTable {
     }
 
     public void mergeFrom(VectorDescriptorRemapTable other) {
-        remapping.putAll(other.remapping);
+        for (Map.Entry<Integer, RemapEntry> entry : other.remapping.entrySet()) {
+            if (remapping.containsKey(entry.getKey())) {
+                throw new IllegalStateException(
+                        "VectorDescriptorRemapTable collision: fileId "
+                                + entry.getKey()
+                                + " already mapped. This indicates a hashCode collision "
+                                + "between vector file names from different columns.");
+            }
+            remapping.put(entry.getKey(), entry.getValue());
+        }
     }
 
     public boolean containsFileId(int fileId) {

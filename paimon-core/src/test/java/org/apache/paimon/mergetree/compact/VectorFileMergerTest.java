@@ -173,6 +173,57 @@ public class VectorFileMergerTest {
         }
     }
 
+    @Test
+    public void testMergeWithPartialEmptyLiveIndices() throws Exception {
+        FileIO fileIO = new LocalFileIO();
+        Path bucketPath = new Path(tempDir.toString());
+
+        createVectorFile(fileIO, bucketPath, "has-live.vector.bin", 3);
+        createVectorFile(fileIO, bucketPath, "all-dead.vector.bin", 2);
+
+        DataFileMeta metaLive = vectorMeta("has-live.vector.bin", 3);
+        DataFileMeta metaDead = vectorMeta("all-dead.vector.bin", 2);
+
+        Map<Integer, Set<Long>> refs = new HashMap<>();
+        refs.put("has-live.vector.bin".hashCode(), new HashSet<>(Arrays.asList(0L, 2L)));
+        // all-dead has no refs at all
+
+        DataFilePathFactory pathFactory =
+                new DataFilePathFactory(bucketPath, "bin", "data-", "changelog-", false, "", null);
+
+        VectorFileMerger merger =
+                new VectorFileMerger(fileIO, bucketPath, BYTES_PER_VECTOR, 0L, "emb", pathFactory);
+
+        VectorFileMerger.MergeResult result = merger.merge(Arrays.asList(metaLive, metaDead), refs);
+
+        assertThat(result).isNotNull();
+        assertThat(result.newFileMeta().rowCount()).isEqualTo(2);
+
+        VectorDescriptorRemapTable remap = result.remapTable();
+        assertThat(remap.containsFileId("has-live.vector.bin".hashCode())).isTrue();
+        assertThat(remap.containsFileId("all-dead.vector.bin".hashCode())).isFalse();
+    }
+
+    @Test
+    public void testMergeSourceFileNotFound() throws Exception {
+        FileIO fileIO = new LocalFileIO();
+        Path bucketPath = new Path(tempDir.toString());
+
+        DataFileMeta meta = vectorMeta("nonexistent.vector.bin", 5);
+        Map<Integer, Set<Long>> refs = new HashMap<>();
+        refs.put("nonexistent.vector.bin".hashCode(), new HashSet<>(Arrays.asList(0L, 1L)));
+
+        DataFilePathFactory pathFactory =
+                new DataFilePathFactory(bucketPath, "bin", "data-", "changelog-", false, "", null);
+
+        VectorFileMerger merger =
+                new VectorFileMerger(fileIO, bucketPath, BYTES_PER_VECTOR, 0L, "emb", pathFactory);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> merger.merge(Collections.singletonList(meta), refs))
+                .isInstanceOf(java.io.FileNotFoundException.class);
+    }
+
     // ---- helpers ----
 
     private void createVectorFile(FileIO fileIO, Path dir, String name, int rows) throws Exception {
@@ -180,7 +231,11 @@ public class VectorFileMergerTest {
             for (int i = 0; i < rows; i++) {
                 ByteBuffer buf = ByteBuffer.allocate(BYTES_PER_VECTOR);
                 buf.order(ByteOrder.LITTLE_ENDIAN);
-                buf.putFloat((float) i);
+                // Fill all 4 floats so every byte is non-zero for reliable assertions
+                buf.putFloat((float) (i * 10 + 1));
+                buf.putFloat((float) (i * 10 + 2));
+                buf.putFloat((float) (i * 10 + 3));
+                buf.putFloat((float) (i * 10 + 4));
                 out.write(buf.array());
             }
         }
