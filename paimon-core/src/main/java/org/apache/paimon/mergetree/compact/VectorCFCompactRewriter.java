@@ -21,23 +21,44 @@ package org.apache.paimon.mergetree.compact;
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.KeyValue;
 import org.apache.paimon.compact.CompactResult;
+import org.apache.paimon.data.BinaryVector;
 import org.apache.paimon.data.InternalRow;
+import org.apache.paimon.data.InternalVector;
+import org.apache.paimon.data.VectorDescriptor;
+import org.apache.paimon.data.VectorRef;
 import org.apache.paimon.fs.FileIO;
+import org.apache.paimon.fs.Path;
 import org.apache.paimon.io.DataFileMeta;
+import org.apache.paimon.io.DataFilePathFactory;
 import org.apache.paimon.io.FileReaderFactory;
 import org.apache.paimon.io.KeyValueFileWriterFactory;
+import org.apache.paimon.io.RollingFileWriter;
+import org.apache.paimon.manifest.FileSource;
+import org.apache.paimon.mergetree.DropDeleteReader;
 import org.apache.paimon.mergetree.MergeSorter;
 import org.apache.paimon.mergetree.SortedRun;
+import org.apache.paimon.reader.RecordReader;
+import org.apache.paimon.reader.RecordReaderIterator;
+import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.RowType;
+import org.apache.paimon.types.VectorType;
+import org.apache.paimon.utils.ExceptionUtils;
 import org.apache.paimon.utils.FieldsComparator;
+import org.apache.paimon.utils.IOUtils;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * A {@link CompactRewriter} that merges low-valid-ratio vector CF files during full compaction.
@@ -105,17 +126,346 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         }
 
         LOG.info(
-                "Full compaction with vector CF compact: {} vector files in bucket, "
-                        + "threshold={}, minFiles={}",
+                "Full compaction with vector CF compact: {} vector files, threshold={}, minFiles={}",
                 bucketVectorFiles.size(),
                 options.vectorCFCompactValidRatioThreshold(),
                 options.vectorCFCompactMinFiles());
 
-        // TODO Phase 2: pre-scan to compute valid ratios
-        // TODO Phase 3: merge low-ratio vector files
-        // TODO Phase 4: rewrite with descriptor remapping
+        return rewriteWithVectorCompaction(outputLevel, dropDelete, sections);
+    }
 
-        // For now, delegate to normal compaction
-        return rewriteCompaction(outputLevel, dropDelete, sections);
+    private CompactResult rewriteWithVectorCompaction(
+            int outputLevel, boolean dropDelete, List<List<SortedRun>> sections) throws Exception {
+
+        // --- Phase 2: Pre-scan to collect live vector references ---
+        List<VectorColumnInfo> vectorColumns = detectVectorColumns();
+        if (vectorColumns.isEmpty()) {
+            return rewriteCompaction(outputLevel, dropDelete, sections);
+        }
+
+        Map<Integer, Set<Long>> liveReferences = preScan(sections, dropDelete, vectorColumns);
+
+        // --- Phase 2b: Compute valid ratios and decide which files to merge ---
+        List<DataFileMeta> filesToMerge = new ArrayList<>();
+        for (DataFileMeta vecFile : bucketVectorFiles) {
+            int fileId = vecFile.fileName().hashCode();
+            Set<Long> liveRows = liveReferences.getOrDefault(fileId, new HashSet<>());
+            long totalRows = vecFile.rowCount();
+            double validRatio = totalRows > 0 ? (double) liveRows.size() / totalRows : 1.0;
+
+            LOG.info(
+                    "Vector file {}: liveRows={}, totalRows={}, validRatio={}",
+                    vecFile.fileName(),
+                    liveRows.size(),
+                    totalRows,
+                    String.format("%.3f", validRatio));
+
+            if (validRatio < options.vectorCFCompactValidRatioThreshold()) {
+                filesToMerge.add(vecFile);
+            }
+        }
+
+        if (filesToMerge.size() < options.vectorCFCompactMinFiles()) {
+            LOG.info(
+                    "Only {} low-ratio files (min={}), skipping vector merge",
+                    filesToMerge.size(),
+                    options.vectorCFCompactMinFiles());
+            return rewriteCompaction(outputLevel, dropDelete, sections);
+        }
+
+        // --- Phase 3: Merge vector files ---
+        VectorColumnInfo firstVecCol = vectorColumns.get(0);
+        DataFilePathFactory dataFilePathFactory = writerFactory.pathFactory(outputLevel);
+        Path bucketPath = dataFilePathFactory.parent();
+        long schemaId = filesToMerge.get(0).schemaId();
+
+        VectorFileMerger merger =
+                new VectorFileMerger(
+                        fileIO,
+                        bucketPath,
+                        firstVecCol.bytesPerVector,
+                        schemaId,
+                        firstVecCol.fieldName,
+                        dataFilePathFactory);
+
+        VectorFileMerger.MergeResult mergeResult = merger.merge(filesToMerge, liveReferences);
+        if (mergeResult == null) {
+            LOG.info("Vector merge produced no data, falling back to normal compaction");
+            return rewriteCompaction(outputLevel, dropDelete, sections);
+        }
+
+        VectorDescriptorRemapTable remapTable = mergeResult.remapTable();
+        LOG.info(
+                "Vector merge complete: {} old files → {} new file, remapping {} fileIds",
+                filesToMerge.size(),
+                mergeResult.newFileMeta().fileName(),
+                remapTable.fileIds().size());
+
+        // --- Phase 4: Compact rewrite with descriptor remapping ---
+        CompactResult scalarResult =
+                rewriteWithRemapping(outputLevel, dropDelete, sections, remapTable, vectorColumns);
+
+        // Combine scalar + vector before/after
+        List<DataFileMeta> allBefore = new ArrayList<>(scalarResult.before());
+        allBefore.addAll(filesToMerge);
+        List<DataFileMeta> allAfter = new ArrayList<>(scalarResult.after());
+        allAfter.add(mergeResult.newFileMeta());
+
+        return new CompactResult(allBefore, allAfter, scalarResult.changelog());
+    }
+
+    /** Detect vector columns in the value type. */
+    private List<VectorColumnInfo> detectVectorColumns() {
+        List<VectorColumnInfo> result = new ArrayList<>();
+        List<DataField> fields = valueType.getFields();
+        for (int i = 0; i < fields.size(); i++) {
+            DataField field = fields.get(i);
+            if (field.type() instanceof VectorType) {
+                VectorType vt = (VectorType) field.type();
+                int dim = vt.getLength();
+                int elementSize =
+                        org.apache.paimon.data.BinaryVector.getPrimitiveElementSize(
+                                vt.getElementType());
+                int bytesPerVector = ((dim * elementSize + 7) / 8) * 8;
+                result.add(new VectorColumnInfo(i, field.name(), bytesPerVector));
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Pre-scan merged records to collect live vector references. Returns fileId → set of live
+     * rowIndices.
+     */
+    private Map<Integer, Set<Long>> preScan(
+            List<List<SortedRun>> sections,
+            boolean dropDelete,
+            List<VectorColumnInfo> vectorColumns)
+            throws Exception {
+        Map<Integer, Set<Long>> liveReferences = new HashMap<>();
+        Set<Integer> vectorFileIds = new HashSet<>();
+        for (DataFileMeta f : bucketVectorFiles) {
+            vectorFileIds.add(f.fileName().hashCode());
+        }
+
+        RecordReader<KeyValue> reader = null;
+        try {
+            reader =
+                    readerForMergeTree(
+                            sections, new ReducerMergeFunctionWrapper(mfFactory.create()));
+            if (dropDelete) {
+                reader = new DropDeleteReader(reader);
+            }
+
+            RecordReader.RecordIterator<KeyValue> batch;
+            while ((batch = reader.readBatch()) != null) {
+                KeyValue kv;
+                while ((kv = batch.next()) != null) {
+                    InternalRow value = kv.value();
+                    for (VectorColumnInfo colInfo : vectorColumns) {
+                        byte[] descBytes = extractDescriptorBytes(value, colInfo.valueIndex);
+                        if (descBytes != null && VectorDescriptor.isVectorDescriptor(descBytes)) {
+                            int fileId = VectorDescriptor.extractFileId(descBytes);
+                            if (vectorFileIds.contains(fileId)) {
+                                long rowIndex = VectorDescriptor.extractRowIndex(descBytes);
+                                liveReferences
+                                        .computeIfAbsent(fileId, k -> new HashSet<>())
+                                        .add(rowIndex);
+                            }
+                        }
+                    }
+                }
+                batch.releaseBatch();
+            }
+        } finally {
+            IOUtils.closeAll(reader);
+        }
+
+        return liveReferences;
+    }
+
+    /**
+     * Extract raw VectorDescriptor bytes from a value row at the given position. Handles both
+     * BinaryRow (getBinary) and GenericRow (getVector → VectorRef/BinaryVector) cases.
+     */
+    @Nullable
+    private static byte[] extractDescriptorBytes(InternalRow row, int pos) {
+        if (row.isNullAt(pos)) {
+            return null;
+        }
+        try {
+            InternalVector vec = row.getVector(pos);
+            if (vec instanceof VectorRef) {
+                return ((VectorRef) vec).toDescriptorBytes();
+            } else if (vec instanceof BinaryVector) {
+                BinaryVector bv = (BinaryVector) vec;
+                return org.apache.paimon.memory.MemorySegmentUtils.copyToBytes(
+                        bv.getSegments(), bv.getOffset(), bv.getSizeInBytes());
+            }
+        } catch (Exception e) {
+            // Fall through
+        }
+        try {
+            return row.getBinary(pos);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Rewrite scalar files with VectorDescriptor remapping applied. */
+    private CompactResult rewriteWithRemapping(
+            int outputLevel,
+            boolean dropDelete,
+            List<List<SortedRun>> sections,
+            VectorDescriptorRemapTable remapTable,
+            List<VectorColumnInfo> vectorColumns)
+            throws Exception {
+        RollingFileWriter<KeyValue, DataFileMeta> writer =
+                writerFactory.createRollingMergeTreeFileWriter(outputLevel, FileSource.COMPACT);
+        RecordReader<KeyValue> reader = null;
+        Exception collectedExceptions = null;
+        try {
+            reader =
+                    readerForMergeTree(
+                            sections, new ReducerMergeFunctionWrapper(mfFactory.create()));
+            if (dropDelete) {
+                reader = new DropDeleteReader(reader);
+            }
+            reader = new VectorDescriptorRemapReader(reader, remapTable, vectorColumns, valueType);
+            writer.write(new RecordReaderIterator<>(reader));
+        } catch (Exception e) {
+            collectedExceptions = e;
+        } finally {
+            try {
+                IOUtils.closeAll(reader, writer);
+            } catch (Exception e) {
+                collectedExceptions = ExceptionUtils.firstOrSuppressed(e, collectedExceptions);
+            }
+        }
+
+        if (null != collectedExceptions) {
+            writer.abort();
+            throw collectedExceptions;
+        }
+
+        List<DataFileMeta> before = extractFilesFromSections(sections);
+        notifyRewriteCompactBefore(before);
+        List<DataFileMeta> after = writer.result();
+        after = preAssignCommitSnapshotId(after, sections);
+        after = notifyRewriteCompactAfter(after);
+        return new CompactResult(before, after);
+    }
+
+    /** Info about a vector column in the value type. */
+    static class VectorColumnInfo {
+        final int valueIndex;
+        final String fieldName;
+        final int bytesPerVector;
+
+        VectorColumnInfo(int valueIndex, String fieldName, int bytesPerVector) {
+            this.valueIndex = valueIndex;
+            this.fieldName = fieldName;
+            this.bytesPerVector = bytesPerVector;
+        }
+    }
+
+    /**
+     * RecordReader wrapper that remaps VectorDescriptor references in each KeyValue's value row.
+     * Creates a shallow copy of the value row with remapped vector columns.
+     */
+    private static class VectorDescriptorRemapReader implements RecordReader<KeyValue> {
+
+        private final RecordReader<KeyValue> delegate;
+        private final VectorDescriptorRemapTable remapTable;
+        private final List<VectorColumnInfo> vectorColumns;
+        private final InternalRow.FieldGetter[] fieldGetters;
+
+        VectorDescriptorRemapReader(
+                RecordReader<KeyValue> delegate,
+                VectorDescriptorRemapTable remapTable,
+                List<VectorColumnInfo> vectorColumns,
+                RowType valueType) {
+            this.delegate = delegate;
+            this.remapTable = remapTable;
+            this.vectorColumns = vectorColumns;
+            this.fieldGetters = new InternalRow.FieldGetter[valueType.getFieldCount()];
+            for (int i = 0; i < fieldGetters.length; i++) {
+                fieldGetters[i] = InternalRow.createFieldGetter(valueType.getTypeAt(i), i);
+            }
+        }
+
+        @Nullable
+        @Override
+        public RecordIterator<KeyValue> readBatch() throws IOException {
+            RecordIterator<KeyValue> batch = delegate.readBatch();
+            if (batch == null) {
+                return null;
+            }
+            return new RecordIterator<KeyValue>() {
+                @Override
+                public KeyValue next() throws IOException {
+                    KeyValue kv = batch.next();
+                    if (kv == null) {
+                        return null;
+                    }
+                    return remapKeyValue(kv);
+                }
+
+                @Override
+                public void releaseBatch() {
+                    batch.releaseBatch();
+                }
+            };
+        }
+
+        @Override
+        public void close() throws IOException {
+            delegate.close();
+        }
+
+        private KeyValue remapKeyValue(KeyValue kv) {
+            InternalRow value = kv.value();
+            boolean needsRemap = false;
+
+            for (VectorColumnInfo colInfo : vectorColumns) {
+                byte[] descBytes = extractDescriptorBytes(value, colInfo.valueIndex);
+                if (descBytes != null && VectorDescriptor.isVectorDescriptor(descBytes)) {
+                    int fileId = VectorDescriptor.extractFileId(descBytes);
+                    if (remapTable.containsFileId(fileId)) {
+                        needsRemap = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!needsRemap) {
+                return kv;
+            }
+
+            org.apache.paimon.data.GenericRow newValue =
+                    new org.apache.paimon.data.GenericRow(value.getFieldCount());
+            newValue.setRowKind(value.getRowKind());
+            for (int i = 0; i < fieldGetters.length; i++) {
+                newValue.setField(i, fieldGetters[i].getFieldOrNull(value));
+            }
+
+            for (VectorColumnInfo colInfo : vectorColumns) {
+                if (value.isNullAt(colInfo.valueIndex)) {
+                    continue;
+                }
+                byte[] descBytes = extractDescriptorBytes(value, colInfo.valueIndex);
+                if (descBytes == null) {
+                    continue;
+                }
+                byte[] remapped = remapTable.remap(descBytes);
+                if (remapped != null) {
+                    newValue.setField(
+                            colInfo.valueIndex,
+                            new VectorRef(VectorDescriptor.deserialize(remapped)));
+                }
+            }
+
+            return kv.replaceValue(newValue);
+        }
     }
 }
