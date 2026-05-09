@@ -324,7 +324,7 @@ public class MergeTreeCompactManagerFactory implements KvCompactionManagerFactor
                     options,
                     remoteLookupFileManager);
         } else {
-            if (options.vectorColumnFamilyEnabled() && options.vectorCFCompactEnabled()) {
+            if (options.vectorCFCompactEnabled()) {
                 return new VectorCFCompactRewriter(
                         readerFactory,
                         writerFactory,

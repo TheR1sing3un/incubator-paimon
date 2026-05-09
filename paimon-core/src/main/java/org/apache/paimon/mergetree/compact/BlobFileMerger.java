@@ -34,12 +34,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeSet;
 
 import static org.apache.paimon.utils.StreamUtils.intToLittleEndian;
 
@@ -102,7 +100,7 @@ public class BlobFileMerger {
                 }
 
                 long fileSize = fileIO.getFileSize(filePath);
-                List<Long> sortedOffsets = new ArrayList<>(new TreeSet<>(liveOffsets));
+                Set<Long> offsetLookup = new java.util.HashSet<>(liveOffsets);
 
                 try (SeekableInputStream in = fileIO.newInputStream(filePath)) {
                     BlobFileMeta meta = new BlobFileMeta(in, fileSize, null);
@@ -116,15 +114,13 @@ public class BlobFileMerger {
                         long blobDataOffset = entryOffset + 4;
                         long blobDataLength = entryLength - 16;
 
-                        if (!sortedOffsets.contains(blobDataOffset)) {
+                        if (!offsetLookup.contains(blobDataOffset)) {
                             continue;
                         }
 
                         long newEntryStart = out.getPos();
                         in.seek(entryOffset);
-                        byte[] entryBytes = new byte[(int) entryLength];
-                        IOUtils.readFully(in, entryBytes);
-                        out.write(entryBytes);
+                        copyBytes(in, out, entryLength);
 
                         long newBlobDataOffset = newEntryStart + 4;
                         remapTable.addEntry(
@@ -193,6 +189,18 @@ public class BlobFileMerger {
                 newFileSize);
 
         return new MergeResult(newFileMeta, remapTable);
+    }
+
+    private static void copyBytes(SeekableInputStream in, PositionOutputStream out, long length)
+            throws IOException {
+        byte[] buffer = new byte[8192];
+        long remaining = length;
+        while (remaining > 0) {
+            int toRead = (int) Math.min(buffer.length, remaining);
+            IOUtils.readFully(in, buffer, 0, toRead);
+            out.write(buffer, 0, toRead);
+            remaining -= toRead;
+        }
     }
 
     /** Result of a blob file merge operation. */
