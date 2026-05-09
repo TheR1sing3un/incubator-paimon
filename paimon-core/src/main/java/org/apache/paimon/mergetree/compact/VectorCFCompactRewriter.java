@@ -145,71 +145,89 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
 
         Map<Integer, Set<Long>> liveReferences = preScan(sections, dropDelete, vectorColumns);
 
-        // --- Phase 2b: Compute valid ratios and decide which files to merge ---
-        List<DataFileMeta> filesToMerge = new ArrayList<>();
-        for (DataFileMeta vecFile : bucketVectorFiles) {
-            int fileId = vecFile.fileName().hashCode();
-            Set<Long> liveRows = liveReferences.getOrDefault(fileId, new HashSet<>());
-            long totalRows = vecFile.rowCount();
-            double validRatio = totalRows > 0 ? (double) liveRows.size() / totalRows : 1.0;
+        // --- Phase 2b: Per-column valid ratio computation and merge decision ---
+        DataFilePathFactory dataFilePathFactory = writerFactory.pathFactory(outputLevel);
+        Path bucketPath = dataFilePathFactory.parent();
 
-            LOG.info(
-                    "Vector file {}: liveRows={}, totalRows={}, validRatio={}",
-                    vecFile.fileName(),
-                    liveRows.size(),
-                    totalRows,
-                    String.format("%.3f", validRatio));
+        List<DataFileMeta> allVectorBefore = new ArrayList<>();
+        List<DataFileMeta> allVectorAfter = new ArrayList<>();
+        VectorDescriptorRemapTable combinedRemapTable = new VectorDescriptorRemapTable();
 
-            if (validRatio < options.vectorCFCompactValidRatioThreshold()) {
-                filesToMerge.add(vecFile);
+        for (VectorColumnInfo colInfo : vectorColumns) {
+            List<DataFileMeta> columnVectorFiles = new ArrayList<>();
+            for (DataFileMeta f : bucketVectorFiles) {
+                if (f.writeCols() != null && f.writeCols().contains(colInfo.fieldName)) {
+                    columnVectorFiles.add(f);
+                }
+            }
+
+            List<DataFileMeta> filesToMerge = new ArrayList<>();
+            for (DataFileMeta vecFile : columnVectorFiles) {
+                int fileId = vecFile.fileName().hashCode();
+                Set<Long> liveRows = liveReferences.getOrDefault(fileId, new HashSet<>());
+                long totalRows = vecFile.rowCount();
+                double validRatio = totalRows > 0 ? (double) liveRows.size() / totalRows : 1.0;
+
+                LOG.info(
+                        "Vector file {} (col={}): liveRows={}, totalRows={}, validRatio={}",
+                        vecFile.fileName(),
+                        colInfo.fieldName,
+                        liveRows.size(),
+                        totalRows,
+                        String.format("%.3f", validRatio));
+
+                if (validRatio < options.vectorCFCompactValidRatioThreshold()) {
+                    filesToMerge.add(vecFile);
+                }
+            }
+
+            if (filesToMerge.size() < options.vectorCFCompactMinFiles()) {
+                LOG.info(
+                        "Column {}: only {} low-ratio files (min={}), skipping",
+                        colInfo.fieldName,
+                        filesToMerge.size(),
+                        options.vectorCFCompactMinFiles());
+                continue;
+            }
+
+            // --- Phase 3: Merge vector files for this column ---
+            long schemaId = filesToMerge.get(0).schemaId();
+            VectorFileMerger merger =
+                    new VectorFileMerger(
+                            fileIO,
+                            bucketPath,
+                            colInfo.bytesPerVector,
+                            schemaId,
+                            colInfo.fieldName,
+                            dataFilePathFactory);
+
+            VectorFileMerger.MergeResult mergeResult = merger.merge(filesToMerge, liveReferences);
+            if (mergeResult != null) {
+                allVectorBefore.addAll(filesToMerge);
+                allVectorAfter.add(mergeResult.newFileMeta());
+                combinedRemapTable.mergeFrom(mergeResult.remapTable());
+                LOG.info(
+                        "Column {}: merged {} files -> {}",
+                        colInfo.fieldName,
+                        filesToMerge.size(),
+                        mergeResult.newFileMeta().fileName());
             }
         }
 
-        if (filesToMerge.size() < options.vectorCFCompactMinFiles()) {
-            LOG.info(
-                    "Only {} low-ratio files (min={}), skipping vector merge",
-                    filesToMerge.size(),
-                    options.vectorCFCompactMinFiles());
+        if (allVectorBefore.isEmpty()) {
+            LOG.info("No vector files qualified for merging, normal compaction");
             return rewriteCompaction(outputLevel, dropDelete, sections);
         }
-
-        // --- Phase 3: Merge vector files ---
-        VectorColumnInfo firstVecCol = vectorColumns.get(0);
-        DataFilePathFactory dataFilePathFactory = writerFactory.pathFactory(outputLevel);
-        Path bucketPath = dataFilePathFactory.parent();
-        long schemaId = filesToMerge.get(0).schemaId();
-
-        VectorFileMerger merger =
-                new VectorFileMerger(
-                        fileIO,
-                        bucketPath,
-                        firstVecCol.bytesPerVector,
-                        schemaId,
-                        firstVecCol.fieldName,
-                        dataFilePathFactory);
-
-        VectorFileMerger.MergeResult mergeResult = merger.merge(filesToMerge, liveReferences);
-        if (mergeResult == null) {
-            LOG.info("Vector merge produced no data, falling back to normal compaction");
-            return rewriteCompaction(outputLevel, dropDelete, sections);
-        }
-
-        VectorDescriptorRemapTable remapTable = mergeResult.remapTable();
-        LOG.info(
-                "Vector merge complete: {} old files → {} new file, remapping {} fileIds",
-                filesToMerge.size(),
-                mergeResult.newFileMeta().fileName(),
-                remapTable.fileIds().size());
 
         // --- Phase 4: Compact rewrite with descriptor remapping ---
         CompactResult scalarResult =
-                rewriteWithRemapping(outputLevel, dropDelete, sections, remapTable, vectorColumns);
+                rewriteWithRemapping(
+                        outputLevel, dropDelete, sections, combinedRemapTable, vectorColumns);
 
-        // Combine scalar + vector before/after
         List<DataFileMeta> allBefore = new ArrayList<>(scalarResult.before());
-        allBefore.addAll(filesToMerge);
+        allBefore.addAll(allVectorBefore);
         List<DataFileMeta> allAfter = new ArrayList<>(scalarResult.after());
-        allAfter.add(mergeResult.newFileMeta());
+        allAfter.addAll(allVectorAfter);
 
         return new CompactResult(allBefore, allAfter, scalarResult.changelog());
     }
@@ -303,11 +321,12 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                         bv.getSegments(), bv.getOffset(), bv.getSizeInBytes());
             }
         } catch (Exception e) {
-            // Fall through
+            LOG.warn("Failed to extract descriptor via getVector({}), trying getBinary", pos, e);
         }
         try {
             return row.getBinary(pos);
         } catch (Exception e) {
+            LOG.warn("Failed to extract descriptor via getBinary({})", pos, e);
             return null;
         }
     }

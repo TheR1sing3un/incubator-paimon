@@ -83,14 +83,12 @@ public class VectorFileMerger {
         String newFileName = newFilePath.getName();
         int newFileId = newFileName.hashCode();
 
-        VectorDescriptorRemapTable remapTable = new VectorDescriptorRemapTable(newFileId);
+        VectorDescriptorRemapTable remapTable = new VectorDescriptorRemapTable();
         long totalRows = 0;
         byte[] buffer = new byte[bytesPerVector];
 
-        PositionOutputStream out = null;
+        PositionOutputStream out = fileIO.newOutputStream(newFilePath, false);
         try {
-            out = fileIO.newOutputStream(newFilePath, false);
-
             for (DataFileMeta fileMeta : filesToMerge) {
                 String fileName = fileMeta.fileName();
                 int oldFileId = fileName.hashCode();
@@ -113,8 +111,7 @@ public class VectorFileMerger {
                     }
                 }
 
-                long maxRowIndex = sorted.isEmpty() ? 0 : sorted.get(sorted.size() - 1);
-                remapTable.addFileMapping(oldFileId, maxRowIndex, rowIndexMap);
+                remapTable.addFileMapping(oldFileId, newFileId, rowIndexMap);
 
                 LOG.debug(
                         "Merged {} live vectors from {} (total so far: {})",
@@ -123,15 +120,14 @@ public class VectorFileMerger {
                         totalRows);
             }
         } catch (IOException e) {
+            IOUtils.closeQuietly(out);
+            out = null;
+            fileIO.deleteQuietly(newFilePath);
+            throw e;
+        } finally {
             if (out != null) {
                 out.close();
             }
-            fileIO.deleteQuietly(newFilePath);
-            throw e;
-        }
-
-        if (out != null) {
-            out.close();
         }
 
         if (totalRows == 0) {

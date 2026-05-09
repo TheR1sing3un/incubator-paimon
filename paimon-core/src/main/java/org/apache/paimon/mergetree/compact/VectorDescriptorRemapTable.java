@@ -28,25 +28,22 @@ import java.util.Set;
 
 /**
  * Remapping table for VectorDescriptor references during vector CF compaction. Maps (oldFileId,
- * oldRowIndex) to newRowIndex in the merged file.
+ * oldRowIndex) to (newFileId, newRowIndex) in the merged file.
  */
 public class VectorDescriptorRemapTable {
 
-    private final Map<Integer, long[]> remapping;
-    private final int newFileId;
+    private final Map<Integer, RemapEntry> remapping;
 
-    public VectorDescriptorRemapTable(int newFileId) {
+    public VectorDescriptorRemapTable() {
         this.remapping = new HashMap<>();
-        this.newFileId = newFileId;
     }
 
-    public void addFileMapping(int oldFileId, long maxRowIndex, Map<Long, Long> rowIndexMap) {
-        long[] mapping = new long[(int) (maxRowIndex + 1)];
-        java.util.Arrays.fill(mapping, -1);
-        for (Map.Entry<Long, Long> e : rowIndexMap.entrySet()) {
-            mapping[e.getKey().intValue()] = e.getValue();
-        }
-        remapping.put(oldFileId, mapping);
+    public void addFileMapping(int oldFileId, int newFileId, Map<Long, Long> oldToNewRowIndex) {
+        remapping.put(oldFileId, new RemapEntry(newFileId, new HashMap<>(oldToNewRowIndex)));
+    }
+
+    public void mergeFrom(VectorDescriptorRemapTable other) {
+        remapping.putAll(other.remapping);
     }
 
     public boolean containsFileId(int fileId) {
@@ -60,15 +57,25 @@ public class VectorDescriptorRemapTable {
     @Nullable
     public byte[] remap(byte[] descriptorBytes) {
         int fileId = VectorDescriptor.extractFileId(descriptorBytes);
-        long[] mapping = remapping.get(fileId);
-        if (mapping == null) {
+        RemapEntry entry = remapping.get(fileId);
+        if (entry == null) {
             return null;
         }
         long rowIndex = VectorDescriptor.extractRowIndex(descriptorBytes);
-        if (rowIndex < 0 || rowIndex >= mapping.length || mapping[(int) rowIndex] < 0) {
+        Long newRowIndex = entry.rowIndexMap.get(rowIndex);
+        if (newRowIndex == null) {
             return null;
         }
-        long newRowIndex = mapping[(int) rowIndex];
-        return new VectorDescriptor(newFileId, newRowIndex).serialize();
+        return new VectorDescriptor(entry.newFileId, newRowIndex).serialize();
+    }
+
+    private static class RemapEntry {
+        final int newFileId;
+        final Map<Long, Long> rowIndexMap;
+
+        RemapEntry(int newFileId, Map<Long, Long> rowIndexMap) {
+            this.newFileId = newFileId;
+            this.rowIndexMap = rowIndexMap;
+        }
     }
 }
