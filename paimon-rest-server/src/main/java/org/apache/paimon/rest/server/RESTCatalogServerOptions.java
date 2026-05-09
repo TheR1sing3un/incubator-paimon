@@ -154,5 +154,51 @@ public class RESTCatalogServerOptions {
                                     + "When set, the HADOOP_USER_NAME environment variable "
                                     + "will be set at server startup.");
 
+    // ---- Metrics (lakehouse-metrics) ----
+
+    public static final ConfigOption<String> METRICS_SERVICE =
+            ConfigOptions.key("metrics.service")
+                    .stringType()
+                    .defaultValue("paimon-catalog")
+                    .withDescription("Service name for lakehouse-metrics global tag.");
+
+    public static final ConfigOption<String> METRICS_CLUSTER =
+            ConfigOptions.key("metrics.cluster")
+                    .stringType()
+                    .defaultValue("default")
+                    .withDescription("Cluster name for lakehouse-metrics global tag.");
+
+    public static final ConfigOption<String> METRICS_NAMESPACE =
+            ConfigOptions.key("metrics.namespace")
+                    .stringType()
+                    .defaultValue("paimon.rest.catalog")
+                    .withDescription(
+                            "Metrics namespace. Default preserves legacy PerfUtil compatibility.");
+
+    public static final ConfigOption<String> METRICS_DEPLOY_GROUP =
+            ConfigOptions.key("metrics.deploy-group")
+                    .stringType()
+                    .defaultValue("stable")
+                    .withDescription("Deploy group tag for metrics.");
+
+    public static final ConfigOption<String> METRICS_VERSION =
+            ConfigOptions.key("metrics.version")
+                    .stringType()
+                    .defaultValue("SNAPSHOT")
+                    .withDescription("Application version tag for metrics.");
+
+    public static final ConfigOption<String> METRICS_CONF_VERSION =
+            ConfigOptions.key("metrics.conf-version")
+                    .stringType()
+                    .defaultValue("")
+                    .withDescription("Configuration version tag for metrics.");
+
+    public static final ConfigOption<String> METRICS_CALLER_REGISTRY =
+            ConfigOptions.key("metrics.caller-registry")
+                    .stringType()
+                    .defaultValue("")
+                    .withDescription(
+                            "Comma-separated known caller names for CallerRegistry normalization.");
+
     private RESTCatalogServerOptions() {}
 }

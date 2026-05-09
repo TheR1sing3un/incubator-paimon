@@ -19,7 +19,7 @@
 package org.apache.paimon.rest.server.metadata;
 
 import org.apache.paimon.rest.server.metadata.mapper.OpLogMapper;
-import org.apache.paimon.rest.server.utils.PerfUtil;
+import org.apache.paimon.rest.server.utils.LegacyPerfCompat;
 
 import com.zaxxer.hikari.HikariDataSource;
 import org.apache.ibatis.mapping.Environment;
@@ -38,8 +38,6 @@ import java.io.IOException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-
-import static org.apache.paimon.rest.server.utils.MetricsHelper.safePerf;
 
 /** MyBatis-based implementation of {@link MetadataStore} backed by MySQL (or H2 for testing). */
 public class JdbcMetadataStore implements MetadataStore {
@@ -80,6 +78,7 @@ public class JdbcMetadataStore implements MetadataStore {
         Environment environment =
                 new Environment("metadata", new JdbcTransactionFactory(), dataSource);
         Configuration configuration = new Configuration(environment);
+        configuration.addInterceptor(new PerfMyBatisInterceptor());
         configuration.addMapper(OpLogMapper.class);
         return new SqlSessionFactoryBuilder().build(configuration);
     }
@@ -114,13 +113,13 @@ public class JdbcMetadataStore implements MetadataStore {
                     errorMessage,
                     System.currentTimeMillis());
             long duration = System.currentTimeMillis() - start;
-            safePerf(() -> PerfUtil.perfCount("metadata_log", "", "metadata_op_total"));
-            safePerf(() -> PerfUtil.perfValue("metadata_log", "metadata_op_latency", duration));
+            LegacyPerfCompat.count("metadata_log", "", "metadata_op_total");
+            LegacyPerfCompat.value("metadata_log", "metadata_op_latency", duration);
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - start;
-            safePerf(() -> PerfUtil.perfCount("metadata_log", "", "metadata_op_total"));
-            safePerf(() -> PerfUtil.perfCount("metadata_log", "", "metadata_op_error"));
-            safePerf(() -> PerfUtil.perfValue("metadata_log", "metadata_op_latency", duration));
+            LegacyPerfCompat.count("metadata_log", "", "metadata_op_total");
+            LegacyPerfCompat.count("metadata_log", "", "metadata_op_error");
+            LegacyPerfCompat.value("metadata_log", "metadata_op_latency", duration);
             LOG.warn(
                     "Failed to log operation (fail-open, audit log may be incomplete): "
                             + "type={}, database={}, table={}, targetType={}, targetId={}",
@@ -140,8 +139,8 @@ public class JdbcMetadataStore implements MetadataStore {
             OpLogMapper mapper = session.getMapper(OpLogMapper.class);
             int deleted = mapper.deleteOlderThan(cutoffMillis);
             long duration = System.currentTimeMillis() - start;
-            safePerf(() -> PerfUtil.perfCount("metadata_cleanup", "", "metadata_op_total"));
-            safePerf(() -> PerfUtil.perfValue("metadata_cleanup", "metadata_op_latency", duration));
+            LegacyPerfCompat.count("metadata_cleanup", "", "metadata_op_total");
+            LegacyPerfCompat.value("metadata_cleanup", "metadata_op_latency", duration);
             if (deleted > 0) {
                 LOG.info(
                         "Op-log cleanup: deleted {} entries older than {} days",
@@ -150,9 +149,9 @@ public class JdbcMetadataStore implements MetadataStore {
             }
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - start;
-            safePerf(() -> PerfUtil.perfCount("metadata_cleanup", "", "metadata_op_total"));
-            safePerf(() -> PerfUtil.perfCount("metadata_cleanup", "", "metadata_op_error"));
-            safePerf(() -> PerfUtil.perfValue("metadata_cleanup", "metadata_op_latency", duration));
+            LegacyPerfCompat.count("metadata_cleanup", "", "metadata_op_total");
+            LegacyPerfCompat.count("metadata_cleanup", "", "metadata_op_error");
+            LegacyPerfCompat.value("metadata_cleanup", "metadata_op_latency", duration);
             LOG.warn("Op-log cleanup failed", e);
         }
     }

@@ -19,7 +19,7 @@
 package org.apache.paimon.rest.server.auth;
 
 import org.apache.paimon.rest.responses.ErrorResponse;
-import org.apache.paimon.rest.server.utils.PerfUtil;
+import org.apache.paimon.rest.server.utils.LegacyPerfCompat;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
 import org.apache.paimon.shade.netty4.io.netty.buffer.Unpooled;
@@ -34,9 +34,9 @@ import org.apache.paimon.shade.netty4.io.netty.handler.codec.http.HttpResponseSt
 import org.apache.paimon.shade.netty4.io.netty.handler.codec.http.HttpVersion;
 import org.apache.paimon.shade.netty4.io.netty.util.AttributeKey;
 
-import java.nio.charset.StandardCharsets;
+import com.kuaishou.kling.lakehouse.metrics.MetricsReporter;
 
-import static org.apache.paimon.rest.server.utils.MetricsHelper.safePerf;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Netty pipeline handler that extracts a token from the request header and delegates authentication
@@ -81,15 +81,15 @@ public class AuthChannelHandler extends SimpleChannelInboundHandler<FullHttpRequ
         try {
             AuthContext authContext = authenticator.authenticate(token);
             long authDuration = System.currentTimeMillis() - authStart;
-            safePerf(() -> PerfUtil.perfCount("auth_success"));
-            safePerf(() -> PerfUtil.perfValue("auth_latency", authDuration));
+            MetricsReporter.count("auth_success");
+            MetricsReporter.value("auth_latency", authDuration);
             ctx.channel().attr(AUTH_CONTEXT_KEY).set(authContext);
             ctx.fireChannelRead(request);
         } catch (AuthenticationException e) {
             long authDuration = System.currentTimeMillis() - authStart;
-            safePerf(() -> PerfUtil.perfCount("auth_failure"));
-            safePerf(() -> PerfUtil.perfCount(uri, "", "auth_failure_detail"));
-            safePerf(() -> PerfUtil.perfValue("auth_latency", authDuration));
+            MetricsReporter.count("auth_failure");
+            LegacyPerfCompat.count(uri, "", "auth_failure_detail");
+            MetricsReporter.value("auth_latency", authDuration);
             sendAuthError(ctx, e.statusCode(), e.getMessage());
             request.release();
         }

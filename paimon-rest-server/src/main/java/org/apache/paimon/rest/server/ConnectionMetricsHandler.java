@@ -18,21 +18,19 @@
 
 package org.apache.paimon.rest.server;
 
-import org.apache.paimon.rest.server.utils.PerfUtil;
-
 import org.apache.paimon.shade.netty4.io.netty.channel.ChannelHandler;
 import org.apache.paimon.shade.netty4.io.netty.channel.ChannelHandlerContext;
 import org.apache.paimon.shade.netty4.io.netty.channel.ChannelInboundHandlerAdapter;
 
-import static org.apache.paimon.rest.server.utils.MetricsHelper.safePerf;
+import com.kuaishou.kling.lakehouse.metrics.MetricsReporter;
 
-/** Tracks Netty connection events and reports metrics via PerfUtil. */
+/** Tracks Netty connection events and reports metrics via MetricsReporter. */
 @ChannelHandler.Sharable
 public class ConnectionMetricsHandler extends ChannelInboundHandlerAdapter {
 
     @Override
     public void channelActive(ChannelHandlerContext ctx) throws Exception {
-        safePerf(() -> PerfUtil.perfCount("netty_connection_total"));
+        MetricsReporter.count("netty_connection_total");
         super.channelActive(ctx);
     }
 }

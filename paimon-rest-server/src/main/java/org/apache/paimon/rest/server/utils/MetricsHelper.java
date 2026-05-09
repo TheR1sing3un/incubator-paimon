@@ -63,14 +63,29 @@ public class MetricsHelper {
         try {
             T result = callable.call();
             long duration = System.currentTimeMillis() - start;
-            safePerf(() -> PerfUtil.perfCount(opName, tableId, "catalog_op_total"));
-            safePerf(() -> PerfUtil.perfValue(opName, tableId, "catalog_op_latency", duration));
+            LegacyPerfCompat.count(opName, tableId, "catalog_op_total");
+            LegacyPerfCompat.value(opName, tableId, "catalog_op_latency", duration);
+            if (LOG.isDebugEnabled()) {
+                LOG.debug(
+                        "Catalog op success: op={}, table={}, duration={}ms",
+                        opName,
+                        tableId,
+                        duration);
+            }
             return result;
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - start;
-            safePerf(() -> PerfUtil.perfCount(opName, tableId, "catalog_op_total"));
-            safePerf(() -> PerfUtil.perfCount(opName, tableId, "catalog_op_error"));
-            safePerf(() -> PerfUtil.perfValue(opName, tableId, "catalog_op_latency", duration));
+            LegacyPerfCompat.count(opName, tableId, "catalog_op_total");
+            LegacyPerfCompat.count(opName, tableId, "catalog_op_error");
+            LegacyPerfCompat.value(opName, tableId, "catalog_op_latency", duration);
+            if (LOG.isDebugEnabled()) {
+                LOG.debug(
+                        "Catalog op error: op={}, table={}, duration={}ms, error={}",
+                        opName,
+                        tableId,
+                        duration,
+                        e.getClass().getSimpleName());
+            }
             throw e;
         }
     }
@@ -94,15 +109,15 @@ public class MetricsHelper {
             T result = callable.call();
             String tableId = tableIdHolder[0] != null ? tableIdHolder[0] : "";
             long duration = System.currentTimeMillis() - start;
-            safePerf(() -> PerfUtil.perfCount(opName, tableId, "catalog_op_total"));
-            safePerf(() -> PerfUtil.perfValue(opName, tableId, "catalog_op_latency", duration));
+            LegacyPerfCompat.count(opName, tableId, "catalog_op_total");
+            LegacyPerfCompat.value(opName, tableId, "catalog_op_latency", duration);
             return result;
         } catch (Exception e) {
             String tableId = tableIdHolder[0] != null ? tableIdHolder[0] : "";
             long duration = System.currentTimeMillis() - start;
-            safePerf(() -> PerfUtil.perfCount(opName, tableId, "catalog_op_total"));
-            safePerf(() -> PerfUtil.perfCount(opName, tableId, "catalog_op_error"));
-            safePerf(() -> PerfUtil.perfValue(opName, tableId, "catalog_op_latency", duration));
+            LegacyPerfCompat.count(opName, tableId, "catalog_op_total");
+            LegacyPerfCompat.count(opName, tableId, "catalog_op_error");
+            LegacyPerfCompat.value(opName, tableId, "catalog_op_latency", duration);
             throw e;
         }
     }
@@ -151,10 +166,15 @@ public class MetricsHelper {
      * @param metricKey metric key (e.g., "commit_conflict_total")
      */
     public static void reportCount(String opName, String tableId, String metricKey) {
-        safePerf(() -> PerfUtil.perfCount(opName, tableId, metricKey));
+        LegacyPerfCompat.count(opName, tableId, metricKey);
     }
 
-    /** Safely execute a perf call, swallowing any exceptions to avoid breaking business logic. */
+    /**
+     * Safely execute a perf call, swallowing any exceptions to avoid breaking business logic.
+     *
+     * @deprecated Use {@link LegacyPerfCompat} directly; it already handles exception safety.
+     */
+    @Deprecated
     public static void safePerf(Runnable perfCall) {
         try {
             perfCall.run();

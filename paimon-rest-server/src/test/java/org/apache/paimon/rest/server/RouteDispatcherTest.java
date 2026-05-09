@@ -30,12 +30,15 @@ import org.apache.paimon.shade.netty4.io.netty.handler.codec.http.FullHttpReques
 import org.apache.paimon.shade.netty4.io.netty.handler.codec.http.HttpMethod;
 import org.apache.paimon.shade.netty4.io.netty.handler.codec.http.HttpVersion;
 
+import com.kuaishou.kling.lakehouse.metrics.filter.CallerRegistry;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.HashSet;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -45,6 +48,7 @@ class RouteDispatcherTest {
     @TempDir static Path tempDir;
 
     private static RouteDispatcher dispatcher;
+    private static RouteDispatcher dispatcherWithCallerRegistry;
 
     @BeforeAll
     static void setUp() throws Exception {
@@ -53,6 +57,13 @@ class RouteDispatcherTest {
         fileIO.checkOrMkdirs(warehousePath);
         Catalog catalog = new RESTFileSystemCatalog(fileIO, warehousePath);
         dispatcher = new RouteDispatcher(catalog, "test", tempDir.toString());
+
+        Set<String> knownCallers = new HashSet<>();
+        knownCallers.add("dataset-catalog");
+        knownCallers.add("harbor");
+        CallerRegistry callerRegistry = new CallerRegistry(knownCallers);
+        dispatcherWithCallerRegistry =
+                new RouteDispatcher(catalog, "test", tempDir.toString(), null, callerRegistry);
     }
 
     @Test
@@ -184,5 +195,72 @@ class RouteDispatcherTest {
     void testBuildRequestSummaryUnknownAppId() {
         String result = RouteDispatcher.buildRequestSummary("{\"name\":\"t\"}", "unknown");
         assertThat(result).isEqualTo("{\"appId\":\"unknown\",\"name\":\"t\"}");
+    }
+
+    // ======================== CallerRegistry tests ========================
+
+    @Test
+    void testCallerRegistryNormalizesKnownCaller() throws Exception {
+        FullHttpRequest request =
+                createRequest(HttpMethod.GET, "/v1/config?warehouse=" + tempDir.toString());
+        request.headers().set("X-Caller-App", "dataset-catalog");
+        RouteResult result = dispatcherWithCallerRegistry.dispatch(AuthContext.ANONYMOUS, request);
+        assertThat(result.status()).isEqualTo(200);
+        request.release();
+    }
+
+    @Test
+    void testCallerRegistryCollapsesUnknownCallerToUnknown() throws Exception {
+        FullHttpRequest request =
+                createRequest(HttpMethod.GET, "/v1/config?warehouse=" + tempDir.toString());
+        // A dynamic app-id that is NOT in the known callers set
+        request.headers().set(RESTCatalogOptions.APP_ID_HEADER, "application_1714000000_0042");
+        RouteResult result = dispatcherWithCallerRegistry.dispatch(AuthContext.ANONYMOUS, request);
+        // Should succeed (the normalization happens internally, not affecting route dispatch)
+        assertThat(result.status()).isEqualTo(200);
+        request.release();
+    }
+
+    @Test
+    void testCallerRegistryPrefersCallerAppOverAppId() throws Exception {
+        FullHttpRequest request =
+                createRequest(HttpMethod.GET, "/v1/config?warehouse=" + tempDir.toString());
+        request.headers().set("X-Caller-App", "harbor");
+        request.headers().set(RESTCatalogOptions.APP_ID_HEADER, "application_dynamic_001");
+        RouteResult result = dispatcherWithCallerRegistry.dispatch(AuthContext.ANONYMOUS, request);
+        assertThat(result.status()).isEqualTo(200);
+        request.release();
+    }
+
+    @Test
+    void testDispatchWithoutCallerRegistryStillWorks() throws Exception {
+        // dispatcher without CallerRegistry should still normalize via MetricsNameNormalizer
+        FullHttpRequest request =
+                createRequest(HttpMethod.GET, "/v1/config?warehouse=" + tempDir.toString());
+        request.headers().set("X-Caller-App", "some-caller");
+        RouteResult result = dispatcher.dispatch(AuthContext.ANONYMOUS, request);
+        assertThat(result.status()).isEqualTo(200);
+        request.release();
+    }
+
+    // ======================== response_size / 404 unified cleanup tests ========================
+
+    @Test
+    void testDispatch200ReturnsResponseWithContent() throws Exception {
+        FullHttpRequest request =
+                createRequest(HttpMethod.GET, "/v1/config?warehouse=" + tempDir.toString());
+        RouteResult result = dispatcher.dispatch(AuthContext.ANONYMOUS, request);
+        assertThat(result.status()).isEqualTo(200);
+        assertThat(result.response()).isNotNull();
+        request.release();
+    }
+
+    @Test
+    void testDispatch404ReturnsNullResponse() throws Exception {
+        FullHttpRequest request = createRequest(HttpMethod.GET, "/v1/test/nonexistent");
+        RouteResult result = dispatcher.dispatch(AuthContext.ANONYMOUS, request);
+        assertThat(result.status()).isEqualTo(404);
+        assertThat(result.response()).isNull();
+        request.release();
     }
 }

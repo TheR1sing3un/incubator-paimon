@@ -38,11 +38,18 @@ import org.apache.paimon.rest.server.handlers.ViewHandler;
 import org.apache.paimon.rest.server.metadata.MetadataStore;
 import org.apache.paimon.rest.server.metadata.handlers.CommitHandler;
 import org.apache.paimon.rest.server.metadata.handlers.SchemaHandler;
-import org.apache.paimon.rest.server.utils.PerfUtil;
+import org.apache.paimon.rest.server.utils.AccessLogFormatter;
+import org.apache.paimon.rest.server.utils.LegacyPerfCompat;
+import org.apache.paimon.utils.JsonSerdeUtil;
 
 import org.apache.paimon.shade.netty4.io.netty.handler.codec.http.FullHttpRequest;
 import org.apache.paimon.shade.netty4.io.netty.handler.codec.http.QueryStringDecoder;
 
+import com.kuaishou.kling.lakehouse.metrics.MetricsReporter;
+import com.kuaishou.kling.lakehouse.metrics.RequestMetricsSnapshot;
+import com.kuaishou.kling.lakehouse.metrics.context.RequestMetricsContext;
+import com.kuaishou.kling.lakehouse.metrics.filter.CallerRegistry;
+import com.kuaishou.kling.lakehouse.metrics.normalize.MetricsNameNormalizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,8 +61,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
-import static org.apache.paimon.rest.server.utils.MetricsHelper.safePerf;
 
 /**
  * Dispatches incoming HTTP requests to the appropriate handler based on route matching.
@@ -72,13 +77,14 @@ public class RouteDispatcher {
 
     private final Router router;
     @Nullable private final MetadataStore metadataStore;
+    @Nullable private final CallerRegistry callerRegistry;
     private final ExceptionMapper exceptionMapper;
 
     /** Maps (HTTP method, pattern suffix) to operation type for audit logging. */
     private static final Map<String, String> OPERATION_TYPE_MAP = buildOperationTypeMap();
 
     public RouteDispatcher(Catalog catalog, @Nullable String prefix, String warehouse) {
-        this(catalog, prefix, warehouse, null);
+        this(catalog, prefix, warehouse, null, null);
     }
 
     public RouteDispatcher(
@@ -86,8 +92,18 @@ public class RouteDispatcher {
             @Nullable String prefix,
             String warehouse,
             @Nullable MetadataStore metadataStore) {
+        this(catalog, prefix, warehouse, metadataStore, null);
+    }
+
+    public RouteDispatcher(
+            Catalog catalog,
+            @Nullable String prefix,
+            String warehouse,
+            @Nullable MetadataStore metadataStore,
+            @Nullable CallerRegistry callerRegistry) {
         this.router = new Router();
         this.metadataStore = metadataStore;
+        this.callerRegistry = callerRegistry;
         this.exceptionMapper = ExceptionMapper.buildDefault();
 
         List<RouteRegistrar> registrars = new ArrayList<>();
@@ -124,100 +140,133 @@ public class RouteDispatcher {
         String body = request.content().toString(StandardCharsets.UTF_8);
         String method = request.method().name();
         String userId = authContext.userId();
-        String appId = request.headers().get(RESTCatalogOptions.APP_ID_HEADER);
-        if (appId == null || appId.isEmpty()) {
-            appId = "unknown";
-        }
+        String appId = resolveAppId(request);
+        String callerApp = resolveCallerApp(request);
+        String userAgent = request.headers().get("User-Agent");
         long startTime = System.currentTimeMillis();
 
         Router.RouteMatch match = router.findMatch(method, path);
-        if (match == null) {
-            long duration = System.currentTimeMillis() - startTime;
-            LOG.warn("REST route not found: {} {} params={} appId={}", method, path, params, appId);
-            reportRequestMetrics(
-                    "NOT_FOUND",
-                    method,
-                    path,
-                    duration,
-                    404,
-                    userId,
-                    body.length(),
-                    "unknown",
-                    appId);
-            return new RouteResult(404, null);
-        }
+        String endpointName = resolveEndpointName(method, match);
 
-        LOG.info("REST request: {} {} params={} appId={}", method, path, params, appId);
+        RequestMetricsContext.begin(endpointName);
+        RequestMetricsContext.setMethod(method);
+        RequestMetricsContext.setCallerApp(callerApp);
+        RequestMetricsContext.setCallerUser(userId != null ? userId : "-");
+        RequestMetricsContext.setCallerIp(resolveCallerIp(request));
+        RequestMetricsContext.setTraceId(firstNonEmpty(request.headers().get("X-Trace-Id"), ""));
+        RequestMetricsContext.setSdkVersion(
+                firstNonEmpty(request.headers().get("X-SDK-Version"), ""));
+        reportInFlightGauge();
 
-        boolean shouldAudit = metadataStore != null && isMutatingMethod(method);
-
-        String routePattern = match.matchedPattern();
-        String targetId = buildTargetId(match.pathVariables(), body);
-
-        RouteResult result;
         try {
-            result = match.handler().handle(authContext, match.pathVariables(), params, body);
-        } catch (Exception e) {
-            long duration = System.currentTimeMillis() - startTime;
-            int statusCode = resolveStatusCode(e);
-            LOG.warn(
-                    "REST error: {} {} status={} exception={} message={} duration={}ms appId={}",
-                    method,
-                    path,
-                    statusCode,
-                    e.getClass().getSimpleName(),
-                    e.getMessage(),
-                    duration,
-                    appId);
-            reportRequestMetrics(
-                    routePattern,
-                    method,
-                    path,
-                    duration,
-                    statusCode,
-                    userId,
-                    body.length(),
-                    targetId,
-                    appId);
-            String exceptionName = unwrapException(e).getClass().getSimpleName();
-            String routeKey = method + ":" + routePattern;
-            String exceptionExtra = userId + "@" + routeKey;
-            safePerf(() -> PerfUtil.perfCount(exceptionName, exceptionExtra, "request_exception"));
-            if (shouldAudit) {
-                auditLog(
-                        authContext, match, body, appId, "FAILED", truncateMessage(e.getMessage()));
+            if (match == null) {
+                long duration = System.currentTimeMillis() - startTime;
+                LOG.warn(
+                        "REST route not found: {} {} params={} appId={}",
+                        method,
+                        path,
+                        params,
+                        appId);
+                reportRequestMetrics(
+                        "NOT_FOUND",
+                        method,
+                        path,
+                        duration,
+                        404,
+                        userId,
+                        body.length(),
+                        "unknown",
+                        appId);
+                finishRequestMetricsContext(404, null, path, userAgent, body.length(), -1);
+                return new RouteResult(404, null);
             }
-            return buildErrorResult(e, statusCode);
-        }
 
-        long duration = System.currentTimeMillis() - startTime;
-        LOG.info(
-                "REST response: {} {} status={} duration={}ms appId={}",
-                method,
-                path,
-                result.status(),
-                duration,
-                appId);
-        reportRequestMetrics(
-                routePattern,
-                method,
-                path,
-                duration,
-                result.status(),
-                userId,
-                body.length(),
-                targetId,
-                appId);
+            LOG.info("REST request: {} {} params={} appId={}", method, path, params, appId);
 
-        if (shouldAudit) {
-            if (result.status() < 400) {
-                auditLog(authContext, match, body, appId, "SUCCESS", null);
-            } else {
-                auditLog(authContext, match, body, appId, "FAILED", "HTTP " + result.status());
+            boolean shouldAudit = metadataStore != null && isMutatingMethod(method);
+
+            String routePattern = match.matchedPattern();
+            String targetId = buildTargetId(match.pathVariables(), body);
+
+            try {
+                RouteResult result =
+                        match.handler().handle(authContext, match.pathVariables(), params, body);
+                long duration = System.currentTimeMillis() - startTime;
+                int responseSize = computeResponseSize(result);
+                LOG.info(
+                        "REST response: {} {} status={} duration={}ms appId={}",
+                        method,
+                        path,
+                        result.status(),
+                        duration,
+                        appId);
+                reportRequestMetrics(
+                        routePattern,
+                        method,
+                        path,
+                        duration,
+                        result.status(),
+                        userId,
+                        body.length(),
+                        targetId,
+                        appId);
+                finishRequestMetricsContext(
+                        result.status(), null, path, userAgent, body.length(), responseSize);
+
+                if (shouldAudit) {
+                    if (result.status() < 400) {
+                        auditLog(authContext, match, body, appId, "SUCCESS", null);
+                    } else {
+                        auditLog(
+                                authContext,
+                                match,
+                                body,
+                                appId,
+                                "FAILED",
+                                "HTTP " + result.status());
+                    }
+                }
+
+                return result;
+            } catch (Exception e) {
+                long duration = System.currentTimeMillis() - startTime;
+                int statusCode = resolveStatusCode(e);
+                LOG.warn(
+                        "REST error: {} {} status={} exception={} message={} duration={}ms appId={}",
+                        method,
+                        path,
+                        statusCode,
+                        e.getClass().getSimpleName(),
+                        e.getMessage(),
+                        duration,
+                        appId);
+                reportRequestMetrics(
+                        routePattern,
+                        method,
+                        path,
+                        duration,
+                        statusCode,
+                        userId,
+                        body.length(),
+                        targetId,
+                        appId);
+                reportRequestExceptionMetric(routePattern, method, userId, e);
+                finishRequestMetricsContext(statusCode, e, path, userAgent, body.length(), -1);
+                if (shouldAudit) {
+                    auditLog(
+                            authContext,
+                            match,
+                            body,
+                            appId,
+                            "FAILED",
+                            truncateMessage(e.getMessage()));
+                }
+                return buildErrorResult(e, statusCode);
             }
+        } finally {
+            reportInFlightGauge();
+            RequestMetricsContext.cleanupIfPresent();
         }
-
-        return result;
     }
 
     private static void reportRequestMetrics(
@@ -231,22 +280,175 @@ public class RouteDispatcher {
             String targetId,
             String appId) {
         String subtag = method + ":" + routePattern;
-        safePerf(() -> PerfUtil.perfValue(subtag, userId, "request_latency", durationMs));
-        safePerf(() -> PerfUtil.perfValue(subtag, userId, "request_body_size", bodyLength));
+        LegacyPerfCompat.value(subtag, userId, "request_latency", durationMs);
+        LegacyPerfCompat.value(subtag, userId, "request_body_size", bodyLength);
         String statusKey = "request_" + statusCode;
-        safePerf(() -> PerfUtil.perfCount(subtag, userId, statusKey));
-        // Record per-app metrics
-        safePerf(() -> PerfUtil.perfCount(subtag, appId, "request_by_app"));
+        LegacyPerfCompat.count(subtag, userId, statusKey);
+        LegacyPerfCompat.count(subtag, appId, "request_by_app");
         if (statusCode >= 400) {
             String errorExtra = userId + "@" + targetId;
-            safePerf(() -> PerfUtil.perfCount(path, errorExtra, "request_error_detail"));
+            LegacyPerfCompat.count(path, errorExtra, "request_error_detail");
         }
         if (durationMs > 1000) {
-            safePerf(() -> PerfUtil.perfCount(subtag, userId, "request_slow_1s"));
+            LegacyPerfCompat.count(subtag, userId, "request_slow_1s");
         }
         if (durationMs > 5000) {
-            safePerf(() -> PerfUtil.perfCount(subtag, userId, "request_slow_5s"));
+            LegacyPerfCompat.count(subtag, userId, "request_slow_5s");
         }
+    }
+
+    private void finishRequestMetricsContext(
+            int statusCode,
+            @Nullable Exception error,
+            String path,
+            @Nullable String userAgent,
+            int requestSize,
+            int responseSize) {
+        RequestMetricsContext.setStatusCode(statusCode);
+        if (error != null) {
+            RequestMetricsContext.setErrorCode(resolveErrorCode(error, statusCode));
+        } else if (statusCode >= 400) {
+            RequestMetricsContext.setErrorCode("HTTP_" + statusCode);
+        }
+
+        RequestMetricsSnapshot snapshot = RequestMetricsContext.finish();
+        if (snapshot != null) {
+            reportStandardRequestMetrics(snapshot);
+            AccessLogFormatter.log(snapshot, path, userAgent, requestSize, responseSize);
+        }
+    }
+
+    private void reportStandardRequestMetrics(RequestMetricsSnapshot snapshot) {
+        Map<String, String> tags = snapshot.toTags();
+        MetricsReporter.count("http.request.total", tags);
+        MetricsReporter.value("http.request.latency", snapshot.getDurationMs(), tags);
+        MetricsReporter.count("caller.request.total", tags);
+        MetricsReporter.value("caller.request.latency", snapshot.getDurationMs(), tags);
+
+        if (snapshot.getStatusCode() >= 400) {
+            Map<String, String> errorTags = new HashMap<>(tags);
+            if (snapshot.getErrorCode() != null && !snapshot.getErrorCode().isEmpty()) {
+                errorTags.put("error_code", snapshot.getErrorCode());
+            }
+            MetricsReporter.count("http.request.error_total", errorTags);
+        }
+
+        if (snapshot.getDbTimeMs() > 0) {
+            MetricsReporter.value("http.request.stage.db.latency", snapshot.getDbTimeMs(), tags);
+        }
+        if (snapshot.getHdfsTimeMs() > 0) {
+            MetricsReporter.value(
+                    "http.request.stage.hdfs.latency", snapshot.getHdfsTimeMs(), tags);
+        }
+        if (snapshot.getRpcTimeMs() > 0) {
+            MetricsReporter.value("http.request.stage.rpc.latency", snapshot.getRpcTimeMs(), tags);
+        }
+        if (snapshot.getPermissionTimeMs() > 0) {
+            MetricsReporter.value(
+                    "http.request.stage.permission.latency", snapshot.getPermissionTimeMs(), tags);
+        }
+        if (snapshot.getInternalTimeMs() > 0) {
+            MetricsReporter.value(
+                    "http.request.stage.internal.latency", snapshot.getInternalTimeMs(), tags);
+        }
+
+        if (LOG.isDebugEnabled()) {
+            LOG.debug(
+                    "Metrics sent: endpoint={}, method={}, status={}, duration={}ms, "
+                            + "caller_app={}, tags={}, errorCount={}",
+                    snapshot.getEndpointName(),
+                    snapshot.getMethod(),
+                    snapshot.getStatusCode(),
+                    snapshot.getDurationMs(),
+                    snapshot.getCallerApp(),
+                    tags,
+                    MetricsReporter.getReportErrorCount());
+        }
+    }
+
+    private void reportRequestExceptionMetric(
+            String routePattern, String method, String userId, Exception exception) {
+        String exceptionName = unwrapException(exception).getClass().getSimpleName();
+        String routeKey = method + ":" + routePattern;
+        String exceptionExtra = userId + "@" + routeKey;
+        LegacyPerfCompat.count(exceptionName, exceptionExtra, "request_exception");
+    }
+
+    private void reportInFlightGauge() {
+        try {
+            MetricsReporter.gauge("http.request.in_flight", RequestMetricsContext.getInFlight());
+        } catch (Throwable t) {
+            LOG.debug("Failed to report in-flight gauge", t);
+        }
+    }
+
+    private static int computeResponseSize(RouteResult result) {
+        if (result == null || result.response() == null) {
+            return -1;
+        }
+        try {
+            return JsonSerdeUtil.toJson(result.response()).getBytes(StandardCharsets.UTF_8).length;
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    private static String resolveAppId(FullHttpRequest request) {
+        return firstNonEmpty(request.headers().get(RESTCatalogOptions.APP_ID_HEADER), "unknown");
+    }
+
+    private String resolveCallerApp(FullHttpRequest request) {
+        String rawCallerApp =
+                firstNonEmpty(
+                        request.headers().get("X-Caller-App"),
+                        request.headers().get(RESTCatalogOptions.APP_ID_HEADER),
+                        "unknown");
+        if (callerRegistry != null) {
+            return callerRegistry.normalizeAndValidate(rawCallerApp);
+        }
+        return MetricsNameNormalizer.normalizeCallerApp(rawCallerApp);
+    }
+
+    private static String resolveCallerIp(FullHttpRequest request) {
+        String xff = request.headers().get("X-Forwarded-For");
+        if (xff == null || xff.isEmpty()) {
+            return "-";
+        }
+        int commaIndex = xff.indexOf(',');
+        return commaIndex >= 0 ? xff.substring(0, commaIndex).trim() : xff.trim();
+    }
+
+    private static String resolveEndpointName(String method, @Nullable Router.RouteMatch match) {
+        if (match == null) {
+            return "not_found";
+        }
+        String pattern =
+                match.matchedPattern().replace('/', '_').replace('{', '_').replace('}', '_');
+        return MetricsNameNormalizer.normalizeEndpoint(method + pattern);
+    }
+
+    private static String firstNonEmpty(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            if (value != null && !value.isEmpty()) {
+                return value;
+            }
+        }
+        return "";
+    }
+
+    private String resolveErrorCode(Exception e, int statusCode) {
+        ExceptionMapper.ErrorInfo info = mapException(e);
+        if (info != null && info.resourceType != null && !info.resourceType.isEmpty()) {
+            return info.resourceType;
+        }
+        Throwable actual = unwrapException(e);
+        if (actual != null) {
+            return actual.getClass().getSimpleName();
+        }
+        return "HTTP_" + statusCode;
     }
 
     private int resolveStatusCode(Exception e) {

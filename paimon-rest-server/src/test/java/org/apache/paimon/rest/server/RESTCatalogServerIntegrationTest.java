@@ -26,6 +26,7 @@ import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.fs.local.LocalFileIO;
 import org.apache.paimon.options.CatalogOptions;
 import org.apache.paimon.options.Options;
+import org.apache.paimon.rest.RESTCatalogOptions;
 import org.apache.paimon.rest.responses.ConfigResponse;
 import org.apache.paimon.rest.responses.GetDatabaseResponse;
 import org.apache.paimon.rest.responses.GetTableTokenResponse;
@@ -1463,5 +1464,73 @@ class RESTCatalogServerIntegrationTest {
             }
             return sb.toString();
         }
+    }
+
+    // ======================== Metrics header integration tests ========================
+
+    @Test
+    void testRequestWithCallerAppHeader() throws Exception {
+        URL url = new URL(baseUrl + "/v1/config?warehouse=" + tempDir.toString());
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("GET");
+        conn.setRequestProperty("X-Caller-App", "dataset-catalog");
+        assertThat(conn.getResponseCode()).isEqualTo(200);
+    }
+
+    @Test
+    void testRequestWithAppIdHeader() throws Exception {
+        URL url = new URL(baseUrl + "/v1/config?warehouse=" + tempDir.toString());
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("GET");
+        conn.setRequestProperty(RESTCatalogOptions.APP_ID_HEADER, "application_1714000000_0042");
+        assertThat(conn.getResponseCode()).isEqualTo(200);
+    }
+
+    @Test
+    void testRequestWithBothCallerAppAndAppIdHeaders() throws Exception {
+        URL url = new URL(baseUrl + "/v1/config?warehouse=" + tempDir.toString());
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("GET");
+        conn.setRequestProperty("X-Caller-App", "harbor");
+        conn.setRequestProperty(RESTCatalogOptions.APP_ID_HEADER, "application_dynamic_001");
+        assertThat(conn.getResponseCode()).isEqualTo(200);
+    }
+
+    @Test
+    void testRequestWithTraceAndSdkHeaders() throws Exception {
+        URL url = new URL(baseUrl + "/v1/config?warehouse=" + tempDir.toString());
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("GET");
+        conn.setRequestProperty("X-Trace-Id", "trace-abc-123");
+        conn.setRequestProperty("X-SDK-Version", "paimon-java-0.9.0");
+        conn.setRequestProperty("X-Caller-App", "test-client");
+        assertThat(conn.getResponseCode()).isEqualTo(200);
+    }
+
+    @Test
+    void test404WithMetricsHeaders() throws Exception {
+        URL url = new URL(baseUrl + "/v1/test-prefix/nonexistent/path");
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("GET");
+        conn.setRequestProperty("X-Caller-App", "test-client");
+        conn.setRequestProperty(RESTCatalogOptions.APP_ID_HEADER, "app-001");
+        conn.setRequestProperty("X-Trace-Id", "trace-404");
+        assertThat(conn.getResponseCode()).isEqualTo(404);
+    }
+
+    @Test
+    void testCreateDatabaseWithAppId() throws Exception {
+        URL url = new URL(baseUrl + "/v1/test-prefix/databases");
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("POST");
+        conn.setRequestProperty("Content-Type", "application/json");
+        conn.setRequestProperty(RESTCatalogOptions.APP_ID_HEADER, "spark-app-test-001");
+        conn.setDoOutput(true);
+        try (OutputStream os = conn.getOutputStream()) {
+            os.write(
+                    "{\"name\":\"metrics_test_db\",\"options\":{}}"
+                            .getBytes(StandardCharsets.UTF_8));
+        }
+        assertThat(conn.getResponseCode()).isEqualTo(200);
     }
 }

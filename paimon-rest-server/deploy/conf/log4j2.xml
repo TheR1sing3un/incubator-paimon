@@ -86,11 +86,11 @@ under the License.
             </DefaultRolloverStrategy>
         </RollingFile>
 
-        <!-- GC / Access log (optional, for request-level tracing) -->
+        <!-- Access log (structured JSON, one line per request) -->
         <RollingFile name="AccessFile"
                      fileName="${LOG_HOME}/${APP_NAME}-access.log"
                      filePattern="${LOG_HOME}/${APP_NAME}-access.%d{yyyy-MM-dd}.%i.log.gz">
-            <PatternLayout pattern="${LOG_PATTERN}"/>
+            <PatternLayout pattern="%msg%n"/>
             <Policies>
                 <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
                 <SizeBasedTriggeringPolicy size="2GB"/>
@@ -139,6 +139,11 @@ under the License.
             <AppenderRef ref="AppFile"/>
             <AppenderRef ref="WarnFile"/>
             <AppenderRef ref="ErrorFile"/>
+        </Logger>
+
+        <!-- Access log (structured JSON, one line per request) -->
+        <Logger name="ACCESS_LOG" level="INFO" additivity="false">
+            <AppenderRef ref="AccessFile"/>
         </Logger>
 
         <!-- Root logger -->

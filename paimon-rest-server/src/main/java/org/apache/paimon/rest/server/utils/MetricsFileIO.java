@@ -27,10 +27,10 @@ import org.apache.paimon.fs.PositionOutputStreamWrapper;
 import org.apache.paimon.fs.SeekableInputStream;
 import org.apache.paimon.fs.SeekableInputStreamWrapper;
 
+import com.kuaishou.kling.lakehouse.metrics.dependency.DependencyTracker;
+
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicLong;
-
-import static org.apache.paimon.rest.server.utils.MetricsHelper.safePerf;
 
 /**
  * A {@link FileIO} wrapper that reports per-operation HDFS/FileIO metrics via {@link PerfUtil}.
@@ -84,31 +84,55 @@ public class MetricsFileIO implements FileIO {
 
     @Override
     public SeekableInputStream newInputStream(Path path) throws IOException {
-        long start = System.currentTimeMillis();
         try {
-            SeekableInputStream stream = delegate.newInputStream(path);
-            long duration = System.currentTimeMillis() - start;
-            reportSuccess("open_input", duration);
-            return new MetricsInputStream(stream);
+            return DependencyTracker.trackCall(
+                    "hdfs",
+                    "open_input",
+                    DependencyTracker.StageType.HDFS,
+                    () -> {
+                        long start = System.currentTimeMillis();
+                        try {
+                            SeekableInputStream stream = delegate.newInputStream(path);
+                            long duration = System.currentTimeMillis() - start;
+                            reportSuccess("open_input", duration);
+                            return new MetricsInputStream(stream);
+                        } catch (IOException e) {
+                            long duration = System.currentTimeMillis() - start;
+                            reportError("open_input", duration, e);
+                            throw e;
+                        }
+                    });
         } catch (IOException e) {
-            long duration = System.currentTimeMillis() - start;
-            reportError("open_input", duration, e);
             throw e;
+        } catch (Exception e) {
+            throw new IOException("Failed to track HDFS input open", e);
         }
     }
 
     @Override
     public PositionOutputStream newOutputStream(Path path, boolean overwrite) throws IOException {
-        long start = System.currentTimeMillis();
         try {
-            PositionOutputStream stream = delegate.newOutputStream(path, overwrite);
-            long duration = System.currentTimeMillis() - start;
-            reportSuccess("open_output", duration);
-            return new MetricsOutputStream(stream);
+            return DependencyTracker.trackCall(
+                    "hdfs",
+                    "open_output",
+                    DependencyTracker.StageType.HDFS,
+                    () -> {
+                        long start = System.currentTimeMillis();
+                        try {
+                            PositionOutputStream stream = delegate.newOutputStream(path, overwrite);
+                            long duration = System.currentTimeMillis() - start;
+                            reportSuccess("open_output", duration);
+                            return new MetricsOutputStream(stream);
+                        } catch (IOException e) {
+                            long duration = System.currentTimeMillis() - start;
+                            reportError("open_output", duration, e);
+                            throw e;
+                        }
+                    });
         } catch (IOException e) {
-            long duration = System.currentTimeMillis() - start;
-            reportError("open_output", duration, e);
             throw e;
+        } catch (Exception e) {
+            throw new IOException("Failed to track HDFS output open", e);
         }
     }
 
@@ -150,35 +174,47 @@ public class MetricsFileIO implements FileIO {
     }
 
     private <T> T wrapFileOp(String opName, IOCallable<T> callable) throws IOException {
-        long start = System.currentTimeMillis();
         try {
-            T result = callable.call();
-            long duration = System.currentTimeMillis() - start;
-            reportSuccess(opName, duration);
-            return result;
+            return DependencyTracker.trackCall(
+                    "hdfs",
+                    opName,
+                    DependencyTracker.StageType.HDFS,
+                    () -> {
+                        long start = System.currentTimeMillis();
+                        try {
+                            T result = callable.call();
+                            long duration = System.currentTimeMillis() - start;
+                            reportSuccess(opName, duration);
+                            return result;
+                        } catch (IOException e) {
+                            long duration = System.currentTimeMillis() - start;
+                            reportError(opName, duration, e);
+                            throw e;
+                        }
+                    });
         } catch (IOException e) {
-            long duration = System.currentTimeMillis() - start;
-            reportError(opName, duration, e);
             throw e;
+        } catch (Exception e) {
+            throw new IOException("Failed to track HDFS operation: " + opName, e);
         }
     }
 
     private void reportSuccess(String opName, long duration) {
-        safePerf(() -> PerfUtil.perfCount(opName, "", "hdfs_op_total"));
-        safePerf(() -> PerfUtil.perfValue(opName, "hdfs_op_latency", duration));
+        LegacyPerfCompat.count(opName, "hdfs_op_total");
+        LegacyPerfCompat.value(opName, "hdfs_op_latency", duration);
         if (duration >= SLOW_THRESHOLD_1S) {
-            safePerf(() -> PerfUtil.perfCount(opName, "", "hdfs_op_slow_1s"));
+            LegacyPerfCompat.count(opName, "hdfs_op_slow_1s");
         }
         if (duration >= SLOW_THRESHOLD_5S) {
-            safePerf(() -> PerfUtil.perfCount(opName, "", "hdfs_op_slow_5s"));
+            LegacyPerfCompat.count(opName, "hdfs_op_slow_5s");
         }
     }
 
     private void reportError(String opName, long duration, IOException e) {
         reportSuccess(opName, duration);
-        safePerf(() -> PerfUtil.perfCount(opName, "", "hdfs_op_error"));
+        LegacyPerfCompat.count(opName, "hdfs_op_error");
         String exceptionName = e.getClass().getSimpleName();
-        safePerf(() -> PerfUtil.perfCount(exceptionName, opName, "hdfs_op_exception"));
+        LegacyPerfCompat.count(exceptionName, opName, "hdfs_op_exception");
     }
 
     // --- stream wrappers ---
@@ -216,7 +252,7 @@ public class MetricsFileIO implements FileIO {
             } finally {
                 long total = bytesRead.get();
                 if (total > 0) {
-                    safePerf(() -> PerfUtil.perfValue("hdfs_read_bytes", total));
+                    LegacyPerfCompat.value("hdfs_read_bytes", total);
                 }
             }
         }
@@ -255,7 +291,7 @@ public class MetricsFileIO implements FileIO {
             } finally {
                 long total = bytesWritten.get();
                 if (total > 0) {
-                    safePerf(() -> PerfUtil.perfValue("hdfs_write_bytes", total));
+                    LegacyPerfCompat.value("hdfs_write_bytes", total);
                 }
             }
         }

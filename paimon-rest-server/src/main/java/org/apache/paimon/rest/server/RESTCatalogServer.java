@@ -33,19 +33,31 @@ import org.apache.paimon.rest.server.metadata.MetadataStore;
 import org.apache.paimon.rest.server.utils.MetricsFileIO;
 
 import com.kuaishou.infra.framework.datasource.KsDataSourceFactory;
+import com.kuaishou.kling.lakehouse.metrics.MetricsConfig;
+import com.kuaishou.kling.lakehouse.metrics.MetricsReporter;
+import com.kuaishou.kling.lakehouse.metrics.filter.CallerRegistry;
+import com.kuaishou.kling.lakehouse.metrics.jvm.JvmMetricsCollector;
+import com.kuaishou.kling.lakehouse.metrics.pool.ConnectionPoolMetricsCollector;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
 import javax.sql.DataSource;
 
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 /** REST Catalog Server entry point. Starts a Netty HTTP server backed by a FileSystemCatalog. */
 public class RESTCatalogServer {
@@ -56,6 +68,12 @@ public class RESTCatalogServer {
     private Catalog catalog;
     private MetadataStore metadataStore;
     private HttpServer httpServer;
+    private CallerRegistry callerRegistry;
+    private JvmMetricsCollector jvmCollector;
+    private ConnectionPoolMetricsCollector poolCollector;
+    @Nullable private HikariDataSource hikariDataSource;
+    @Nullable private DataSource metadataDataSource;
+    @Nullable private ScheduledExecutorService metricsHealthChecker;
 
     public RESTCatalogServer(Options options) {
         this.options = options;
@@ -83,18 +101,35 @@ public class RESTCatalogServer {
                             + CatalogOptions.WAREHOUSE.key());
         }
 
-        if (this.catalog == null) {
-            CatalogContext catalogContext = CatalogContext.create(options);
-            FileIO fileIO = new MetricsFileIO(FileIO.get(new Path(warehouse), catalogContext));
-            this.catalog = new RESTFileSystemCatalog(fileIO, new Path(warehouse), catalogContext);
-        }
-
         String host = options.get(RESTCatalogServerOptions.HOST);
         String autoPort = System.getenv("AUTO_PORT0");
         int port =
                 autoPort != null && !autoPort.isEmpty()
                         ? Integer.parseInt(autoPort)
                         : options.get(RESTCatalogServerOptions.PORT);
+
+        // Initialize lakehouse-metrics
+        String localHostname;
+        try {
+            localHostname = java.net.InetAddress.getLocalHost().getHostName();
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to resolve local IP for metrics", e);
+        }
+        String projectVersion = RESTCatalogServer.class.getPackage().getImplementationVersion();
+        if (projectVersion == null || projectVersion.isEmpty()) {
+            projectVersion = "dev";
+        }
+
+        // Initialize metrics infrastructure (must precede all metric-emitting code)
+        initMetrics(localHostname, port, projectVersion);
+        initCallerRegistry();
+
+        if (this.catalog == null) {
+            CatalogContext catalogContext = CatalogContext.create(options);
+            FileIO fileIO = new MetricsFileIO(FileIO.get(new Path(warehouse), catalogContext));
+            this.catalog = new RESTFileSystemCatalog(fileIO, new Path(warehouse), catalogContext);
+        }
+
         String prefix = options.get(RESTCatalogServerOptions.PREFIX);
         int ioThreads = options.get(RESTCatalogServerOptions.IO_THREADS);
         int workerThreads = options.get(RESTCatalogServerOptions.WORKER_THREADS);
@@ -103,10 +138,15 @@ public class RESTCatalogServer {
 
         String authUrl = options.get(RESTCatalogServerOptions.AUTH_URL);
         TokenAuthenticator authenticator = createAuthenticator(authUrl);
-
         AuthChannelHandler authHandler = new AuthChannelHandler(authenticator);
+
         this.metadataStore = createMetadataStore();
-        RouteDispatcher dispatcher = new RouteDispatcher(catalog, prefix, warehouse, metadataStore);
+
+        // Start collectors (after metadata store, so hikariDataSource is available)
+        startCollectors();
+
+        RouteDispatcher dispatcher =
+                new RouteDispatcher(catalog, prefix, warehouse, metadataStore, callerRegistry);
         boolean frontendEnabled = options.get(RESTCatalogServerOptions.FRONTEND_ENABLED);
         HttpRequestHandler handler = new HttpRequestHandler(dispatcher, frontendEnabled);
         this.httpServer =
@@ -127,6 +167,23 @@ public class RESTCatalogServer {
     public void shutdown() {
         if (httpServer != null) {
             httpServer.shutdown();
+        }
+        if (metricsHealthChecker != null) {
+            metricsHealthChecker.shutdownNow();
+        }
+        if (poolCollector != null) {
+            try {
+                poolCollector.stop();
+            } catch (Exception e) {
+                LOG.warn("Error stopping ConnectionPoolMetricsCollector", e);
+            }
+        }
+        if (jvmCollector != null) {
+            try {
+                jvmCollector.stop();
+            } catch (Exception e) {
+                LOG.warn("Error stopping JvmMetricsCollector", e);
+            }
         }
         if (metadataStore != null) {
             try {
@@ -164,6 +221,123 @@ public class RESTCatalogServer {
                 "External auth service not yet implemented. URL: " + authUrl);
     }
 
+    private void initMetrics(String localHostname, int port, String projectVersion) {
+        try {
+            String cluster =
+                    System.getenv("KWS_SERVICE_NAME") != null
+                            ? System.getenv("KWS_SERVICE_NAME").replace("\\.", "_")
+                            : options.get(RESTCatalogServerOptions.METRICS_CLUSTER);
+            MetricsConfig metricsConfig =
+                    MetricsConfig.builder()
+                            .service("paimon-catalog")
+                            .cluster(cluster)
+                            .host(localHostname)
+                            .port(String.valueOf(port))
+                            .deployGroup(
+                                    System.getenv("KCS_IMAGE_VERSION") != null
+                                            ? System.getenv("KCS_IMAGE_VERSION")
+                                            : options.get(
+                                                    RESTCatalogServerOptions.METRICS_DEPLOY_GROUP))
+                            .version(projectVersion)
+                            .podName(
+                                    System.getenv("MY_POD_NAME") != null
+                                            ? System.getenv("MY_POD_NAME")
+                                            : "")
+                            .namespace(cluster + ".kling.paimon.catalog")
+                            .build();
+            MetricsReporter.init(metricsConfig);
+            LOG.info(
+                    "MetricsReporter initialized: service={}, cluster={}, namespace={}",
+                    metricsConfig.getService(),
+                    metricsConfig.getCluster(),
+                    metricsConfig.getNamespace());
+        } catch (Exception e) {
+            LOG.warn("Failed to initialize MetricsReporter, metrics will be unavailable", e);
+        }
+    }
+
+    private void initCallerRegistry() {
+        String callerList = options.get(RESTCatalogServerOptions.METRICS_CALLER_REGISTRY);
+        if (callerList != null && !callerList.isEmpty()) {
+            Set<String> knownCallers =
+                    Arrays.stream(callerList.split(","))
+                            .map(String::trim)
+                            .filter(s -> !s.isEmpty())
+                            .collect(Collectors.toSet());
+            this.callerRegistry = new CallerRegistry(knownCallers);
+            LOG.info(
+                    "CallerRegistry initialized with {} known callers: {}",
+                    knownCallers.size(),
+                    knownCallers);
+        } else {
+            this.callerRegistry = new CallerRegistry(Collections.emptySet());
+            LOG.info("CallerRegistry initialized with empty caller list");
+        }
+    }
+
+    private void startCollectors() {
+        try {
+            this.jvmCollector = new JvmMetricsCollector();
+            this.jvmCollector.start();
+            LOG.info("JvmMetricsCollector started");
+        } catch (Exception e) {
+            LOG.warn("Failed to start JvmMetricsCollector", e);
+        }
+
+        if (this.metadataDataSource != null) {
+            try {
+                this.poolCollector = new ConnectionPoolMetricsCollector();
+                if (this.metadataDataSource instanceof HikariDataSource) {
+                    this.poolCollector.register((HikariDataSource) this.metadataDataSource);
+                } else {
+                    this.poolCollector.registerLazy(this.metadataDataSource);
+                }
+                this.poolCollector.start();
+                LOG.info(
+                        "ConnectionPoolMetricsCollector started for DataSource: {}",
+                        this.metadataDataSource.getClass().getSimpleName());
+            } catch (Exception e) {
+                LOG.warn("Failed to start ConnectionPoolMetricsCollector", e);
+            }
+        } else {
+            LOG.info("No DataSource available, skipping ConnectionPoolMetricsCollector");
+        }
+
+        // Periodic metrics health check
+        this.metricsHealthChecker =
+                Executors.newSingleThreadScheduledExecutor(
+                        r -> {
+                            Thread t = new Thread(r, "metrics-health-check");
+                            t.setDaemon(true);
+                            return t;
+                        });
+        this.metricsHealthChecker.scheduleAtFixedRate(
+                this::logMetricsHealth, 1, 5, TimeUnit.MINUTES);
+        LOG.info("Metrics health checker started (every 5 minutes)");
+    }
+
+    private void logMetricsHealth() {
+        try {
+            long errorCount = MetricsReporter.getReportErrorCount();
+            MetricsConfig config = MetricsReporter.getConfig();
+            if (config != null) {
+                LOG.info(
+                        "Metrics health: namespace={}, service={}, cluster={}, "
+                                + "reportErrorCount={}, jvmCollector={}, poolCollector={}",
+                        config.getNamespace(),
+                        config.getService(),
+                        config.getCluster(),
+                        errorCount,
+                        jvmCollector != null ? "running" : "off",
+                        poolCollector != null ? "running" : "off");
+            } else {
+                LOG.warn("Metrics health: MetricsReporter not initialized (config is null)");
+            }
+        } catch (Exception e) {
+            LOG.warn("Failed to log metrics health", e);
+        }
+    }
+
     private MetadataStore createMetadataStore() {
         int retentionDays = options.get(RESTCatalogServerOptions.OP_LOG_RETENTION_DAYS);
 
@@ -172,6 +346,7 @@ public class RESTCatalogServer {
         if (resourceId != null && !resourceId.isEmpty()) {
             LOG.info("Metadata store enabled with KsDataSource resource ID: {}", resourceId);
             DataSource dataSource = KsDataSourceFactory.getDataSource(resourceId);
+            this.metadataDataSource = dataSource;
             return new JdbcMetadataStore(dataSource, retentionDays);
         }
 
@@ -197,7 +372,10 @@ public class RESTCatalogServer {
         config.setPoolName("paimon-metadata");
 
         LOG.info("Metadata store enabled with JDBC URL: {}", jdbcUrl);
-        return new JdbcMetadataStore(new HikariDataSource(config), retentionDays);
+        HikariDataSource ds = new HikariDataSource(config);
+        this.hikariDataSource = ds;
+        this.metadataDataSource = ds;
+        return new JdbcMetadataStore(ds, retentionDays);
     }
 
     public static void main(String[] args) throws Exception {
