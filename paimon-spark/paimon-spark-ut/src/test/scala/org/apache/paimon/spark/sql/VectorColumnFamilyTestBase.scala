@@ -507,6 +507,74 @@ class VectorColumnFamilyTestBase extends PaimonSparkTestBase {
     }
   }
 
+  // ==================== Vector CF Compaction Tests ====================
+
+  test("Vector-CF: full compaction merges low-ratio vector files and updates descriptors") {
+    withTable("t") {
+      sql(s"""CREATE TABLE t (
+             |  pk INT,
+             |  name STRING,
+             |  embedding ARRAY<FLOAT>
+             |) TBLPROPERTIES (
+             |  'primary-key' = 'pk',
+             |  'bucket' = '1',
+             |  'merge-engine' = 'partial-update',
+             |  'vector-field' = 'embedding',
+             |  'field.embedding.vector-dim' = '4',
+             |  'file.format' = 'parquet',
+             |  'vector-column-family.enabled' = 'true',
+             |  'vector-column-family.target-file-size' = '32b',
+             |  'vector-column-family.compact.enabled' = 'true',
+             |  'vector-column-family.compact.valid-ratio-threshold' = '0.8',
+             |  'vector-column-family.compact.min-files-to-merge' = '1',
+             |  'compaction.min.file-num' = '999',
+             |  'compaction.max.file-num' = '999',
+             |  'num-sorted-runs.compaction-trigger' = '999'
+             |)""".stripMargin)
+
+      // Phase 1: Write initial data — creates vector files
+      sql("INSERT INTO t VALUES (1, 'alice', array(1.0, 2.0, 3.0, 4.0))")
+      sql("INSERT INTO t VALUES (2, 'bob', array(5.0, 6.0, 7.0, 8.0))")
+      sql("INSERT INTO t VALUES (3, 'charlie', array(9.0, 10.0, 11.0, 12.0))")
+
+      val vecFilesBefore = vectorManifestFiles("t")
+      assert(vecFilesBefore.nonEmpty, "Expected vector files after writes")
+
+      // Phase 2: Overwrite vectors — old vector data becomes dead
+      sql("INSERT INTO t VALUES (1, 'alice', array(10.0, 20.0, 30.0, 40.0))")
+      sql("INSERT INTO t VALUES (2, 'bob', array(50.0, 60.0, 70.0, 80.0))")
+
+      // Verify data before compaction
+      checkAnswer(
+        sql("SELECT pk, embedding FROM t ORDER BY pk"),
+        Seq(
+          Row(1, Seq(10.0f, 20.0f, 30.0f, 40.0f)),
+          Row(2, Seq(50.0f, 60.0f, 70.0f, 80.0f)),
+          Row(3, Seq(9.0f, 10.0f, 11.0f, 12.0f))
+        )
+      )
+
+      // Phase 3: Trigger full compaction
+      sql("CALL sys.compact(table => 't', compact_strategy => 'full')")
+
+      // Phase 4: Verify data after compaction — vectors must be readable
+      checkAnswer(
+        sql("SELECT pk, name, embedding FROM t ORDER BY pk"),
+        Seq(
+          Row(1, "alice", Seq(10.0f, 20.0f, 30.0f, 40.0f)),
+          Row(2, "bob", Seq(50.0f, 60.0f, 70.0f, 80.0f)),
+          Row(3, "charlie", Seq(9.0f, 10.0f, 11.0f, 12.0f))
+        )
+      )
+
+      // Verify scalar-only query also works after compaction
+      checkAnswer(
+        sql("SELECT pk, name FROM t ORDER BY pk"),
+        Seq(Row(1, "alice"), Row(2, "bob"), Row(3, "charlie"))
+      )
+    }
+  }
+
   // ==================== GC Tests ====================
 
   test("Vector-CF: GC preserves referenced vector files") {
