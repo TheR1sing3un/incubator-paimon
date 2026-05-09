@@ -22,6 +22,9 @@ import org.apache.paimon.CoreOptions;
 import org.apache.paimon.KeyValue;
 import org.apache.paimon.compact.CompactResult;
 import org.apache.paimon.data.BinaryVector;
+import org.apache.paimon.data.Blob;
+import org.apache.paimon.data.BlobData;
+import org.apache.paimon.data.BlobDescriptor;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.data.InternalVector;
 import org.apache.paimon.data.VectorDescriptor;
@@ -40,6 +43,7 @@ import org.apache.paimon.mergetree.SortedRun;
 import org.apache.paimon.reader.RecordReader;
 import org.apache.paimon.reader.RecordReaderIterator;
 import org.apache.paimon.types.DataField;
+import org.apache.paimon.types.DataTypeRoot;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.types.VectorType;
 import org.apache.paimon.utils.ExceptionUtils;
@@ -61,18 +65,19 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * A {@link CompactRewriter} that merges low-valid-ratio vector CF files during full compaction.
+ * A {@link CompactRewriter} that merges low-valid-ratio vector CF files and blob files during full
+ * compaction.
  *
  * <p>During full compaction (outputLevel == maxLevel), this rewriter:
  *
  * <ol>
- *   <li>Pre-scans merged records to count live references per vector file
- *   <li>Identifies vector files with validRatio below threshold
- *   <li>Merges those vector files into a new file
- *   <li>Rewrites scalar files with updated VectorDescriptor references
+ *   <li>Pre-scans merged records to count live references per vector/blob file
+ *   <li>Identifies files with validRatio below threshold
+ *   <li>Merges those files into new files
+ *   <li>Rewrites scalar files with updated VectorDescriptor/BlobDescriptor references
  * </ol>
  *
- * <p>When vector compaction is not triggered (non-full compaction or all files above threshold), it
+ * <p>When compaction is not triggered (non-full compaction or all files above threshold), it
  * delegates to the standard {@link MergeTreeCompactRewriter} behavior.
  */
 public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
@@ -84,6 +89,7 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
     private final RowType valueType;
     private final int maxLevel;
     private final List<DataFileMeta> bucketVectorFiles;
+    private final List<DataFileMeta> bucketBlobFiles;
 
     public VectorCFCompactRewriter(
             FileReaderFactory<KeyValue> readerFactory,
@@ -97,7 +103,8 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
             FileIO fileIO,
             RowType valueType,
             int maxLevel,
-            List<DataFileMeta> bucketVectorFiles) {
+            List<DataFileMeta> bucketVectorFiles,
+            List<DataFileMeta> bucketBlobFiles) {
         super(
                 readerFactory,
                 writerFactory,
@@ -111,6 +118,7 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         this.valueType = valueType;
         this.maxLevel = maxLevel;
         this.bucketVectorFiles = bucketVectorFiles;
+        this.bucketBlobFiles = bucketBlobFiles;
     }
 
     @Override
@@ -120,39 +128,44 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
             return super.rewrite(outputLevel, dropDelete, sections);
         }
 
-        if (bucketVectorFiles.isEmpty()) {
-            LOG.debug("No vector CF files in bucket, skipping vector compaction");
+        if (bucketVectorFiles.isEmpty() && bucketBlobFiles.isEmpty()) {
+            LOG.debug("No vector CF or blob files in bucket, skipping external file compaction");
             return super.rewrite(outputLevel, dropDelete, sections);
         }
 
         LOG.info(
-                "Full compaction with vector CF compact: {} vector files, threshold={}, minFiles={}",
+                "Full compaction with external file compact: {} vector files, {} blob files, "
+                        + "threshold={}, minFiles={}",
                 bucketVectorFiles.size(),
+                bucketBlobFiles.size(),
                 options.vectorCFCompactValidRatioThreshold(),
                 options.vectorCFCompactMinFiles());
 
-        return rewriteWithVectorCompaction(outputLevel, dropDelete, sections);
+        return rewriteWithExternalFileCompaction(outputLevel, dropDelete, sections);
     }
 
-    private CompactResult rewriteWithVectorCompaction(
+    private CompactResult rewriteWithExternalFileCompaction(
             int outputLevel, boolean dropDelete, List<List<SortedRun>> sections) throws Exception {
 
-        // --- Phase 2: Pre-scan to collect live vector references ---
         List<VectorColumnInfo> vectorColumns = detectVectorColumns();
-        if (vectorColumns.isEmpty()) {
+        List<BlobColumnInfo> blobColumns = detectBlobColumns();
+
+        if (vectorColumns.isEmpty() && blobColumns.isEmpty()) {
             return rewriteCompaction(outputLevel, dropDelete, sections);
         }
 
-        Map<Integer, Set<Long>> liveReferences = preScan(sections, dropDelete, vectorColumns);
+        // --- Phase 2: Pre-scan to collect live references ---
+        PreScanResult preScanResult = preScan(sections, dropDelete, vectorColumns, blobColumns);
 
-        // --- Phase 2b: Per-column valid ratio computation and merge decision ---
         DataFilePathFactory dataFilePathFactory = writerFactory.pathFactory(outputLevel);
         Path bucketPath = dataFilePathFactory.parent();
 
-        List<DataFileMeta> allVectorBefore = new ArrayList<>();
-        List<DataFileMeta> allVectorAfter = new ArrayList<>();
-        VectorDescriptorRemapTable combinedRemapTable = new VectorDescriptorRemapTable();
+        List<DataFileMeta> allExternalBefore = new ArrayList<>();
+        List<DataFileMeta> allExternalAfter = new ArrayList<>();
+        VectorDescriptorRemapTable combinedVectorRemapTable = new VectorDescriptorRemapTable();
+        BlobDescriptorRemapTable combinedBlobRemapTable = new BlobDescriptorRemapTable();
 
+        // --- Phase 2b: Vector column valid ratio computation and merge ---
         for (VectorColumnInfo colInfo : vectorColumns) {
             List<DataFileMeta> columnVectorFiles = new ArrayList<>();
             for (DataFileMeta f : bucketVectorFiles) {
@@ -164,7 +177,7 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
             List<DataFileMeta> filesToMerge = new ArrayList<>();
             for (DataFileMeta vecFile : columnVectorFiles) {
                 int fileId = vecFile.fileName().hashCode();
-                Set<Long> liveRows = liveReferences.getOrDefault(fileId, new HashSet<>());
+                Set<Long> liveRows = preScanResult.vectorRefs.getOrDefault(fileId, new HashSet<>());
                 long totalRows = vecFile.rowCount();
                 double validRatio = totalRows > 0 ? (double) liveRows.size() / totalRows : 1.0;
 
@@ -183,14 +196,13 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
 
             if (filesToMerge.size() < options.vectorCFCompactMinFiles()) {
                 LOG.info(
-                        "Column {}: only {} low-ratio files (min={}), skipping",
+                        "Vector column {}: only {} low-ratio files (min={}), skipping",
                         colInfo.fieldName,
                         filesToMerge.size(),
                         options.vectorCFCompactMinFiles());
                 continue;
             }
 
-            // --- Phase 3: Merge vector files for this column ---
             long schemaId = filesToMerge.get(0).schemaId();
             VectorFileMerger merger =
                     new VectorFileMerger(
@@ -201,33 +213,99 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                             colInfo.fieldName,
                             dataFilePathFactory);
 
-            VectorFileMerger.MergeResult mergeResult = merger.merge(filesToMerge, liveReferences);
+            VectorFileMerger.MergeResult mergeResult =
+                    merger.merge(filesToMerge, preScanResult.vectorRefs);
             if (mergeResult != null) {
-                allVectorBefore.addAll(filesToMerge);
-                allVectorAfter.add(mergeResult.newFileMeta());
-                combinedRemapTable.mergeFrom(mergeResult.remapTable());
+                allExternalBefore.addAll(filesToMerge);
+                allExternalAfter.add(mergeResult.newFileMeta());
+                combinedVectorRemapTable.mergeFrom(mergeResult.remapTable());
                 LOG.info(
-                        "Column {}: merged {} files -> {}",
+                        "Vector column {}: merged {} files -> {}",
                         colInfo.fieldName,
                         filesToMerge.size(),
                         mergeResult.newFileMeta().fileName());
             }
         }
 
-        if (allVectorBefore.isEmpty()) {
-            LOG.info("No vector files qualified for merging, normal compaction");
+        // --- Phase 2c: Blob column valid ratio computation and merge ---
+        for (BlobColumnInfo colInfo : blobColumns) {
+            List<DataFileMeta> columnBlobFiles = new ArrayList<>();
+            for (DataFileMeta f : bucketBlobFiles) {
+                if (f.writeCols() != null && f.writeCols().contains(colInfo.fieldName)) {
+                    columnBlobFiles.add(f);
+                }
+            }
+
+            List<DataFileMeta> filesToMerge = new ArrayList<>();
+            for (DataFileMeta blobFile : columnBlobFiles) {
+                Path filePath = new Path(bucketPath, blobFile.fileName());
+                String fileUri = filePath.toString();
+                Set<Long> liveOffsets =
+                        preScanResult.blobRefs.getOrDefault(fileUri, new HashSet<>());
+                long totalRows = blobFile.rowCount();
+                double validRatio = totalRows > 0 ? (double) liveOffsets.size() / totalRows : 1.0;
+
+                LOG.info(
+                        "Blob file {} (col={}): liveOffsets={}, totalRows={}, validRatio={}",
+                        blobFile.fileName(),
+                        colInfo.fieldName,
+                        liveOffsets.size(),
+                        totalRows,
+                        String.format("%.3f", validRatio));
+
+                if (validRatio < options.vectorCFCompactValidRatioThreshold()) {
+                    filesToMerge.add(blobFile);
+                }
+            }
+
+            if (filesToMerge.size() < options.vectorCFCompactMinFiles()) {
+                LOG.info(
+                        "Blob column {}: only {} low-ratio files (min={}), skipping",
+                        colInfo.fieldName,
+                        filesToMerge.size(),
+                        options.vectorCFCompactMinFiles());
+                continue;
+            }
+
+            long schemaId = filesToMerge.get(0).schemaId();
+            BlobFileMerger merger =
+                    new BlobFileMerger(
+                            fileIO, bucketPath, schemaId, colInfo.fieldName, dataFilePathFactory);
+
+            BlobFileMerger.MergeResult mergeResult =
+                    merger.merge(filesToMerge, preScanResult.blobRefs);
+            if (mergeResult != null) {
+                allExternalBefore.addAll(filesToMerge);
+                allExternalAfter.add(mergeResult.newFileMeta());
+                combinedBlobRemapTable.mergeFrom(mergeResult.remapTable());
+                LOG.info(
+                        "Blob column {}: merged {} files -> {}",
+                        colInfo.fieldName,
+                        filesToMerge.size(),
+                        mergeResult.newFileMeta().fileName());
+            }
+        }
+
+        if (allExternalBefore.isEmpty()) {
+            LOG.info("No external files qualified for merging, normal compaction");
             return rewriteCompaction(outputLevel, dropDelete, sections);
         }
 
         // --- Phase 4: Compact rewrite with descriptor remapping ---
         CompactResult scalarResult =
                 rewriteWithRemapping(
-                        outputLevel, dropDelete, sections, combinedRemapTable, vectorColumns);
+                        outputLevel,
+                        dropDelete,
+                        sections,
+                        combinedVectorRemapTable,
+                        vectorColumns,
+                        combinedBlobRemapTable,
+                        blobColumns);
 
         List<DataFileMeta> allBefore = new ArrayList<>(scalarResult.before());
-        allBefore.addAll(allVectorBefore);
+        allBefore.addAll(allExternalBefore);
         List<DataFileMeta> allAfter = new ArrayList<>(scalarResult.after());
-        allAfter.addAll(allVectorAfter);
+        allAfter.addAll(allExternalAfter);
 
         return new CompactResult(allBefore, allAfter, scalarResult.changelog());
     }
@@ -251,19 +329,43 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         return result;
     }
 
+    /** Detect blob columns in the value type. */
+    private List<BlobColumnInfo> detectBlobColumns() {
+        List<BlobColumnInfo> result = new ArrayList<>();
+        List<DataField> fields = valueType.getFields();
+        for (int i = 0; i < fields.size(); i++) {
+            DataField field = fields.get(i);
+            if (field.type().getTypeRoot() == DataTypeRoot.BLOB) {
+                result.add(new BlobColumnInfo(i, field.name()));
+            }
+        }
+        return result;
+    }
+
     /**
-     * Pre-scan merged records to collect live vector references. Returns fileId → set of live
-     * rowIndices.
+     * Pre-scan merged records to collect live vector and blob references. Returns a {@link
+     * PreScanResult} containing fileId-to-rowIndices for vector columns and uri-to-offsets for blob
+     * columns.
      */
-    private Map<Integer, Set<Long>> preScan(
+    private PreScanResult preScan(
             List<List<SortedRun>> sections,
             boolean dropDelete,
-            List<VectorColumnInfo> vectorColumns)
+            List<VectorColumnInfo> vectorColumns,
+            List<BlobColumnInfo> blobColumns)
             throws Exception {
-        Map<Integer, Set<Long>> liveReferences = new HashMap<>();
+        Map<Integer, Set<Long>> vectorRefs = new HashMap<>();
+        Map<String, Set<Long>> blobRefs = new HashMap<>();
+
         Set<Integer> vectorFileIds = new HashSet<>();
         for (DataFileMeta f : bucketVectorFiles) {
             vectorFileIds.add(f.fileName().hashCode());
+        }
+
+        DataFilePathFactory dataFilePathFactory = writerFactory.pathFactory(maxLevel);
+        Path bucketPath = dataFilePathFactory.parent();
+        Set<String> blobFileUris = new HashSet<>();
+        for (DataFileMeta f : bucketBlobFiles) {
+            blobFileUris.add(new Path(bucketPath, f.fileName()).toString());
         }
 
         RecordReader<KeyValue> reader = null;
@@ -280,15 +382,29 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                 KeyValue kv;
                 while ((kv = batch.next()) != null) {
                     InternalRow value = kv.value();
+
+                    // Collect vector references
                     for (VectorColumnInfo colInfo : vectorColumns) {
                         byte[] descBytes = extractDescriptorBytes(value, colInfo.valueIndex);
                         if (descBytes != null && VectorDescriptor.isVectorDescriptor(descBytes)) {
                             int fileId = VectorDescriptor.extractFileId(descBytes);
                             if (vectorFileIds.contains(fileId)) {
                                 long rowIndex = VectorDescriptor.extractRowIndex(descBytes);
-                                liveReferences
+                                vectorRefs
                                         .computeIfAbsent(fileId, k -> new HashSet<>())
                                         .add(rowIndex);
+                            }
+                        }
+                    }
+
+                    // Collect blob references
+                    for (BlobColumnInfo colInfo : blobColumns) {
+                        byte[] descBytes = extractBlobDescriptorBytes(value, colInfo.valueIndex);
+                        if (descBytes != null && BlobDescriptor.isBlobDescriptor(descBytes)) {
+                            BlobDescriptor desc = BlobDescriptor.deserialize(descBytes);
+                            if (blobFileUris.contains(desc.uri())) {
+                                blobRefs.computeIfAbsent(desc.uri(), k -> new HashSet<>())
+                                        .add(desc.offset());
                             }
                         }
                     }
@@ -299,12 +415,12 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
             IOUtils.closeAll(reader);
         }
 
-        return liveReferences;
+        return new PreScanResult(vectorRefs, blobRefs);
     }
 
     /**
      * Extract raw VectorDescriptor bytes from a value row at the given position. Handles both
-     * BinaryRow (getBinary) and GenericRow (getVector → VectorRef/BinaryVector) cases.
+     * BinaryRow (getBinary) and GenericRow (getVector -> VectorRef/BinaryVector) cases.
      */
     @Nullable
     private static byte[] extractDescriptorBytes(InternalRow row, int pos) {
@@ -331,13 +447,48 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         }
     }
 
-    /** Rewrite scalar files with VectorDescriptor remapping applied. */
+    /**
+     * Extract raw BlobDescriptor bytes from a value row at the given position. Handles both
+     * BinaryRow (getBinary returns serialized descriptor) and GenericRow (getBlob returns Blob
+     * object) cases.
+     */
+    @Nullable
+    private static byte[] extractBlobDescriptorBytes(InternalRow row, int pos) {
+        if (row.isNullAt(pos)) {
+            return null;
+        }
+        // For BinaryRow, getBinary returns the raw serialized descriptor bytes directly.
+        // For GenericRow with BlobData, the field is a Blob whose toData() is the raw bytes,
+        // but getBinary may not work on GenericRow. Try getBlob first, then getBinary.
+        try {
+            Blob blob = row.getBlob(pos);
+            if (blob instanceof BlobData) {
+                return blob.toData();
+            } else {
+                // BlobRef: extract descriptor and serialize
+                BlobDescriptor desc = blob.toDescriptor();
+                return desc.serialize();
+            }
+        } catch (Exception e) {
+            LOG.warn("Failed to extract blob descriptor via getBlob({}), trying getBinary", pos, e);
+        }
+        try {
+            return row.getBinary(pos);
+        } catch (Exception e) {
+            LOG.warn("Failed to extract blob descriptor via getBinary({})", pos, e);
+            return null;
+        }
+    }
+
+    /** Rewrite scalar files with VectorDescriptor and BlobDescriptor remapping applied. */
     private CompactResult rewriteWithRemapping(
             int outputLevel,
             boolean dropDelete,
             List<List<SortedRun>> sections,
-            VectorDescriptorRemapTable remapTable,
-            List<VectorColumnInfo> vectorColumns)
+            VectorDescriptorRemapTable vectorRemapTable,
+            List<VectorColumnInfo> vectorColumns,
+            BlobDescriptorRemapTable blobRemapTable,
+            List<BlobColumnInfo> blobColumns)
             throws Exception {
         RollingFileWriter<KeyValue, DataFileMeta> writer =
                 writerFactory.createRollingMergeTreeFileWriter(outputLevel, FileSource.COMPACT);
@@ -350,7 +501,14 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
             if (dropDelete) {
                 reader = new DropDeleteReader(reader);
             }
-            reader = new VectorDescriptorRemapReader(reader, remapTable, vectorColumns, valueType);
+            reader =
+                    new ExternalFileRemapReader(
+                            reader,
+                            vectorRemapTable,
+                            vectorColumns,
+                            blobRemapTable,
+                            blobColumns,
+                            valueType);
             writer.write(new RecordReaderIterator<>(reader));
         } catch (Exception e) {
             collectedExceptions = e;
@@ -388,25 +546,53 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         }
     }
 
+    /** Info about a blob column in the value type. */
+    static class BlobColumnInfo {
+        final int valueIndex;
+        final String fieldName;
+
+        BlobColumnInfo(int valueIndex, String fieldName) {
+            this.valueIndex = valueIndex;
+            this.fieldName = fieldName;
+        }
+    }
+
+    /** Result of pre-scanning merged records for live vector and blob references. */
+    static class PreScanResult {
+        final Map<Integer, Set<Long>> vectorRefs;
+        final Map<String, Set<Long>> blobRefs;
+
+        PreScanResult(Map<Integer, Set<Long>> vectorRefs, Map<String, Set<Long>> blobRefs) {
+            this.vectorRefs = vectorRefs;
+            this.blobRefs = blobRefs;
+        }
+    }
+
     /**
-     * RecordReader wrapper that remaps VectorDescriptor references in each KeyValue's value row.
-     * Creates a shallow copy of the value row with remapped vector columns.
+     * RecordReader wrapper that remaps both VectorDescriptor and BlobDescriptor references in each
+     * KeyValue's value row. Creates a shallow copy of the value row with remapped columns.
      */
-    private static class VectorDescriptorRemapReader implements RecordReader<KeyValue> {
+    private static class ExternalFileRemapReader implements RecordReader<KeyValue> {
 
         private final RecordReader<KeyValue> delegate;
-        private final VectorDescriptorRemapTable remapTable;
+        private final VectorDescriptorRemapTable vectorRemapTable;
         private final List<VectorColumnInfo> vectorColumns;
+        private final BlobDescriptorRemapTable blobRemapTable;
+        private final List<BlobColumnInfo> blobColumns;
         private final InternalRow.FieldGetter[] fieldGetters;
 
-        VectorDescriptorRemapReader(
+        ExternalFileRemapReader(
                 RecordReader<KeyValue> delegate,
-                VectorDescriptorRemapTable remapTable,
+                VectorDescriptorRemapTable vectorRemapTable,
                 List<VectorColumnInfo> vectorColumns,
+                BlobDescriptorRemapTable blobRemapTable,
+                List<BlobColumnInfo> blobColumns,
                 RowType valueType) {
             this.delegate = delegate;
-            this.remapTable = remapTable;
+            this.vectorRemapTable = vectorRemapTable;
             this.vectorColumns = vectorColumns;
+            this.blobRemapTable = blobRemapTable;
+            this.blobColumns = blobColumns;
             this.fieldGetters = new InternalRow.FieldGetter[valueType.getFieldCount()];
             for (int i = 0; i < fieldGetters.length; i++) {
                 fieldGetters[i] = InternalRow.createFieldGetter(valueType.getTypeAt(i), i);
@@ -446,13 +632,28 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
             InternalRow value = kv.value();
             boolean needsRemap = false;
 
+            // Check vector columns
             for (VectorColumnInfo colInfo : vectorColumns) {
                 byte[] descBytes = extractDescriptorBytes(value, colInfo.valueIndex);
                 if (descBytes != null && VectorDescriptor.isVectorDescriptor(descBytes)) {
                     int fileId = VectorDescriptor.extractFileId(descBytes);
-                    if (remapTable.containsFileId(fileId)) {
+                    if (vectorRemapTable.containsFileId(fileId)) {
                         needsRemap = true;
                         break;
+                    }
+                }
+            }
+
+            // Check blob columns if no vector remap needed yet
+            if (!needsRemap) {
+                for (BlobColumnInfo colInfo : blobColumns) {
+                    byte[] descBytes = extractBlobDescriptorBytes(value, colInfo.valueIndex);
+                    if (descBytes != null && BlobDescriptor.isBlobDescriptor(descBytes)) {
+                        BlobDescriptor desc = BlobDescriptor.deserialize(descBytes);
+                        if (blobRemapTable.containsUri(desc.uri())) {
+                            needsRemap = true;
+                            break;
+                        }
                     }
                 }
             }
@@ -468,6 +669,7 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                 newValue.setField(i, fieldGetters[i].getFieldOrNull(value));
             }
 
+            // Remap vector columns
             for (VectorColumnInfo colInfo : vectorColumns) {
                 if (value.isNullAt(colInfo.valueIndex)) {
                     continue;
@@ -476,11 +678,26 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                 if (descBytes == null) {
                     continue;
                 }
-                byte[] remapped = remapTable.remap(descBytes);
+                byte[] remapped = vectorRemapTable.remap(descBytes);
                 if (remapped != null) {
                     newValue.setField(
                             colInfo.valueIndex,
                             new VectorRef(VectorDescriptor.deserialize(remapped)));
+                }
+            }
+
+            // Remap blob columns
+            for (BlobColumnInfo colInfo : blobColumns) {
+                if (value.isNullAt(colInfo.valueIndex)) {
+                    continue;
+                }
+                byte[] descBytes = extractBlobDescriptorBytes(value, colInfo.valueIndex);
+                if (descBytes == null) {
+                    continue;
+                }
+                byte[] remapped = blobRemapTable.remap(descBytes);
+                if (remapped != null) {
+                    newValue.setField(colInfo.valueIndex, new BlobData(remapped));
                 }
             }
 

@@ -95,7 +95,25 @@ public interface KvCompactionManagerFactory extends Closeable {
             ExecutorService compactExecutor,
             List<DataFileMeta> restoreFiles,
             @Nullable BucketedDvMaintainer dvMaintainer,
-            List<DataFileMeta> bucketVectorFiles);
+            List<DataFileMeta> bucketVectorFiles,
+            List<DataFileMeta> bucketBlobFiles);
+
+    default CompactManager create(
+            BinaryRow partition,
+            int bucket,
+            ExecutorService compactExecutor,
+            List<DataFileMeta> restoreFiles,
+            @Nullable BucketedDvMaintainer dvMaintainer,
+            List<DataFileMeta> bucketVectorFiles) {
+        return create(
+                partition,
+                bucket,
+                compactExecutor,
+                restoreFiles,
+                dvMaintainer,
+                bucketVectorFiles,
+                Collections.emptyList());
+    }
 
     default CompactManager create(
             BinaryRow partition,
@@ -109,6 +127,7 @@ public interface KvCompactionManagerFactory extends Closeable {
                 compactExecutor,
                 restoreFiles,
                 dvMaintainer,
+                Collections.emptyList(),
                 Collections.emptyList());
     }
 }
