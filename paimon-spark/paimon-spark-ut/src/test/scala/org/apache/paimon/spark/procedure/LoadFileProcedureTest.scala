@@ -498,6 +498,116 @@ class LoadFileProcedureTest extends PaimonSparkTestBase {
     }
   }
 
+  test("Paimon procedure: load_file csv multiLine=true is the default (quoted newline cell)") {
+    withTempDir {
+      dir =>
+        // A quoted cell containing a newline used to tear the row apart under the default
+        // multiLine=false, which made every affected row malformed and (under PERMISSIVE)
+        // silently dropped — the count agg was unaffected by pruning so it still reported
+        // valid=N, invalid=0 while the write produced an empty commit (no snapshot).
+        val f = new File(dir, "ml.csv")
+        val w = new PrintWriter(f)
+        try {
+          w.println("id,note")
+          w.println("1,\"line one\nline two\"")
+          w.println("2,plain")
+        } finally w.close()
+
+        spark.sql(s"""
+                     |CREATE TABLE T (id INT, note STRING)
+                     |USING PAIMON
+                     |""".stripMargin)
+
+        // No multiLine in options — procedure must default it to true.
+        checkAnswer(
+          spark.sql(
+            s"CALL paimon.sys.load_file(table => 'test.T', path => '${dir.toURI}'," +
+              s" format => 'csv', options => map('sep', ','))"),
+          Row(true, 2L, 0L) :: Nil
+        )
+
+        // valid_count must equal the number of rows actually committed — i.e. the count agg
+        // and the write path must agree on which rows are corrupt. Before the fix, count
+        // pruning hid the malformed row from invalid_count and the write silently dropped it.
+        checkAnswer(
+          spark.sql("SELECT id, note FROM T ORDER BY id"),
+          Row(1, "line one\nline two") :: Row(2, "plain") :: Nil)
+    }
+  }
+
+  test("Paimon procedure: load_file csv count agg matches write under PERMISSIVE") {
+    // Regression: before the fix, the count agg only referenced one probe column, so column
+    // pruning made the parser skip type-checking other columns. PERMISSIVE then never marked
+    // type-mismatch rows as corrupt at count time, but the write path (which referenced all
+    // columns via the projection) did mark and drop them — producing valid_count > rows
+    // committed and a 0-message commit.
+    withTempDir {
+      dir =>
+        writeText(
+          dir,
+          "mixed.csv",
+          "id,age",
+          "1,42",
+          "2,not-a-number", // bad row: only the second column fails to parse as INT
+          "3,7"
+        )
+
+        spark.sql(s"""
+                     |CREATE TABLE T (id INT, age INT)
+                     |USING PAIMON
+                     |""".stripMargin)
+
+        checkAnswer(
+          spark.sql(
+            s"CALL paimon.sys.load_file(table => 'test.T', path => '${dir.toURI}'," +
+              s" format => 'csv', options => map('sep', ','))"),
+          Row(true, 2L, 1L) :: Nil
+        )
+
+        checkAnswer(spark.sql("SELECT id, age FROM T ORDER BY id"), Row(1, 42) :: Row(3, 7) :: Nil)
+    }
+  }
+
+  test("Paimon procedure: load_file csv default escape='\"' parses RFC4180 doubled quotes") {
+    // Regression: Spark's CSV default escape is '\\', which mis-parses the very common
+    // RFC 4180 pattern of a quoted JSON cell with doubled inner quotes — e.g. `"{""k"":1}"`.
+    // Before defaulting escape to '"', every such row was torn apart and the whole file
+    // came back as invalid. After the fix the rows parse and land in the table — the
+    // exact in-cell representation depends on univocity's escape==quote semantics, which
+    // we don't try to lock down here; we only assert that the file is no longer
+    // wholesale-rejected.
+    withTempDir {
+      dir =>
+        val q = "\""
+        writeText(
+          dir,
+          "rfc4180.csv",
+          "id,payload",
+          "1," + q + "{" + q + q + "k" + q + q + ":" + q + q + "v1" + q + q + "}" + q,
+          "2," + q + "{" + q + q + "k" + q + q + ":" + q + q + "v2" + q + q + "}" + q
+        )
+
+        spark.sql(s"""
+                     |CREATE TABLE T (id INT, payload STRING)
+                     |USING PAIMON
+                     |""".stripMargin)
+
+        // Only sep + multiLine overridden — escape must default to '"', not '\\'.
+        checkAnswer(
+          spark.sql(
+            s"CALL paimon.sys.load_file(table => 'test.T', path => '${dir.toURI}'," +
+              s" format => 'csv', options => map('sep', ',', 'multiLine', 'false'))"),
+          Row(true, 2L, 0L) :: Nil
+        )
+
+        checkAnswer(spark.sql("SELECT count(*) FROM T"), Row(2L) :: Nil)
+        checkAnswer(
+          spark.sql("SELECT id FROM T ORDER BY id"),
+          Row(1) :: Row(2) :: Nil
+        )
+    }
+  }
+
   private def rootCause(t: Throwable): String = {
     var cur = t
     while (cur.getCause != null) cur = cur.getCause

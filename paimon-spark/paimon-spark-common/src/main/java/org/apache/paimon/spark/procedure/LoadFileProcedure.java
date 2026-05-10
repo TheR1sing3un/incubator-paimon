@@ -169,6 +169,16 @@ public class LoadFileProcedure extends BaseProcedure {
             options.putIfAbsent("sep", "\u0001");
             options.putIfAbsent("header", "true");
             options.putIfAbsent("enforceSchema", "false");
+            // Default to multiLine=true so quoted cells containing newlines (e.g. JSON blobs,
+            // free-form text) are read as a single record instead of being torn apart by the
+            // line-based splitter — that tearing surfaces as MALFORMED_CSV_RECORD on every
+            // affected row, which under PERMISSIVE silently drops the entire file.
+            options.putIfAbsent("multiLine", "true");
+            // Default escape='"' to match RFC 4180 ("" doubles a literal quote inside a quoted
+            // field). Spark's default escape is '\\', which mis-parses the very common pattern
+            // of JSON-in-CSV: `"{""k"":1}"` would be torn at the inner ""``s and every row
+            // marked malformed. Override only if your producer actually uses backslash-escape.
+            options.putIfAbsent("escape", "\"");
             // The whole CSV plan (peek + alias matching + nested-cell from_json) is built around
             // named columns. header=false would make every target column resolve to lit(null) and
             // silently write all-null rows, so reject it instead of degrading to positional mode.
@@ -216,22 +226,26 @@ public class LoadFileProcedure extends BaseProcedure {
 
         // Spark rejects queries that reference ONLY the synthetic _corrupt_record column against
         // raw CSV/JSON files (QueryCompilationErrors#queryFromRawFilesIncludeCorruptRecordColumn),
-        // so the count agg must also reference some real column — otherwise column pruning leaves
-        // _corrupt_record alone in the required schema and analysis fails. We pick the first
-        // non-corrupt field in readSchema as a probe: `first(probe)` forces pruning to keep it,
-        // and its value is discarded. No cache / persist — count and writeTo each scan the files
-        // once, which is cheaper than spilling a large parsed dataset to executor local disk.
-        String probeCol = null;
+        // so the count agg must also reference real columns. We additionally need to reference
+        // EVERY non-corrupt column: column pruning would otherwise leave the parser only
+        // materialising a subset, and under PERMISSIVE a row whose unread columns fail to parse
+        // would NOT be marked as corrupt here — yet the write path (which references all columns
+        // via the projection) would mark and drop it, producing a silent valid_count >> rows
+        // actually written discrepancy (and an empty commit). Building one big struct over all
+        // non-corrupt columns forces the read schema to stay intact for both passes. No cache /
+        // persist — count and writeTo each scan the files once, which is cheaper than spilling
+        // a large parsed dataset to executor local disk.
+        List<Column> probeCols = new ArrayList<>();
         for (StructField f : readSchema.fields()) {
             if (!CORRUPT_RECORD_COL.equals(f.name())) {
-                probeCol = f.name();
-                break;
+                probeCols.add(functions.col(f.name()));
             }
         }
-        if (probeCol == null) {
+        if (probeCols.isEmpty()) {
             throw new IllegalStateException(
                     "Target table has no columns to load into: " + fullyQualifiedName(ident));
         }
+        Column probeStruct = functions.struct(probeCols.toArray(new Column[0]));
 
         Row counts =
                 raw.agg(
@@ -246,7 +260,7 @@ public class LoadFileProcedure extends BaseProcedure {
                                                                 1L)
                                                         .otherwise(0L))
                                         .as("invalid"),
-                                functions.first(functions.col(probeCol), true).as("_probe"))
+                                functions.first(probeStruct, true).as("_probe"))
                         .first();
         long total = counts.getLong(0);
         long invalidCount = counts.isNullAt(1) ? 0L : counts.getLong(1);
