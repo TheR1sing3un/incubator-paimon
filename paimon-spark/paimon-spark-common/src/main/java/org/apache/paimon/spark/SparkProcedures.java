@@ -41,6 +41,7 @@ import org.apache.paimon.spark.procedure.ExpirePartitionsProcedure;
 import org.apache.paimon.spark.procedure.ExpireSnapshotsProcedure;
 import org.apache.paimon.spark.procedure.ExpireTagsProcedure;
 import org.apache.paimon.spark.procedure.FastForwardProcedure;
+import org.apache.paimon.spark.procedure.KafkaSyncTableProcedure;
 import org.apache.paimon.spark.procedure.LoadFileProcedure;
 import org.apache.paimon.spark.procedure.MarkPartitionDoneProcedure;
 import org.apache.paimon.spark.procedure.MigrateDatabaseProcedure;
@@ -141,6 +142,7 @@ public class SparkProcedures {
                 "reconcile_accelerate_index", ReconcileAccelerateIndexProcedure::builder);
         procedureBuilders.put("drop_accelerate_index", DropAccelerateIndexProcedure::builder);
         procedureBuilders.put("vector_column_family_gc", VectorColumnFamilyGcProcedure::builder);
+        procedureBuilders.put("kafka_sync_table", KafkaSyncTableProcedure::builder);
         return procedureBuilders.build();
     }
 }
