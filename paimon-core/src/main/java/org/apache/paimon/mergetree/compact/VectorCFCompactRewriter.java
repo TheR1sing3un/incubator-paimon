@@ -164,6 +164,7 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
             }
 
             List<DataFileMeta> filesToMerge = new ArrayList<>();
+            List<DataFileMeta> deadFiles = new ArrayList<>();
             for (DataFileMeta vecFile : columnVectorFiles) {
                 int fileId = vecFile.fileName().hashCode();
                 Set<Long> liveRows = vectorRefs.getOrDefault(fileId, new HashSet<>());
@@ -178,10 +179,15 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                         totalRows,
                         String.format("%.3f", validRatio));
 
-                if (validRatio < options.vectorCFCompactValidRatioThreshold()) {
+                if (liveRows.isEmpty()) {
+                    deadFiles.add(vecFile);
+                } else if (validRatio < options.vectorCFCompactValidRatioThreshold()) {
                     filesToMerge.add(vecFile);
                 }
             }
+
+            // Dead files (validRatio=0) are directly removed from manifest
+            allExternalBefore.addAll(deadFiles);
 
             if (filesToMerge.size() < options.vectorCFCompactMinFiles()) {
                 LOG.info(
@@ -283,7 +289,6 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                 while ((kv = batch.next()) != null) {
                     InternalRow value = kv.value();
 
-                    // Collect vector references
                     for (VectorColumnInfo colInfo : vectorColumns) {
                         byte[] descBytes = extractDescriptorBytes(value, colInfo.valueIndex);
                         if (descBytes != null && VectorDescriptor.isVectorDescriptor(descBytes)) {

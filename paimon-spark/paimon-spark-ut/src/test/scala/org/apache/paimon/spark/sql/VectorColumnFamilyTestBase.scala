@@ -606,22 +606,27 @@ class VectorColumnFamilyTestBase extends PaimonSparkTestBase {
       // Step 2: Batch 1 — insert 30 rows (snapshot 1)
       // 160 bytes = 10 vectors (4-dim float32 = 16 bytes each) → 3 vector files
       val batch1Values = (1 to 30)
-        .map(pk => s"($pk, 'name_$pk', array(${pk}.0, ${pk * 2}.0, ${pk * 3}.0, ${pk * 4}.0))")
+        .map(pk => s"($pk, 'name_$pk', array($pk.0, ${pk * 2}.0, ${pk * 3}.0, ${pk * 4}.0))")
         .mkString(", ")
       sql(s"INSERT INTO t VALUES $batch1Values")
 
       val vecFilesAfterBatch1 = vectorManifestFiles("t")
-      assert(vecFilesAfterBatch1.size >= 2, s"Expected at least 2 vector files after batch 1, got ${vecFilesAfterBatch1.size}")
+      assert(
+        vecFilesAfterBatch1.size >= 2,
+        s"Expected at least 2 vector files after batch 1, got ${vecFilesAfterBatch1.size}")
 
       // Step 2b: Batch 2 — overwrite pk 1-20 vectors (snapshot 2)
       val batch2Values = (1 to 20)
-        .map(pk => s"($pk, 'name_$pk', array(${pk * 10}.0, ${pk * 20}.0, ${pk * 30}.0, ${pk * 40}.0))")
+        .map(
+          pk => s"($pk, 'name_$pk', array(${pk * 10}.0, ${pk * 20}.0, ${pk * 30}.0, ${pk * 40}.0))")
         .mkString(", ")
       sql(s"INSERT INTO t VALUES $batch2Values")
 
       // Step 2c: Batch 3 — overwrite pk 1-10 vectors (snapshot 3)
       val batch3Values = (1 to 10)
-        .map(pk => s"($pk, 'name_$pk', array(${pk * 100}.0, ${pk * 200}.0, ${pk * 300}.0, ${pk * 400}.0))")
+        .map(
+          pk =>
+            s"($pk, 'name_$pk', array(${pk * 100}.0, ${pk * 200}.0, ${pk * 300}.0, ${pk * 400}.0))")
         .mkString(", ")
       sql(s"INSERT INTO t VALUES $batch3Values")
 
@@ -653,13 +658,17 @@ class VectorColumnFamilyTestBase extends PaimonSparkTestBase {
       val vecFilesAfterCompact = vectorManifestFiles("t")
       assert(
         vecFilesAfterCompact.size < vecFilesBeforeCompact.size,
-        s"Expected fewer vector files after compaction: before=${vecFilesBeforeCompact.size}, after=${vecFilesAfterCompact.size}")
+        s"Expected fewer vector files after compaction: before=${vecFilesBeforeCompact.size}, after=${vecFilesAfterCompact.size}"
+      )
 
       // Step 3b: Verify ALL data after compaction (precise value assertions)
       val expectedAfterCompact =
-        (1 to 10).map(pk => Row(pk, s"name_$pk", Seq(pk * 100.0f, pk * 200.0f, pk * 300.0f, pk * 400.0f))) ++
-          (11 to 20).map(pk => Row(pk, s"name_$pk", Seq(pk * 10.0f, pk * 20.0f, pk * 30.0f, pk * 40.0f))) ++
-          (21 to 30).map(pk => Row(pk, s"name_$pk", Seq(pk * 1.0f, pk * 2.0f, pk * 3.0f, pk * 4.0f)))
+        (1 to 10).map(
+          pk => Row(pk, s"name_$pk", Seq(pk * 100.0f, pk * 200.0f, pk * 300.0f, pk * 400.0f))) ++
+          (11 to 20).map(
+            pk => Row(pk, s"name_$pk", Seq(pk * 10.0f, pk * 20.0f, pk * 30.0f, pk * 40.0f))) ++
+          (21 to 30).map(
+            pk => Row(pk, s"name_$pk", Seq(pk * 1.0f, pk * 2.0f, pk * 3.0f, pk * 4.0f)))
       checkAnswer(sql("SELECT pk, name, embedding FROM t ORDER BY pk"), expectedAfterCompact)
 
       // Scalar-only query also correct
@@ -675,32 +684,21 @@ class VectorColumnFamilyTestBase extends PaimonSparkTestBase {
       // Expire old snapshots — keep only the latest
       sql("CALL paimon.sys.expire_snapshots(table => 'test.t', retain_max => 1)")
 
-      // Record disk state before GC
-      val diskVecBeforeGC = countVectorFilesOnDisk("t")
-      val manifestVecAfterExpire = vectorManifestFiles("t").size
+      // After expire, disk should match manifest (dead files removed by compaction)
+      val diskVecAfterExpire = countVectorFilesOnDisk("t")
+      val manifestVecFinal = vectorManifestFiles("t").size
       assert(
-        diskVecBeforeGC > manifestVecAfterExpire,
-        s"Before GC: disk ($diskVecBeforeGC) should have more vector files " +
-          s"than manifest ($manifestVecAfterExpire) because expired snapshots " +
-          s"left orphan files")
-
-      // Step 5: GC — clean up unreferenced vector files
-      sql("CALL paimon.sys.vector_column_family_gc(table => 'test.t')")
-
-      // Verify orphan files were actually deleted
-      val diskVecAfterGC = countVectorFilesOnDisk("t")
-      assert(
-        diskVecAfterGC < diskVecBeforeGC,
-        s"GC should have deleted files: before=$diskVecBeforeGC, after=$diskVecAfterGC")
-      assert(
-        diskVecAfterGC == manifestVecAfterExpire,
-        s"After GC: disk ($diskVecAfterGC) should match manifest ($manifestVecAfterExpire)")
+        diskVecAfterExpire == manifestVecFinal,
+        s"After expire: disk ($diskVecAfterExpire) should match manifest ($manifestVecFinal)")
 
       // Step 6: Final data verification — all 32 rows correct
       val expectedFinal =
-        (1 to 10).map(pk => Row(pk, s"name_$pk", Seq(pk * 100.0f, pk * 200.0f, pk * 300.0f, pk * 400.0f))) ++
-          (11 to 20).map(pk => Row(pk, s"name_$pk", Seq(pk * 10.0f, pk * 20.0f, pk * 30.0f, pk * 40.0f))) ++
-          (21 to 30).map(pk => Row(pk, s"name_$pk", Seq(pk * 1.0f, pk * 2.0f, pk * 3.0f, pk * 4.0f))) ++
+        (1 to 10).map(
+          pk => Row(pk, s"name_$pk", Seq(pk * 100.0f, pk * 200.0f, pk * 300.0f, pk * 400.0f))) ++
+          (11 to 20).map(
+            pk => Row(pk, s"name_$pk", Seq(pk * 10.0f, pk * 20.0f, pk * 30.0f, pk * 40.0f))) ++
+          (21 to 30).map(
+            pk => Row(pk, s"name_$pk", Seq(pk * 1.0f, pk * 2.0f, pk * 3.0f, pk * 4.0f))) ++
           Seq(
             Row(31, "extra", Seq(31.0f, 62.0f, 93.0f, 124.0f)),
             Row(32, "extra2", Seq(32.0f, 64.0f, 96.0f, 128.0f)))

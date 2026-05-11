@@ -63,6 +63,9 @@ import org.apache.paimon.utils.UserDefinedSeqComparator;
 
 import org.apache.paimon.shade.caffeine2.com.github.benmanes.caffeine.cache.Cache;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.Comparator;
@@ -77,6 +80,8 @@ import static org.apache.paimon.mergetree.LookupFile.localFilePrefix;
 
 /** Factory to create {@link MergeTreeCompactManager}. */
 public class MergeTreeCompactManagerFactory implements KvCompactionManagerFactory {
+
+    private static final Logger LOG = LoggerFactory.getLogger(MergeTreeCompactManagerFactory.class);
 
     private final KeyValueFileReaderFactory.Builder readerFactoryBuilder;
     private final KeyValueFileWriterFactory.Builder writerFactoryBuilder;
