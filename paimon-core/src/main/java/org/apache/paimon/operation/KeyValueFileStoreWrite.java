@@ -216,8 +216,7 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
                         compactExecutor,
                         restoreFiles,
                         dvMaintainer,
-                        lastRestoredVectorCFFiles,
-                        lastRestoredBlobFiles);
+                        lastRestoredVectorCFFiles);
 
         VersionedMergeMode mergeMode = VersionedMergeMode.UPSERT;
         if (options.mergeEngine() == CoreOptions.MergeEngine.VERSIONED_PARTIAL_UPDATE) {

@@ -148,8 +148,7 @@ public class MergeTreeCompactManagerFactory implements KvCompactionManagerFactor
             ExecutorService compactExecutor,
             List<DataFileMeta> restoreFiles,
             @Nullable BucketedDvMaintainer dvMaintainer,
-            List<DataFileMeta> bucketVectorFiles,
-            List<DataFileMeta> bucketBlobFiles) {
+            List<DataFileMeta> bucketVectorFiles) {
         if (options.writeOnly()) {
             return new NoopCompactManager();
         }
@@ -166,8 +165,7 @@ public class MergeTreeCompactManagerFactory implements KvCompactionManagerFactor
                         userDefinedSeqComparator,
                         levels,
                         dvMaintainer,
-                        bucketVectorFiles,
-                        bucketBlobFiles);
+                        bucketVectorFiles);
         CompactionMetrics.Reporter metricsReporter =
                 compactionMetrics == null
                         ? null
@@ -233,8 +231,7 @@ public class MergeTreeCompactManagerFactory implements KvCompactionManagerFactor
             @Nullable FieldsComparator userDefinedSeqComparator,
             Levels levels,
             @Nullable BucketedDvMaintainer dvMaintainer,
-            List<DataFileMeta> bucketVectorFiles,
-            List<DataFileMeta> bucketBlobFiles) {
+            List<DataFileMeta> bucketVectorFiles) {
         DeletionVector.Factory dvFactory = DeletionVector.factory(dvMaintainer);
         KeyValueFileReaderFactory keyReaderFactory =
                 readerFactoryBuilder.build(partition, bucket, dvFactory);
@@ -337,8 +334,7 @@ public class MergeTreeCompactManagerFactory implements KvCompactionManagerFactor
                         fileIO,
                         valueType,
                         maxLevel,
-                        bucketVectorFiles,
-                        bucketBlobFiles);
+                        bucketVectorFiles);
             }
             return new MergeTreeCompactRewriter(
                     readerFactory,

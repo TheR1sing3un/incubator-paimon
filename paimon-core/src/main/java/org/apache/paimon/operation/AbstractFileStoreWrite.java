@@ -94,8 +94,6 @@ public abstract class AbstractFileStoreWrite<T> implements FileStoreWrite<T> {
      */
     protected volatile List<DataFileMeta> lastRestoredVectorCFFiles = new ArrayList<>();
 
-    protected volatile List<DataFileMeta> lastRestoredBlobFiles = new ArrayList<>();
-
     protected CompactionMetrics compactionMetrics = null;
     protected final String tableName;
     private final boolean legacyPartitionName;
@@ -459,24 +457,17 @@ public abstract class AbstractFileStoreWrite<T> implements FileStoreWrite<T> {
         if (restoreFiles == null) {
             restoreFiles = new ArrayList<>();
         }
-        // Separate external files (vector CF + blob) — they should not enter Levels/compaction
+        // Separate vector column family files — they should not enter Levels/compaction
         List<DataFileMeta> vectorCFFiles = new ArrayList<>();
-        List<DataFileMeta> blobFiles = new ArrayList<>();
         Iterator<DataFileMeta> iter = restoreFiles.iterator();
         while (iter.hasNext()) {
             DataFileMeta f = iter.next();
             if (f.isVectorCFFile()) {
                 vectorCFFiles.add(f);
                 iter.remove();
-            } else if (f.writeCols() != null
-                    && !f.writeCols().isEmpty()
-                    && f.fileName().endsWith(".blob")) {
-                blobFiles.add(f);
-                iter.remove();
             }
         }
         this.lastRestoredVectorCFFiles = vectorCFFiles;
-        this.lastRestoredBlobFiles = blobFiles;
         RecordWriter<T> writer =
                 createWriter(
                         partition.copy(),
