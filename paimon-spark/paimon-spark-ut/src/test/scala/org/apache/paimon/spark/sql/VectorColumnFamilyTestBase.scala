@@ -575,6 +575,139 @@ class VectorColumnFamilyTestBase extends PaimonSparkTestBase {
     }
   }
 
+  // ==================== Compaction Lifecycle Tests ====================
+
+  test("Vector-CF: compaction lifecycle with snapshot expiration and file cleanup") {
+    withTable("t") {
+      // Step 1: Create table with vector CF + small target-file-size for multiple files
+      sql(s"""CREATE TABLE t (
+             |  pk INT,
+             |  name STRING,
+             |  embedding ARRAY<FLOAT>
+             |) TBLPROPERTIES (
+             |  'primary-key' = 'pk',
+             |  'bucket' = '1',
+             |  'merge-engine' = 'partial-update',
+             |  'vector-field' = 'embedding',
+             |  'field.embedding.vector-dim' = '4',
+             |  'file.format' = 'parquet',
+             |  'vector-column-family.enabled' = 'true',
+             |  'vector-column-family.target-file-size' = '160b',
+             |  'vector-column-family.compact.enabled' = 'true',
+             |  'vector-column-family.compact.valid-ratio-threshold' = '0.8',
+             |  'vector-column-family.compact.min-files-to-merge' = '1',
+             |  'snapshot.num-retained.min' = '1',
+             |  'snapshot.num-retained.max' = '10',
+             |  'compaction.min.file-num' = '999',
+             |  'compaction.max.file-num' = '999',
+             |  'num-sorted-runs.compaction-trigger' = '999'
+             |)""".stripMargin)
+
+      // Step 2: Batch 1 — insert 30 rows (snapshot 1)
+      // 160 bytes = 10 vectors (4-dim float32 = 16 bytes each) → 3 vector files
+      val batch1Values = (1 to 30)
+        .map(pk => s"($pk, 'name_$pk', array(${pk}.0, ${pk * 2}.0, ${pk * 3}.0, ${pk * 4}.0))")
+        .mkString(", ")
+      sql(s"INSERT INTO t VALUES $batch1Values")
+
+      val vecFilesAfterBatch1 = vectorManifestFiles("t")
+      assert(vecFilesAfterBatch1.size >= 2, s"Expected at least 2 vector files after batch 1, got ${vecFilesAfterBatch1.size}")
+
+      // Step 2b: Batch 2 — overwrite pk 1-20 vectors (snapshot 2)
+      val batch2Values = (1 to 20)
+        .map(pk => s"($pk, 'name_$pk', array(${pk * 10}.0, ${pk * 20}.0, ${pk * 30}.0, ${pk * 40}.0))")
+        .mkString(", ")
+      sql(s"INSERT INTO t VALUES $batch2Values")
+
+      // Step 2c: Batch 3 — overwrite pk 1-10 vectors (snapshot 3)
+      val batch3Values = (1 to 10)
+        .map(pk => s"($pk, 'name_$pk', array(${pk * 100}.0, ${pk * 200}.0, ${pk * 300}.0, ${pk * 400}.0))")
+        .mkString(", ")
+      sql(s"INSERT INTO t VALUES $batch3Values")
+
+      val vecFilesBeforeCompact = vectorManifestFiles("t")
+      assert(
+        vecFilesBeforeCompact.size >= 4,
+        s"Expected at least 4 vector files before compaction, got ${vecFilesBeforeCompact.size}")
+
+      // Step 2d: Verify data before compaction
+      // pk 1-10: latest = batch 3 values
+      checkAnswer(
+        sql("SELECT pk, embedding FROM t WHERE pk = 1"),
+        Seq(Row(1, Seq(100.0f, 200.0f, 300.0f, 400.0f)))
+      )
+      // pk 11-20: latest = batch 2 values
+      checkAnswer(
+        sql("SELECT pk, embedding FROM t WHERE pk = 15"),
+        Seq(Row(15, Seq(150.0f, 300.0f, 450.0f, 600.0f)))
+      )
+      // pk 21-30: still batch 1 values
+      checkAnswer(
+        sql("SELECT pk, embedding FROM t WHERE pk = 25"),
+        Seq(Row(25, Seq(25.0f, 50.0f, 75.0f, 100.0f)))
+      )
+
+      // Step 3: Full compaction
+      sql("CALL sys.compact(table => 't', compact_strategy => 'full')")
+
+      val vecFilesAfterCompact = vectorManifestFiles("t")
+      assert(
+        vecFilesAfterCompact.size < vecFilesBeforeCompact.size,
+        s"Expected fewer vector files after compaction: before=${vecFilesBeforeCompact.size}, after=${vecFilesAfterCompact.size}")
+
+      // Step 3b: Verify ALL data after compaction (precise value assertions)
+      val expectedAfterCompact =
+        (1 to 10).map(pk => Row(pk, s"name_$pk", Seq(pk * 100.0f, pk * 200.0f, pk * 300.0f, pk * 400.0f))) ++
+          (11 to 20).map(pk => Row(pk, s"name_$pk", Seq(pk * 10.0f, pk * 20.0f, pk * 30.0f, pk * 40.0f))) ++
+          (21 to 30).map(pk => Row(pk, s"name_$pk", Seq(pk * 1.0f, pk * 2.0f, pk * 3.0f, pk * 4.0f)))
+      checkAnswer(sql("SELECT pk, name, embedding FROM t ORDER BY pk"), expectedAfterCompact)
+
+      // Scalar-only query also correct
+      checkAnswer(
+        sql("SELECT pk, name FROM t WHERE pk IN (1, 15, 25) ORDER BY pk"),
+        Seq(Row(1, "name_1"), Row(15, "name_15"), Row(25, "name_25"))
+      )
+
+      // Step 4: Push more snapshots + expire old ones
+      sql("INSERT INTO t VALUES (31, 'extra', array(31.0, 62.0, 93.0, 124.0))")
+      sql("INSERT INTO t VALUES (32, 'extra2', array(32.0, 64.0, 96.0, 128.0))")
+
+      // Expire old snapshots — keep only the latest
+      sql("CALL paimon.sys.expire_snapshots(table => 'test.t', retain_max => 1)")
+
+      // Record disk state before GC
+      val diskVecBeforeGC = countVectorFilesOnDisk("t")
+      val manifestVecAfterExpire = vectorManifestFiles("t").size
+      assert(
+        diskVecBeforeGC > manifestVecAfterExpire,
+        s"Before GC: disk ($diskVecBeforeGC) should have more vector files " +
+          s"than manifest ($manifestVecAfterExpire) because expired snapshots " +
+          s"left orphan files")
+
+      // Step 5: GC — clean up unreferenced vector files
+      sql("CALL paimon.sys.vector_column_family_gc(table => 'test.t')")
+
+      // Verify orphan files were actually deleted
+      val diskVecAfterGC = countVectorFilesOnDisk("t")
+      assert(
+        diskVecAfterGC < diskVecBeforeGC,
+        s"GC should have deleted files: before=$diskVecBeforeGC, after=$diskVecAfterGC")
+      assert(
+        diskVecAfterGC == manifestVecAfterExpire,
+        s"After GC: disk ($diskVecAfterGC) should match manifest ($manifestVecAfterExpire)")
+
+      // Step 6: Final data verification — all 32 rows correct
+      val expectedFinal =
+        (1 to 10).map(pk => Row(pk, s"name_$pk", Seq(pk * 100.0f, pk * 200.0f, pk * 300.0f, pk * 400.0f))) ++
+          (11 to 20).map(pk => Row(pk, s"name_$pk", Seq(pk * 10.0f, pk * 20.0f, pk * 30.0f, pk * 40.0f))) ++
+          (21 to 30).map(pk => Row(pk, s"name_$pk", Seq(pk * 1.0f, pk * 2.0f, pk * 3.0f, pk * 4.0f))) ++
+          Seq(
+            Row(31, "extra", Seq(31.0f, 62.0f, 93.0f, 124.0f)),
+            Row(32, "extra2", Seq(32.0f, 64.0f, 96.0f, 128.0f)))
+      checkAnswer(sql("SELECT pk, name, embedding FROM t ORDER BY pk"), expectedFinal)
+    }
+  }
+
   // ==================== GC Tests ====================
 
   test("Vector-CF: GC preserves referenced vector files") {
