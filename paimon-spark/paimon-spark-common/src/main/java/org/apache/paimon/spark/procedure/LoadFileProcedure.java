@@ -124,6 +124,7 @@ public class LoadFileProcedure extends BaseProcedure {
                 // kling-lakehouse for the wire contract.
                 ProcedureParameter.optional("task_id", StringType),
                 ProcedureParameter.optional("catalog_url", StringType),
+                ProcedureParameter.optional("enable_progress_report", DataTypes.BooleanType),
             };
 
     private static final StructType OUTPUT_TYPE =
@@ -159,6 +160,8 @@ public class LoadFileProcedure extends BaseProcedure {
         // Optional ingestion-callback params. Empty strings are treated the same as null.
         String taskId = args.numFields() > 4 && !args.isNullAt(4) ? args.getString(4) : null;
         String catalogUrl = args.numFields() > 5 && !args.isNullAt(5) ? args.getString(5) : null;
+        boolean enableProgressReport =
+                args.numFields() > 6 && !args.isNullAt(6) && args.getBoolean(6);
 
         // Defaults. putIfAbsent means user-supplied options always win, EXCEPT for
         // columnNameOfCorruptRecord — the read schema, filter, and counters all reference
@@ -281,13 +284,20 @@ public class LoadFileProcedure extends BaseProcedure {
         // Best-effort ingestion progress callback. Only fires when invoked via
         // kling-lakehouse (both task_id and catalog_url provided). Failure is logged but
         // does not mask the procedure's successful load.
-        reportIngestionProgress(taskId, catalogUrl, validCount, invalidCount);
+        reportIngestionProgress(enableProgressReport, taskId, catalogUrl, validCount, invalidCount);
 
         return new InternalRow[] {newInternalRow(true, validCount, invalidCount)};
     }
 
     private void reportIngestionProgress(
-            String taskId, String catalogUrl, long validCount, long invalidCount) {
+            boolean enableProgressReport,
+            String taskId,
+            String catalogUrl,
+            long validCount,
+            long invalidCount) {
+        if (!enableProgressReport) {
+            return;
+        }
         if (taskId == null || taskId.isEmpty() || catalogUrl == null || catalogUrl.isEmpty()) {
             return;
         }
@@ -314,14 +324,20 @@ public class LoadFileProcedure extends BaseProcedure {
                         + "&finished=true";
         HttpURLConnection conn = null;
         try {
+            byte[] body = "{}".getBytes(StandardCharsets.UTF_8);
             conn = (HttpURLConnection) new URL(url).openConnection();
             conn.setRequestMethod("POST");
             conn.setConnectTimeout(PROGRESS_CALLBACK_CONNECT_TIMEOUT_MS);
             conn.setReadTimeout(PROGRESS_CALLBACK_READ_TIMEOUT_MS);
-            conn.setDoOutput(false);
-            conn.setFixedLengthStreamingMode(0);
+            conn.setDoOutput(true);
+            conn.setFixedLengthStreamingMode(body.length);
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            conn.setRequestProperty("Accept", "application/json");
             if (authToken != null && !authToken.isEmpty()) {
                 conn.setRequestProperty("X-Auth-Token", authToken);
+            }
+            try (java.io.OutputStream os = conn.getOutputStream()) {
+                os.write(body);
             }
             int code = conn.getResponseCode();
             if (code >= 200 && code < 300) {
