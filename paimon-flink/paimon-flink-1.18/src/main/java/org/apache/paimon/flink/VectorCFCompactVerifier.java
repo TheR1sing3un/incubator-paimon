@@ -246,7 +246,8 @@ public class VectorCFCompactVerifier {
 
     private static void expire(StreamTableEnvironment tableEnv, Params params) throws Exception {
         String sql =
-                String.format("CALL sys.expire_snapshots('%s.%s')", params.database, params.table);
+                String.format(
+                        "CALL sys.expire_snapshots('%s.%s', 1)", params.database, params.table);
         System.out.println("Expire: " + sql);
         tableEnv.executeSql(sql).await();
     }

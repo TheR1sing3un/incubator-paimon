@@ -30,20 +30,17 @@ import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.io.DataFilePathFactory;
-import org.apache.paimon.io.FileReaderFactory;
-import org.apache.paimon.io.KeyValueFileWriterFactory;
 import org.apache.paimon.io.RollingFileWriter;
 import org.apache.paimon.manifest.FileSource;
 import org.apache.paimon.mergetree.DropDeleteReader;
-import org.apache.paimon.mergetree.MergeSorter;
 import org.apache.paimon.mergetree.SortedRun;
+import org.apache.paimon.operation.metrics.CompactionMetrics;
 import org.apache.paimon.reader.RecordReader;
 import org.apache.paimon.reader.RecordReaderIterator;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.types.VectorType;
 import org.apache.paimon.utils.ExceptionUtils;
-import org.apache.paimon.utils.FieldsComparator;
 import org.apache.paimon.utils.IOUtils;
 
 import org.slf4j.Logger;
@@ -53,7 +50,6 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -61,24 +57,25 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * A {@link CompactRewriter} that merges low-valid-ratio vector CF files during full compaction.
+ * A {@link CompactRewriter} wrapper that merges low-valid-ratio vector CF files during full
+ * compaction. Delegates to a base rewriter (which can be any of MergeTreeCompactRewriter,
+ * LookupMergeTreeCompactRewriter, or FullChangelogMergeTreeCompactRewriter) for the actual scalar
+ * file rewrite.
  *
  * <p>During full compaction (outputLevel == maxLevel), this rewriter:
  *
  * <ol>
  *   <li>Pre-scans merged records to count live references per vector file
- *   <li>Identifies files with validRatio below threshold
- *   <li>Merges those files into new files
- *   <li>Rewrites scalar files with updated VectorDescriptor references
+ *   <li>Identifies dead files (validRatio=0) and low-ratio files
+ *   <li>Merges low-ratio vector files into a new file
+ *   <li>Delegates to the base rewriter for scalar file rewrite with descriptor remapping
  * </ol>
- *
- * <p>When compaction is not triggered (non-full compaction or all files above threshold), it
- * delegates to the standard {@link MergeTreeCompactRewriter} behavior.
  */
 public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
 
     private static final Logger LOG = LoggerFactory.getLogger(VectorCFCompactRewriter.class);
 
+    private final MergeTreeCompactRewriter delegate;
     private final CoreOptions options;
     private final FileIO fileIO;
     private final RowType valueType;
@@ -86,26 +83,21 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
     private final List<DataFileMeta> bucketVectorFiles;
 
     public VectorCFCompactRewriter(
-            FileReaderFactory<KeyValue> readerFactory,
-            KeyValueFileWriterFactory writerFactory,
-            Comparator<InternalRow> keyComparator,
-            @Nullable FieldsComparator userDefinedSeqComparator,
-            MergeFunctionFactory<KeyValue> mfFactory,
-            MergeSorter mergeSorter,
-            boolean snapshotSequenceOrdering,
+            MergeTreeCompactRewriter delegate,
             CoreOptions options,
             FileIO fileIO,
             RowType valueType,
             int maxLevel,
             List<DataFileMeta> bucketVectorFiles) {
         super(
-                readerFactory,
-                writerFactory,
-                keyComparator,
-                userDefinedSeqComparator,
-                mfFactory,
-                mergeSorter,
-                snapshotSequenceOrdering);
+                delegate.readerFactory,
+                delegate.writerFactory,
+                delegate.keyComparator,
+                delegate.userDefinedSeqComparator,
+                delegate.mfFactory,
+                delegate.mergeSorter,
+                delegate.snapshotSequenceOrdering);
+        this.delegate = delegate;
         this.options = options;
         this.fileIO = fileIO;
         this.valueType = valueType;
@@ -114,15 +106,20 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
     }
 
     @Override
+    public void setMetricsReporter(@Nullable CompactionMetrics.Reporter metricsReporter) {
+        delegate.setMetricsReporter(metricsReporter);
+    }
+
+    @Override
     public CompactResult rewrite(
             int outputLevel, boolean dropDelete, List<List<SortedRun>> sections) throws Exception {
         if (outputLevel != maxLevel || !options.vectorCFCompactEnabled()) {
-            return super.rewrite(outputLevel, dropDelete, sections);
+            return delegate.rewrite(outputLevel, dropDelete, sections);
         }
 
         if (bucketVectorFiles.isEmpty()) {
             LOG.debug("No vector CF files in bucket, skipping vector compaction");
-            return super.rewrite(outputLevel, dropDelete, sections);
+            return delegate.rewrite(outputLevel, dropDelete, sections);
         }
 
         LOG.info(
@@ -135,13 +132,17 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         return rewriteWithVectorCompaction(outputLevel, dropDelete, sections);
     }
 
+    @Override
+    public CompactResult upgrade(int outputLevel, DataFileMeta file) throws Exception {
+        return delegate.upgrade(outputLevel, file);
+    }
+
     private CompactResult rewriteWithVectorCompaction(
             int outputLevel, boolean dropDelete, List<List<SortedRun>> sections) throws Exception {
 
         List<VectorColumnInfo> vectorColumns = detectVectorColumns();
-
         if (vectorColumns.isEmpty()) {
-            return rewriteCompaction(outputLevel, dropDelete, sections);
+            return delegate.rewrite(outputLevel, dropDelete, sections);
         }
 
         // --- Phase 2: Pre-scan to collect live references ---
@@ -154,7 +155,6 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         List<DataFileMeta> allExternalAfter = new ArrayList<>();
         VectorDescriptorRemapTable combinedVectorRemapTable = new VectorDescriptorRemapTable();
 
-        // --- Phase 2b: Vector column valid ratio computation and merge ---
         for (VectorColumnInfo colInfo : vectorColumns) {
             List<DataFileMeta> columnVectorFiles = new ArrayList<>();
             for (DataFileMeta f : bucketVectorFiles) {
@@ -186,15 +186,9 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                 }
             }
 
-            // Dead files (validRatio=0) are directly removed from manifest
             allExternalBefore.addAll(deadFiles);
 
             if (filesToMerge.size() < options.vectorCFCompactMinFiles()) {
-                LOG.info(
-                        "Vector column {}: only {} low-ratio files (min={}), skipping",
-                        colInfo.fieldName,
-                        filesToMerge.size(),
-                        options.vectorCFCompactMinFiles());
                 continue;
             }
 
@@ -222,14 +216,24 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         }
 
         if (allExternalBefore.isEmpty()) {
-            LOG.info("No vector files qualified for merging, normal compaction");
-            return rewriteCompaction(outputLevel, dropDelete, sections);
+            LOG.info("No vector files qualified for cleanup, normal compaction");
+            return delegate.rewrite(outputLevel, dropDelete, sections);
         }
 
         // --- Phase 4: Compact rewrite with descriptor remapping ---
-        CompactResult scalarResult =
-                rewriteWithRemapping(
-                        outputLevel, dropDelete, sections, combinedVectorRemapTable, vectorColumns);
+        CompactResult scalarResult;
+        if (combinedVectorRemapTable.fileIds().isEmpty()) {
+            // Only dead files removed, no remap needed — use delegate directly
+            scalarResult = delegate.rewrite(outputLevel, dropDelete, sections);
+        } else {
+            scalarResult =
+                    rewriteWithRemapping(
+                            outputLevel,
+                            dropDelete,
+                            sections,
+                            combinedVectorRemapTable,
+                            vectorColumns);
+        }
 
         List<DataFileMeta> allBefore = new ArrayList<>(scalarResult.before());
         allBefore.addAll(allExternalBefore);
@@ -239,7 +243,6 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         return new CompactResult(allBefore, allAfter, scalarResult.changelog());
     }
 
-    /** Detect vector columns in the value type. */
     private List<VectorColumnInfo> detectVectorColumns() {
         List<VectorColumnInfo> result = new ArrayList<>();
         List<DataField> fields = valueType.getFields();
@@ -258,17 +261,12 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         return result;
     }
 
-    /**
-     * Pre-scan merged records to collect live vector references. Returns a map of fileId to the set
-     * of live rowIndices in that file.
-     */
     private Map<Integer, Set<Long>> preScan(
             List<List<SortedRun>> sections,
             boolean dropDelete,
             List<VectorColumnInfo> vectorColumns)
             throws Exception {
         Map<Integer, Set<Long>> vectorRefs = new HashMap<>();
-
         Set<Integer> vectorFileIds = new HashSet<>();
         for (DataFileMeta f : bucketVectorFiles) {
             vectorFileIds.add(f.fileName().hashCode());
@@ -288,7 +286,6 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                 KeyValue kv;
                 while ((kv = batch.next()) != null) {
                     InternalRow value = kv.value();
-
                     for (VectorColumnInfo colInfo : vectorColumns) {
                         byte[] descBytes = extractDescriptorBytes(value, colInfo.valueIndex);
                         if (descBytes != null && VectorDescriptor.isVectorDescriptor(descBytes)) {
@@ -311,10 +308,6 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         return vectorRefs;
     }
 
-    /**
-     * Extract raw VectorDescriptor bytes from a value row at the given position. Handles both
-     * BinaryRow (getBinary) and GenericRow (getVector -> VectorRef/BinaryVector) cases.
-     */
     @Nullable
     private static byte[] extractDescriptorBytes(InternalRow row, int pos) {
         if (row.isNullAt(pos)) {
@@ -340,12 +333,11 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         }
     }
 
-    /** Rewrite scalar files with VectorDescriptor remapping applied. */
     private CompactResult rewriteWithRemapping(
             int outputLevel,
             boolean dropDelete,
             List<List<SortedRun>> sections,
-            VectorDescriptorRemapTable vectorRemapTable,
+            VectorDescriptorRemapTable remapTable,
             List<VectorColumnInfo> vectorColumns)
             throws Exception {
         RollingFileWriter<KeyValue, DataFileMeta> writer =
@@ -359,9 +351,7 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
             if (dropDelete) {
                 reader = new DropDeleteReader(reader);
             }
-            reader =
-                    new VectorDescriptorRemapReader(
-                            reader, vectorRemapTable, vectorColumns, valueType);
+            reader = new VectorDescriptorRemapReader(reader, remapTable, vectorColumns, valueType);
             writer.write(new RecordReaderIterator<>(reader));
         } catch (Exception e) {
             collectedExceptions = e;
@@ -386,7 +376,6 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         return new CompactResult(before, after);
     }
 
-    /** Info about a vector column in the value type. */
     static class VectorColumnInfo {
         final int valueIndex;
         final String fieldName;
@@ -399,24 +388,20 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         }
     }
 
-    /**
-     * RecordReader wrapper that remaps VectorDescriptor references in each KeyValue's value row.
-     * Creates a shallow copy of the value row with remapped vector columns.
-     */
     private static class VectorDescriptorRemapReader implements RecordReader<KeyValue> {
 
         private final RecordReader<KeyValue> delegate;
-        private final VectorDescriptorRemapTable vectorRemapTable;
+        private final VectorDescriptorRemapTable remapTable;
         private final List<VectorColumnInfo> vectorColumns;
         private final InternalRow.FieldGetter[] fieldGetters;
 
         VectorDescriptorRemapReader(
                 RecordReader<KeyValue> delegate,
-                VectorDescriptorRemapTable vectorRemapTable,
+                VectorDescriptorRemapTable remapTable,
                 List<VectorColumnInfo> vectorColumns,
                 RowType valueType) {
             this.delegate = delegate;
-            this.vectorRemapTable = vectorRemapTable;
+            this.remapTable = remapTable;
             this.vectorColumns = vectorColumns;
             this.fieldGetters = new InternalRow.FieldGetter[valueType.getFieldCount()];
             for (int i = 0; i < fieldGetters.length; i++) {
@@ -457,12 +442,11 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
             InternalRow value = kv.value();
             boolean needsRemap = false;
 
-            // Check vector columns
             for (VectorColumnInfo colInfo : vectorColumns) {
                 byte[] descBytes = extractDescriptorBytes(value, colInfo.valueIndex);
                 if (descBytes != null && VectorDescriptor.isVectorDescriptor(descBytes)) {
                     int fileId = VectorDescriptor.extractFileId(descBytes);
-                    if (vectorRemapTable.containsFileId(fileId)) {
+                    if (remapTable.containsFileId(fileId)) {
                         needsRemap = true;
                         break;
                     }
@@ -480,7 +464,6 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                 newValue.setField(i, fieldGetters[i].getFieldOrNull(value));
             }
 
-            // Remap vector columns
             for (VectorColumnInfo colInfo : vectorColumns) {
                 if (value.isNullAt(colInfo.valueIndex)) {
                     continue;
@@ -489,7 +472,7 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                 if (descBytes == null) {
                     continue;
                 }
-                byte[] remapped = vectorRemapTable.remap(descBytes);
+                byte[] remapped = remapTable.remap(descBytes);
                 if (remapped != null) {
                     newValue.setField(
                             colInfo.valueIndex,

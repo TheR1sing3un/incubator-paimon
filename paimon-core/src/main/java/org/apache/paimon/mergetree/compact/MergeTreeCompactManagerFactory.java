@@ -252,17 +252,19 @@ public class MergeTreeCompactManagerFactory implements KvCompactionManagerFactor
         ChangelogProducer changelogProducer = options.changelogProducer();
         LookupStrategy lookupStrategy = options.lookupStrategy();
         if (changelogProducer.equals(FULL_COMPACTION)) {
-            return new FullChangelogMergeTreeCompactRewriter(
-                    maxLevel,
-                    mergeEngine,
-                    readerFactory,
-                    writerFactory,
-                    keyComparator,
-                    userDefinedSeqComparator,
-                    mfFactory,
-                    mergeSorter,
-                    logDedupEqualSupplier.get(),
-                    options.snapshotSequenceOrdering());
+            MergeTreeCompactRewriter rewriter =
+                    new FullChangelogMergeTreeCompactRewriter(
+                            maxLevel,
+                            mergeEngine,
+                            readerFactory,
+                            writerFactory,
+                            keyComparator,
+                            userDefinedSeqComparator,
+                            mfFactory,
+                            mergeSorter,
+                            logDedupEqualSupplier.get(),
+                            options.snapshotSequenceOrdering());
+            return wrapWithVectorCompact(rewriter, maxLevel, bucketVectorFiles);
         } else if (lookupStrategy.needLookup) {
             PersistProcessor.Factory<?> processorFactory;
             LookupMergeTreeCompactRewriter.MergeFunctionWrapperFactory<?> wrapperFactory;
@@ -310,46 +312,44 @@ public class MergeTreeCompactManagerFactory implements KvCompactionManagerFactor
                                 options.lookupRemoteLevelThreshold());
             }
             //noinspection rawtypes,unchecked
-            return new LookupMergeTreeCompactRewriter(
-                    maxLevel,
-                    mergeEngine,
-                    lookupLevels,
-                    readerFactory,
-                    writerFactory,
-                    keyComparator,
-                    userDefinedSeqComparator,
-                    mfFactory,
-                    mergeSorter,
-                    wrapperFactory,
-                    lookupStrategy.produceChangelog,
-                    dvMaintainer,
-                    options,
-                    remoteLookupFileManager);
+            MergeTreeCompactRewriter rewriter =
+                    new LookupMergeTreeCompactRewriter(
+                            maxLevel,
+                            mergeEngine,
+                            lookupLevels,
+                            readerFactory,
+                            writerFactory,
+                            keyComparator,
+                            userDefinedSeqComparator,
+                            mfFactory,
+                            mergeSorter,
+                            wrapperFactory,
+                            lookupStrategy.produceChangelog,
+                            dvMaintainer,
+                            options,
+                            remoteLookupFileManager);
+            return wrapWithVectorCompact(rewriter, maxLevel, bucketVectorFiles);
         } else {
-            if (options.vectorCFCompactEnabled()) {
-                return new VectorCFCompactRewriter(
-                        readerFactory,
-                        writerFactory,
-                        keyComparator,
-                        userDefinedSeqComparator,
-                        mfFactory,
-                        mergeSorter,
-                        options.snapshotSequenceOrdering(),
-                        options,
-                        fileIO,
-                        valueType,
-                        maxLevel,
-                        bucketVectorFiles);
-            }
-            return new MergeTreeCompactRewriter(
-                    readerFactory,
-                    writerFactory,
-                    keyComparator,
-                    userDefinedSeqComparator,
-                    mfFactory,
-                    mergeSorter,
-                    options.snapshotSequenceOrdering());
+            MergeTreeCompactRewriter rewriter =
+                    new MergeTreeCompactRewriter(
+                            readerFactory,
+                            writerFactory,
+                            keyComparator,
+                            userDefinedSeqComparator,
+                            mfFactory,
+                            mergeSorter,
+                            options.snapshotSequenceOrdering());
+            return wrapWithVectorCompact(rewriter, maxLevel, bucketVectorFiles);
         }
+    }
+
+    private MergeTreeCompactRewriter wrapWithVectorCompact(
+            MergeTreeCompactRewriter base, int maxLevel, List<DataFileMeta> bucketVectorFiles) {
+        if (options.vectorCFCompactEnabled() && !bucketVectorFiles.isEmpty()) {
+            return new VectorCFCompactRewriter(
+                    base, options, fileIO, valueType, maxLevel, bucketVectorFiles);
+        }
+        return base;
     }
 
     private <T> LookupLevels<T> createLookupLevels(
