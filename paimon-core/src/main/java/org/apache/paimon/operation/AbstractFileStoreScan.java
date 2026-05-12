@@ -100,6 +100,9 @@ public abstract class AbstractFileStoreScan implements FileStoreScan {
     @Nullable protected RowRangeIndex rowRangeIndex = null;
     @Nullable protected Long limit;
 
+    @Nullable private List<ManifestEntry> cachedEntries;
+    @Nullable private Snapshot cachedSnapshot;
+
     public AbstractFileStoreScan(
             ManifestsReader manifestsReader,
             SnapshotManager snapshotManager,
@@ -282,6 +285,14 @@ public abstract class AbstractFileStoreScan implements FileStoreScan {
         return this;
     }
 
+    @Override
+    public FileStoreScan withCachedEntries(
+            List<ManifestEntry> entries, @Nullable Snapshot snapshot) {
+        this.cachedEntries = entries;
+        this.cachedSnapshot = snapshot;
+        return this;
+    }
+
     @Nullable
     @Override
     public Integer parallelism() {
@@ -295,6 +306,10 @@ public abstract class AbstractFileStoreScan implements FileStoreScan {
 
     @Override
     public Plan plan() {
+        if (cachedEntries != null) {
+            return planFromCachedEntries();
+        }
+
         long started = System.nanoTime();
         ManifestsReader.Result manifestsResult = readManifests();
         Snapshot snapshot = manifestsResult.snapshot;
@@ -449,6 +464,76 @@ public abstract class AbstractFileStoreScan implements FileStoreScan {
 
     private ManifestsReader.Result readManifests() {
         return manifestsReader.read(specifiedSnapshot, scanMode);
+    }
+
+    private Plan planFromCachedEntries() {
+        long started = System.nanoTime();
+
+        List<ManifestEntry> files = new ArrayList<>();
+        for (ManifestEntry entry : cachedEntries) {
+            if (matchesCachedEntry(entry)
+                    && (manifestEntryFilter == null || manifestEntryFilter.test(entry))
+                    && filterByStats(entry)) {
+                files.add(dropStats ? dropStats(entry) : entry);
+            }
+        }
+
+        if (postFilterManifestEntriesEnabled()) {
+            files = postFilterManifestEntries(files);
+        }
+
+        List<ManifestEntry> result = files;
+        long scanDuration = (System.nanoTime() - started) / 1_000_000;
+        LOG.info(
+                "Plan from cache completed in {} ms. Files size : {}", scanDuration, result.size());
+
+        Snapshot snapshot = cachedSnapshot;
+        return new Plan() {
+            @Nullable
+            @Override
+            public Long watermark() {
+                return snapshot == null ? null : snapshot.watermark();
+            }
+
+            @Nullable
+            @Override
+            public Snapshot snapshot() {
+                return snapshot;
+            }
+
+            @Override
+            public List<ManifestEntry> files() {
+                return result;
+            }
+        };
+    }
+
+    private boolean matchesCachedEntry(ManifestEntry entry) {
+        PartitionPredicate partitionFilter = manifestsReader.partitionFilter();
+        if (partitionFilter != null && !partitionFilter.test(entry.partition())) {
+            return false;
+        }
+
+        BucketFilter bucketF = createBucketFilter();
+        if (bucketF != null && !bucketF.test(entry.bucket(), entry.totalBuckets())) {
+            return false;
+        }
+
+        int level = entry.file().level();
+        if (specifiedLevel != null && level != specifiedLevel) {
+            return false;
+        }
+        if (levelFilter != null && !levelFilter.test(level)) {
+            if (!VectorType.isVectorStoreFile(entry.file().fileName())) {
+                return false;
+            }
+        }
+
+        if (fileNameFilter != null && !fileNameFilter.test(entry.file().fileName())) {
+            return false;
+        }
+
+        return true;
     }
 
     // ------------------------------------------------------------------------

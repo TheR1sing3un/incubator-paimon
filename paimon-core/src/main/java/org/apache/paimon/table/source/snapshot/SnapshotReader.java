@@ -33,6 +33,7 @@ import org.apache.paimon.operation.ManifestsReader;
 import org.apache.paimon.partition.PartitionPredicate;
 import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.table.source.DataSplit;
+import org.apache.paimon.table.source.PlanCache;
 import org.apache.paimon.table.source.ScanMode;
 import org.apache.paimon.table.source.Split;
 import org.apache.paimon.table.source.SplitGenerator;
@@ -123,6 +124,22 @@ public interface SnapshotReader {
     SnapshotReader withReadType(RowType readType);
 
     SnapshotReader withLimit(int limit);
+
+    /**
+     * Inject a {@link PlanCache} to skip remote file I/O during planning. Cached entries are passed
+     * to the internal scan; cached DV index and AccelerateIndex metas are used in split generation.
+     */
+    default SnapshotReader withPlanCache(PlanCache cache) {
+        throw new UnsupportedOperationException("PlanCache not supported by this reader");
+    }
+
+    /**
+     * Build a {@link PlanCache} by reading all file metadata for the current snapshot. The returned
+     * cache is filter-agnostic and can be reused across queries with different predicates.
+     */
+    default PlanCache buildPlanCache() {
+        throw new UnsupportedOperationException("PlanCache not supported by this reader");
+    }
 
     /** Get splits plan from snapshot. */
     Plan read();

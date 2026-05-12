@@ -197,6 +197,221 @@ public class ReadBuilderImpl implements ReadBuilder {
     }
 
     @Override
+    public PlanCache buildPlanCache() {
+        org.apache.paimon.table.FileStoreTable fst = (org.apache.paimon.table.FileStoreTable) table;
+        org.apache.paimon.table.source.snapshot.SnapshotReader reader = fst.newSnapshotReader();
+        return reader.buildPlanCache();
+    }
+
+    @Override
+    public List<Split> planWithCache(PlanCache cache) {
+        org.apache.paimon.table.FileStoreTable fst = (org.apache.paimon.table.FileStoreTable) table;
+
+        if (topN != null) {
+            throw new UnsupportedOperationException(
+                    "TopN pushdown is not supported with planWithCache");
+        }
+
+        checkState(
+                bucketFilter == null || shardIndexOfThisSubtask == null,
+                "Bucket filter and shard configuration cannot be used together. "
+                        + "Please choose one method to specify the data subset.");
+
+        if (accelerateIndexSearch != null
+                && accelerateIndexSearch.snapshotId() != null
+                && !cache.isEmpty()
+                && accelerateIndexSearch.snapshotId() != cache.snapshotId()) {
+            throw new IllegalArgumentException(
+                    "AccelerateIndexSearch.snapshotId ("
+                            + accelerateIndexSearch.snapshotId()
+                            + ") differs from PlanCache.snapshotId ("
+                            + cache.snapshotId()
+                            + "). Rebuild the cache for the target snapshot.");
+        }
+
+        if (accelerateIndexSearch != null) {
+            boolean isVectorCF = fst.coreOptions().vectorColumnFamilyEnabled();
+            if (isVectorCF) {
+                return planVectorCFWithCache(fst, cache);
+            } else {
+                return planAccelerateIndexWithCache(fst, cache);
+            }
+        } else {
+            return planNormalWithCache(fst, cache);
+        }
+    }
+
+    private List<Split> planNormalWithCache(
+            org.apache.paimon.table.FileStoreTable fst, PlanCache cache) {
+        org.apache.paimon.table.source.snapshot.SnapshotReader reader = fst.newSnapshotReader();
+        reader.withPlanCache(cache);
+        reader.withMode(ScanMode.ALL);
+        applyReaderFilters(fst, reader);
+
+        // Apply PK table settings (same as DataTableBatchScan constructor)
+        CoreOptions options = fst.coreOptions();
+        if (!fst.schema().primaryKeys().isEmpty() && options.batchScanSkipLevel0()) {
+            if (options.toConfiguration()
+                    .get(CoreOptions.BATCH_SCAN_MODE)
+                    .equals(CoreOptions.BatchScanMode.NONE)) {
+                if (options.dvFreshnessReadEnabled()) {
+                    reader.enableValueFilter();
+                } else {
+                    reader.withLevelFilter(level -> level > 0).enableValueFilter();
+                }
+            }
+        }
+        if (options.bucket() == org.apache.paimon.table.BucketMode.POSTPONE_BUCKET) {
+            reader.onlyReadRealBuckets();
+        }
+
+        org.apache.paimon.table.source.snapshot.SnapshotReader.Plan plan = reader.read();
+        return plan.splits();
+    }
+
+    private List<Split> planAccelerateIndexWithCache(
+            org.apache.paimon.table.FileStoreTable fst, PlanCache cache) {
+        int columnId = resolveColumnId(fst);
+
+        org.apache.paimon.table.source.snapshot.SnapshotReader reader = fst.newSnapshotReader();
+        reader.withPlanCache(cache);
+        reader.withLevelFilter(level -> level >= 1);
+        if (partitionFilter != null) {
+            reader.withPartitionFilter(partitionFilter);
+        }
+        if (specifiedBucket != null) {
+            reader.withBucket(specifiedBucket);
+        }
+        if (bucketFilter != null) {
+            reader.withBucketFilter(bucketFilter);
+        }
+
+        boolean emitUncovered = accelerateIndexSearch.queryVector() != null;
+        List<org.apache.paimon.accelerateindex.AccelerateIndexSearchSplitUtils.SearchUnit> units;
+        try {
+            units =
+                    reader.readForAccelerateIndex(
+                            columnId, accelerateIndexSearch.algorithm(), emitUncovered);
+        } catch (Exception e) {
+            throw new RuntimeException("AccelerateIndex plan with cache failed", e);
+        }
+
+        org.apache.paimon.predicate.Predicate keyPredicate = computeKeyPredicate(fst);
+        List<Split> result = new java.util.ArrayList<>();
+        for (org.apache.paimon.accelerateindex.AccelerateIndexSearchSplitUtils.SearchUnit unit :
+                units) {
+            java.util.Set<String> statsPassingFiles = null;
+            if (filter != null) {
+                statsPassingFiles = new java.util.HashSet<>();
+                for (org.apache.paimon.io.DataFileMeta file : unit.split().dataFiles()) {
+                    if (org.apache.paimon.accelerateindex.AccelerateIndexSearchSplitUtils
+                            .fileMatchesPredicates(file, keyPredicate, filter)) {
+                        statsPassingFiles.add(file.fileName());
+                    }
+                }
+            }
+            result.add(
+                    new org.apache.paimon.accelerateindex.AccelerateIndexSplit(
+                            unit.split(),
+                            unit.entry(),
+                            accelerateIndexSearch,
+                            columnId,
+                            statsPassingFiles));
+        }
+        return result;
+    }
+
+    private List<Split> planVectorCFWithCache(
+            org.apache.paimon.table.FileStoreTable fst, PlanCache cache) {
+        int columnId = resolveColumnId(fst);
+
+        org.apache.paimon.table.source.snapshot.SnapshotReader reader = fst.newSnapshotReader();
+        reader.withPlanCache(cache);
+        if (partitionFilter != null) {
+            reader.withPartitionFilter(partitionFilter);
+        }
+        if (specifiedBucket != null) {
+            reader.withBucket(specifiedBucket);
+        }
+        if (bucketFilter != null) {
+            reader.withBucketFilter(bucketFilter);
+        }
+
+        try {
+            List<org.apache.paimon.accelerateindex.VectorCFSearchSplit> splits =
+                    reader.readForVectorCFSearch(
+                            accelerateIndexSearch, columnId, accelerateIndexSearch.columnName());
+            return new java.util.ArrayList<>(splits);
+        } catch (Exception e) {
+            throw new RuntimeException("VectorCF plan with cache failed", e);
+        }
+    }
+
+    private void applyReaderFilters(
+            org.apache.paimon.table.FileStoreTable fst,
+            org.apache.paimon.table.source.snapshot.SnapshotReader reader) {
+        if (filter != null) {
+            reader.withFilter(filter);
+        }
+        if (partitionFilter != null) {
+            reader.withPartitionFilter(partitionFilter);
+        }
+        if (specifiedBucket != null) {
+            reader.withBucket(specifiedBucket);
+        }
+        if (bucketFilter != null) {
+            reader.withBucketFilter(bucketFilter);
+        }
+        if (readType != null) {
+            reader.withReadType(readType);
+        }
+        if (rowRangeIndex != null) {
+            reader.withRowRangeIndex(rowRangeIndex);
+        }
+        if (dropStats) {
+            reader.dropStats();
+        }
+        if (limit != null) {
+            reader.withLimit(limit);
+        }
+        if (shardIndexOfThisSubtask != null) {
+            reader.withShard(shardIndexOfThisSubtask, shardNumberOfParallelSubtasks);
+        }
+    }
+
+    private int resolveColumnId(org.apache.paimon.table.FileStoreTable fst) {
+        java.util.Map<String, org.apache.paimon.types.DataField> fieldMap =
+                fst.schema().nameToFieldMap();
+        org.apache.paimon.types.DataField field = fieldMap.get(accelerateIndexSearch.columnName());
+        if (field == null) {
+            throw new IllegalArgumentException(
+                    "Column '"
+                            + accelerateIndexSearch.columnName()
+                            + "' not found. Available: "
+                            + fieldMap.keySet());
+        }
+        return field.id();
+    }
+
+    @Nullable
+    private org.apache.paimon.predicate.Predicate computeKeyPredicate(
+            org.apache.paimon.table.FileStoreTable fst) {
+        if (filter == null) {
+            return null;
+        }
+        java.util.List<String> fieldNames = fst.schema().fieldNames();
+        java.util.List<String> trimmedPKs = fst.schema().trimmedPrimaryKeys();
+        java.util.List<org.apache.paimon.predicate.Predicate> keyPredicates =
+                org.apache.paimon.predicate.PredicateBuilder.pickTransformFieldMapping(
+                        org.apache.paimon.predicate.PredicateBuilder.splitAnd(filter),
+                        fieldNames,
+                        trimmedPKs);
+        return keyPredicates.isEmpty()
+                ? null
+                : org.apache.paimon.predicate.PredicateBuilder.and(keyPredicates);
+    }
+
+    @Override
     public List<Split> planAccelerateIndexSearch(AccelerateIndexSearch search) {
         checkNotNull(search, "AccelerateIndexSearch must not be null");
         withAccelerateIndexSearch(search);

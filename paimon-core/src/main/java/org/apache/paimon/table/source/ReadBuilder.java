@@ -200,6 +200,31 @@ public interface ReadBuilder extends Serializable {
     /** Delete stats in scan plan result. */
     ReadBuilder dropStats();
 
+    /**
+     * Build a {@link PlanCache} that captures all file metadata for the current snapshot. The cache
+     * is filter-agnostic and can be reused across multiple queries with different predicates or ANN
+     * parameters.
+     *
+     * <p>This call performs all remote I/O (manifest reading, DV index, AccelerateIndex meta).
+     * Subsequent calls to {@link #planWithCache(PlanCache)} skip all remote I/O.
+     *
+     * <p>The cache is snapshot-scoped: rebuild it when the table's latest snapshot changes.
+     */
+    default PlanCache buildPlanCache() {
+        throw new UnsupportedOperationException("PlanCache not supported by this ReadBuilder");
+    }
+
+    /**
+     * Plan using a previously built {@link PlanCache}. Applies the current filter, projection, and
+     * AccelerateIndex search settings on cached data without any remote file I/O.
+     *
+     * @param cache a cache built by {@link #buildPlanCache()}
+     * @return splits ready for distribution to readers
+     */
+    default List<Split> planWithCache(PlanCache cache) {
+        throw new UnsupportedOperationException("PlanCache not supported by this ReadBuilder");
+    }
+
     /** Create a {@link TableScan} to perform batch planning. */
     TableScan newScan();
 

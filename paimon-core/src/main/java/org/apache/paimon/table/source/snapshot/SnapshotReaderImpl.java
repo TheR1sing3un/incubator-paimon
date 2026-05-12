@@ -20,6 +20,9 @@ package org.apache.paimon.table.source.snapshot;
 
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.Snapshot;
+import org.apache.paimon.accelerateindex.AccelerateIndexConstants;
+import org.apache.paimon.accelerateindex.AccelerateIndexMeta;
+import org.apache.paimon.accelerateindex.AccelerateIndexMetaIO;
 import org.apache.paimon.accelerateindex.AccelerateIndexSearch;
 import org.apache.paimon.accelerateindex.AccelerateIndexSearchSplitUtils;
 import org.apache.paimon.accelerateindex.AccelerateIndexSearchSplitUtils.SearchUnit;
@@ -52,6 +55,7 @@ import org.apache.paimon.schema.TableSchema;
 import org.apache.paimon.table.source.DataSplit;
 import org.apache.paimon.table.source.DeletionFile;
 import org.apache.paimon.table.source.IncrementalSplit;
+import org.apache.paimon.table.source.PlanCache;
 import org.apache.paimon.table.source.PlanImpl;
 import org.apache.paimon.table.source.ScanMode;
 import org.apache.paimon.table.source.Split;
@@ -68,6 +72,9 @@ import org.apache.paimon.utils.Range;
 import org.apache.paimon.utils.RowRangeIndex;
 import org.apache.paimon.utils.SnapshotManager;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.ArrayList;
@@ -76,6 +83,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -92,6 +100,8 @@ import static org.apache.paimon.partition.PartitionPredicate.splitPartitionPredi
 /** Implementation of {@link SnapshotReader}. */
 public class SnapshotReaderImpl implements SnapshotReader {
 
+    private static final Logger LOG = LoggerFactory.getLogger(SnapshotReaderImpl.class);
+
     private final FileStoreScan scan;
     private final TableSchema tableSchema;
     private final CoreOptions options;
@@ -107,8 +117,13 @@ public class SnapshotReaderImpl implements SnapshotReader {
     @Nullable private final DVMetaCache dvMetaCache;
 
     private ScanMode scanMode = ScanMode.ALL;
+    private boolean hasNonPartitionFilter;
     private RecordComparator lazyPartitionComparator;
     private CacheMetrics dvMetaCacheMetrics;
+
+    @Nullable private Map<Pair<BinaryRow, Integer>, Map<String, DeletionFile>> cachedDvIndex;
+
+    @Nullable private Map<String, AccelerateIndexMeta> cachedIndexMetas;
 
     public SnapshotReaderImpl(
             FileStoreScan scan,
@@ -355,6 +370,52 @@ public class SnapshotReaderImpl implements SnapshotReader {
     }
 
     @Override
+    public SnapshotReader withPlanCache(PlanCache cache) {
+        scan.withCachedEntries(cache.resolvedEntries(), cache.snapshot());
+        this.cachedDvIndex = cache.dvIndex();
+        this.cachedIndexMetas = cache.indexMetas();
+        return this;
+    }
+
+    @Override
+    public PlanCache buildPlanCache() {
+        Snapshot snapshot = snapshotManager.latestSnapshot();
+        if (snapshot == null) {
+            return PlanCache.empty();
+        }
+        scan.withSnapshot(snapshot);
+
+        FileStoreScan.Plan plan = scan.plan();
+        List<ManifestEntry> entries = plan.files(FileKind.ADD);
+
+        Map<BinaryRow, Map<Integer, List<ManifestEntry>>> grouped = groupByPartFiles(entries);
+        Set<Pair<BinaryRow, Integer>> allBuckets = toPartBuckets(grouped);
+
+        Map<Pair<BinaryRow, Integer>, String> bucketPathMap = new HashMap<>();
+        for (Pair<BinaryRow, Integer> pb : allBuckets) {
+            bucketPathMap.put(pb, pathFactory.bucketPath(pb.getLeft(), pb.getRight()).toString());
+        }
+
+        Map<Pair<BinaryRow, Integer>, Map<String, DeletionFile>> dvIdx =
+                deletionVectors ? scanDvIndex(snapshot, allBuckets) : Collections.emptyMap();
+
+        Map<String, AccelerateIndexMeta> idxMetas = new HashMap<>();
+        FileIO fileIO = snapshotManager.fileIO();
+        for (String bp : new LinkedHashSet<>(bucketPathMap.values())) {
+            try {
+                Path metaPath = new Path(bp, AccelerateIndexConstants.META_FILE_NAME);
+                idxMetas.put(bp, AccelerateIndexMetaIO.readOrEmpty(fileIO, metaPath));
+            } catch (java.io.IOException e) {
+                LOG.warn("Failed to read accelerate index meta at {}, using empty", bp, e);
+                idxMetas.put(bp, AccelerateIndexMeta.empty());
+            }
+        }
+
+        return new PlanCache(
+                snapshot, snapshot.schemaId(), entries, dvIdx, idxMetas, bucketPathMap);
+    }
+
+    @Override
     public SnapshotReader withShard(int indexOfThisSubtask, int numberOfParallelSubtasks) {
         if (splitGenerator.alwaysRawConvertible()) {
             withDataFileNameFilter(
@@ -398,9 +459,11 @@ public class SnapshotReaderImpl implements SnapshotReader {
         Map<Pair<BinaryRow, Integer>, Map<String, DeletionFile>> deletionFilesMap = null;
         if (!isStreaming) {
             deletionFilesMap =
-                    deletionVectors && snapshot != null
-                            ? scanDvIndex(snapshot, toPartBuckets(entries))
-                            : Collections.emptyMap();
+                    cachedDvIndex != null
+                            ? cachedDvIndex
+                            : (deletionVectors && snapshot != null
+                                    ? scanDvIndex(snapshot, toPartBuckets(entries))
+                                    : Collections.emptyMap());
         }
         for (Map.Entry<BinaryRow, Map<Integer, List<ManifestEntry>>> entry : entries.entrySet()) {
             BinaryRow partition = entry.getKey();
@@ -508,9 +571,11 @@ public class SnapshotReaderImpl implements SnapshotReader {
 
         // Read DV index once for all buckets
         Map<Pair<BinaryRow, Integer>, Map<String, DeletionFile>> deletionFilesMap =
-                deletionVectors && snapshot != null
-                        ? scanDvIndex(snapshot, toPartBuckets(grouped))
-                        : Collections.emptyMap();
+                cachedDvIndex != null
+                        ? cachedDvIndex
+                        : (deletionVectors && snapshot != null
+                                ? scanDvIndex(snapshot, toPartBuckets(grouped))
+                                : Collections.emptyMap());
 
         List<VectorCFSearchSplit> result = new ArrayList<>();
 
@@ -556,9 +621,11 @@ public class SnapshotReaderImpl implements SnapshotReader {
 
         // Read deletion indexes at once to reduce file IO (same as generateSplits)
         Map<Pair<BinaryRow, Integer>, Map<String, DeletionFile>> deletionFilesMap =
-                deletionVectors && snapshot != null
-                        ? scanDvIndex(snapshot, toPartBuckets(entries))
-                        : Collections.emptyMap();
+                cachedDvIndex != null
+                        ? cachedDvIndex
+                        : (deletionVectors && snapshot != null
+                                ? scanDvIndex(snapshot, toPartBuckets(entries))
+                                : Collections.emptyMap());
 
         long snapshotId = snapshot == null ? FIRST_SNAPSHOT_ID - 1 : snapshot.id();
         FileIO fileIO = snapshotManager.fileIO();
@@ -579,18 +646,35 @@ public class SnapshotReaderImpl implements SnapshotReader {
                         deletionFilesMap.getOrDefault(
                                 Pair.of(partition, bucket), Collections.emptyMap());
 
-                result.addAll(
-                        AccelerateIndexSearchSplitUtils.buildSearchUnitsForBucket(
-                                snapshotId,
-                                partition,
-                                bucket,
-                                bucketPath,
-                                bucketFiles,
-                                dvMap,
-                                fileIO,
-                                columnId,
-                                algorithm,
-                                emitUncoveredSplits));
+                if (cachedIndexMetas != null) {
+                    AccelerateIndexMeta meta =
+                            cachedIndexMetas.getOrDefault(bucketPath, AccelerateIndexMeta.empty());
+                    result.addAll(
+                            AccelerateIndexSearchSplitUtils.buildSearchUnitsFromMeta(
+                                    snapshotId,
+                                    partition,
+                                    bucket,
+                                    bucketPath,
+                                    bucketFiles,
+                                    dvMap,
+                                    meta,
+                                    columnId,
+                                    algorithm,
+                                    emitUncoveredSplits));
+                } else {
+                    result.addAll(
+                            AccelerateIndexSearchSplitUtils.buildSearchUnitsForBucket(
+                                    snapshotId,
+                                    partition,
+                                    bucket,
+                                    bucketPath,
+                                    bucketFiles,
+                                    dvMap,
+                                    fileIO,
+                                    columnId,
+                                    algorithm,
+                                    emitUncoveredSplits));
+                }
             }
         }
 

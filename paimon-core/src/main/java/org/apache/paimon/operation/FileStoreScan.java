@@ -98,6 +98,11 @@ public interface FileStoreScan {
 
     FileStoreScan withLimit(long limit);
 
+    default FileStoreScan withCachedEntries(
+            List<ManifestEntry> entries, @Nullable Snapshot snapshot) {
+        throw new UnsupportedOperationException();
+    }
+
     @Nullable
     Integer parallelism();
 

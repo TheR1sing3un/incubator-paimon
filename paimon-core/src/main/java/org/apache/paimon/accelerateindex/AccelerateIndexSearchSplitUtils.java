@@ -90,11 +90,39 @@ public class AccelerateIndexSearchSplitUtils {
             boolean emitUncoveredSplits)
             throws Exception {
 
-        List<SearchUnit> result = new ArrayList<>();
-
-        // Read meta
         Path metaPath = new Path(bucketPath, AccelerateIndexConstants.META_FILE_NAME);
         AccelerateIndexMeta meta = AccelerateIndexMetaIO.readOrEmpty(fileIO, metaPath);
+        return buildSearchUnitsFromMeta(
+                snapshotId,
+                partition,
+                bucket,
+                bucketPath,
+                bucketFiles,
+                dvMap,
+                meta,
+                columnId,
+                algorithm,
+                emitUncoveredSplits);
+    }
+
+    /**
+     * Builds SearchUnits using a pre-loaded {@link AccelerateIndexMeta}. Same logic as {@link
+     * #buildSearchUnitsForBucket} but skips the meta file read — used by {@link
+     * org.apache.paimon.table.source.PlanCache} to avoid remote I/O.
+     */
+    public static List<SearchUnit> buildSearchUnitsFromMeta(
+            long snapshotId,
+            BinaryRow partition,
+            int bucket,
+            String bucketPath,
+            List<DataFileMeta> bucketFiles,
+            Map<String, DeletionFile> dvMap,
+            AccelerateIndexMeta meta,
+            int columnId,
+            String algorithm,
+            boolean emitUncoveredSplits) {
+
+        List<SearchUnit> result = new ArrayList<>();
 
         List<AccelerateIndexEntry> readyEntries =
                 findAllReadyEntries(meta, columnId, algorithm, snapshotId);
@@ -257,6 +285,39 @@ public class AccelerateIndexSearchSplitUtils {
             boolean emitUncoveredSplits)
             throws Exception {
 
+        Path metaPath = new Path(bucketPath, AccelerateIndexConstants.META_FILE_NAME);
+        AccelerateIndexMeta meta = AccelerateIndexMetaIO.readOrEmpty(fileIO, metaPath);
+        return buildSearchUnitsFromMetaVectorCF(
+                snapshotId,
+                partition,
+                bucket,
+                bucketPath,
+                bucketFiles,
+                dvMap,
+                meta,
+                columnId,
+                algorithm,
+                vectorColumnName,
+                emitUncoveredSplits);
+    }
+
+    /**
+     * Builds SearchUnits for VectorCF using a pre-loaded {@link AccelerateIndexMeta}. Same logic as
+     * {@link #buildSearchUnitsForBucketVectorCF} but skips the meta file read.
+     */
+    public static List<SearchUnit> buildSearchUnitsFromMetaVectorCF(
+            long snapshotId,
+            BinaryRow partition,
+            int bucket,
+            String bucketPath,
+            List<DataFileMeta> bucketFiles,
+            Map<String, DeletionFile> dvMap,
+            AccelerateIndexMeta meta,
+            int columnId,
+            String algorithm,
+            String vectorColumnName,
+            boolean emitUncoveredSplits) {
+
         List<SearchUnit> result = new ArrayList<>();
 
         // Separate scalar files from vector files
@@ -277,9 +338,7 @@ public class AccelerateIndexSearchSplitUtils {
             return result;
         }
 
-        // Read meta and find entries matching vector files
-        Path metaPath = new Path(bucketPath, AccelerateIndexConstants.META_FILE_NAME);
-        AccelerateIndexMeta meta = AccelerateIndexMetaIO.readOrEmpty(fileIO, metaPath);
+        // Find entries matching vector files
         List<AccelerateIndexEntry> readyEntries =
                 findAllReadyEntries(meta, columnId, algorithm, snapshotId);
 
@@ -481,7 +540,7 @@ public class AccelerateIndexSearchSplitUtils {
         return validPositions.stream().mapToLong(Long::longValue).toArray();
     }
 
-    static boolean fileMatchesPredicates(
+    public static boolean fileMatchesPredicates(
             DataFileMeta file,
             @Nullable Predicate keyPredicate,
             @Nullable Predicate valuePredicate) {
