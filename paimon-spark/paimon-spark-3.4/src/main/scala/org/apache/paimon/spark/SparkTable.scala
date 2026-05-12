@@ -22,3 +22,13 @@ import org.apache.paimon.table.Table
 
 /** A spark [[org.apache.spark.sql.connector.catalog.Table]] for paimon. */
 case class SparkTable(override val table: Table) extends PaimonSparkTableBase(table) {}
+
+/**
+ * Per-version shim companion. Spark < 3.5 cannot participate in V2 row-level ops, so the factory
+ * always returns the plain base class. Mirrors the signature of the common module's `SparkTable.of`
+ * so that shaded common bytecode calling `SparkTable.of(table)` resolves at runtime (otherwise
+ * NoSuchMethodError on first DML statement).
+ */
+object SparkTable {
+  def of(table: Table): SparkTable = SparkTable(table)
+}

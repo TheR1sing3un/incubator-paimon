@@ -753,7 +753,7 @@ public class SparkCatalog extends SparkBaseCatalog
             } else if (table instanceof ObjectTable) {
                 return new SparkObjectTable(table);
             } else {
-                return new SparkTable(table);
+                return SparkTable.of(table);
             }
         } catch (Catalog.TableNotExistException e) {
             throw new NoSuchTableException(ident);

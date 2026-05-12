@@ -46,6 +46,8 @@ import okhttp3.mockwebserver.RecordedRequest;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.catalyst.analysis.NoSuchFunctionException;
+import org.apache.spark.sql.connector.catalog.functions.UnboundFunction;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -306,6 +308,25 @@ public class DatasetCatalogSQLTest {
         assertThat(rows.get(2).getString(1)).isEqualTo("Carol");
     }
 
+    // ======================== Write operations ========================
+
+    @Test
+    void insertAndDeleteViaDatasetCatalog() {
+        // INSERT
+        spark.sql("INSERT INTO dataset.test_ns.users VALUES (99, 'Eve', 45)");
+        List<Row> afterInsert =
+                spark.sql("SELECT * FROM dataset.test_ns.users WHERE id = 99").collectAsList();
+        assertThat(afterInsert).hasSize(1);
+        assertThat(afterInsert.get(0).getString(1)).isEqualTo("Eve");
+        assertThat(afterInsert.get(0).getInt(2)).isEqualTo(45);
+
+        // DELETE (clean up to keep shared state for other tests)
+        spark.sql("DELETE FROM dataset.test_ns.users WHERE id = 99");
+        List<Row> afterDelete =
+                spark.sql("SELECT * FROM dataset.test_ns.users WHERE id = 99").collectAsList();
+        assertThat(afterDelete).isEmpty();
+    }
+
     // ======================== Error handling ========================
 
     @Test
@@ -318,6 +339,100 @@ public class DatasetCatalogSQLTest {
     void createTableIsReadOnly() {
         assertThatThrownBy(
                 () -> spark.sql("CREATE TABLE dataset.test_ns.new_table (id INT, name STRING)"));
+    }
+
+    // ======================== V2 write path (use-v2-write=true) ========================
+
+    /**
+     * Exercises the V2 write distribution-planning path that requires {@link
+     * org.apache.spark.sql.connector.catalog.FunctionCatalog#loadFunction} to resolve the
+     * Paimon-provided {@code bucket} transform. Without DatasetCatalog implementing FunctionCatalog
+     * this DELETE fails during planning, even though the V1 path still works.
+     */
+    @Test
+    void v2DeleteOnPkTableUsesFunctionCatalog() {
+        spark.conf().set("spark.paimon.write.use-v2-write", "true");
+        try {
+            spark.sql("INSERT INTO dataset.test_ns.users VALUES (201, 'V2A', 51)");
+            spark.sql("DELETE FROM dataset.test_ns.users WHERE id = 201");
+            List<Row> after =
+                    spark.sql("SELECT * FROM dataset.test_ns.users WHERE id = 201").collectAsList();
+            assertThat(after).isEmpty();
+        } finally {
+            spark.conf().unset("spark.paimon.write.use-v2-write");
+        }
+    }
+
+    @Test
+    void v2UpdateOnPkTableUsesFunctionCatalog() {
+        spark.conf().set("spark.paimon.write.use-v2-write", "true");
+        try {
+            spark.sql("INSERT INTO dataset.test_ns.users VALUES (202, 'V2B', 52)");
+            spark.sql("UPDATE dataset.test_ns.users SET age = 99 WHERE id = 202");
+            List<Row> after =
+                    spark.sql("SELECT age FROM dataset.test_ns.users WHERE id = 202")
+                            .collectAsList();
+            assertThat(after).hasSize(1);
+            assertThat(after.get(0).getInt(0)).isEqualTo(99);
+            spark.sql("DELETE FROM dataset.test_ns.users WHERE id = 202");
+        } finally {
+            spark.conf().unset("spark.paimon.write.use-v2-write");
+        }
+    }
+
+    // ======================== FunctionCatalog ========================
+
+    @Test
+    void loadBucketFunctionFromSystemNamespace() throws Exception {
+        DatasetCatalog catalog = lookupDatasetCatalog();
+        UnboundFunction func =
+                catalog.loadFunction(
+                        org.apache.spark.sql.connector.catalog.Identifier.of(
+                                new String[0], "bucket"));
+        assertThat(func).isNotNull();
+        assertThat(func.name()).isEqualTo("bucket");
+    }
+
+    @Test
+    void listFunctionsReturnsPaimonSystemFunctions() throws Exception {
+        DatasetCatalog catalog = lookupDatasetCatalog();
+        org.apache.spark.sql.connector.catalog.Identifier[] funcs =
+                catalog.listFunctions(new String[0]);
+        List<String> names =
+                Arrays.stream(funcs)
+                        .map(org.apache.spark.sql.connector.catalog.Identifier::name)
+                        .collect(Collectors.toList());
+        assertThat(names).contains("bucket", "max_pt");
+    }
+
+    /**
+     * Dataset namespace is a logical grouping that may map to multiple physical Paimon databases —
+     * UDF lookup at this level has no canonical mapping, so it must throw.
+     */
+    @Test
+    void loadFunctionInUserNamespaceThrows() throws Exception {
+        DatasetCatalog catalog = lookupDatasetCatalog();
+        assertThatThrownBy(
+                        () ->
+                                catalog.loadFunction(
+                                        org.apache.spark.sql.connector.catalog.Identifier.of(
+                                                new String[] {"test_ns"}, "bucket")))
+                .isInstanceOf(NoSuchFunctionException.class);
+    }
+
+    // ======================== $suffix passthrough ========================
+
+    @Test
+    void selectFromSnapshotsSystemTable() {
+        List<Row> rows =
+                spark.sql("SELECT snapshot_id FROM dataset.test_ns.`users$snapshots`")
+                        .collectAsList();
+        // setUp creates two snapshots for users (3 rows + 1 row)
+        assertThat(rows).hasSizeGreaterThanOrEqualTo(2);
+    }
+
+    private DatasetCatalog lookupDatasetCatalog() throws Exception {
+        return (DatasetCatalog) spark.sessionState().catalogManager().catalog("dataset");
     }
 
     // ======================== MockWebServer Dispatcher ========================

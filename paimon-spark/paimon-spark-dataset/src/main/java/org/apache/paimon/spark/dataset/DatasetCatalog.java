@@ -26,6 +26,7 @@ import org.apache.paimon.options.Options;
 import org.apache.paimon.rest.RESTCatalogOptions;
 import org.apache.paimon.spark.SparkTable;
 import org.apache.paimon.spark.catalog.SparkBaseCatalog;
+import org.apache.paimon.spark.catalog.functions.PaimonFunctions;
 import org.apache.paimon.spark.dataset.model.ConfigResponse;
 import org.apache.paimon.spark.dataset.model.DatasetInfo;
 import org.apache.paimon.spark.dataset.model.NamespaceInfo;
@@ -33,18 +34,22 @@ import org.apache.paimon.table.Table;
 
 import org.apache.spark.sql.PaimonSparkSession$;
 import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.catalyst.analysis.NoSuchFunctionException;
 import org.apache.spark.sql.catalyst.analysis.NoSuchNamespaceException;
 import org.apache.spark.sql.catalyst.analysis.NoSuchTableException;
+import org.apache.spark.sql.connector.catalog.FunctionCatalog;
 import org.apache.spark.sql.connector.catalog.Identifier;
 import org.apache.spark.sql.connector.catalog.NamespaceChange;
 import org.apache.spark.sql.connector.catalog.SupportsNamespaces;
 import org.apache.spark.sql.connector.catalog.TableChange;
+import org.apache.spark.sql.connector.catalog.functions.UnboundFunction;
 import org.apache.spark.sql.connector.expressions.Transform;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.util.CaseInsensitiveStringMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -91,7 +96,8 @@ import static org.apache.paimon.spark.util.OptionUtils.copyWithSQLConf;
  *   <li>Fallback: {@code token.provider=noop}
  * </ol>
  */
-public class DatasetCatalog extends SparkBaseCatalog implements SupportsNamespaces {
+public class DatasetCatalog extends SparkBaseCatalog
+        implements SupportsNamespaces, FunctionCatalog {
 
     private static final Logger LOG = LoggerFactory.getLogger(DatasetCatalog.class);
 
@@ -296,8 +302,8 @@ public class DatasetCatalog extends SparkBaseCatalog implements SupportsNamespac
             // 5. Merge SQL conf and extra options
             table = copyWithSQLConf(table, catalogName, paimonId, extraOptions);
 
-            // 6. Return SparkTable
-            return new SparkTable(table);
+            // 6. Return SparkTable (factory selects V2-row-level-ops variant when applicable)
+            return SparkTable.of(table);
         } catch (Catalog.TableNotExistException e) {
             throw new NoSuchTableException(ident);
         }
@@ -377,6 +383,47 @@ public class DatasetCatalog extends SparkBaseCatalog implements SupportsNamespac
             throw new NoSuchNamespaceException(namespace);
         }
         return Collections.emptyMap();
+    }
+
+    // ======================== Function Operations ========================
+
+    /**
+     * Only Paimon system functions are exposed (e.g., {@code bucket}, {@code max_pt}). User-defined
+     * functions are not surfaced via the dataset namespace because dataset namespaces are logical
+     * groupings that may map to multiple physical Paimon databases — there is no canonical mapping.
+     * UDFs should be queried through the underlying paimon catalog directly.
+     */
+    @Override
+    public Identifier[] listFunctions(String[] namespace) throws NoSuchNamespaceException {
+        // Empty namespace is treated as system namespace because Spark's bucket-join planning
+        // looks up the `bucket` function with empty namespace (see SparkCatalog#listFunctions).
+        if (namespace.length == 0 || isSystemNamespace(namespace)) {
+            List<Identifier> result = new ArrayList<>();
+            PaimonFunctions.names().forEach(name -> result.add(Identifier.of(namespace, name)));
+            return result.toArray(new Identifier[0]);
+        }
+        if (!namespaceExists(namespace)) {
+            throw new NoSuchNamespaceException(namespace);
+        }
+        return new Identifier[0];
+    }
+
+    /**
+     * Resolves Paimon system functions. Critical for V2 row-level write planning: Spark needs to
+     * resolve the {@code bucket} transform via {@link FunctionCatalog#loadFunction} to build the
+     * {@code ClusteredDistribution} required by {@code PaimonV2Write}. Without this, V2 DELETE on
+     * primary-key tables fails during distribution planning.
+     */
+    @Override
+    public UnboundFunction loadFunction(Identifier ident) throws NoSuchFunctionException {
+        String[] namespace = ident.namespace();
+        if (namespace.length == 0 || isSystemNamespace(namespace)) {
+            UnboundFunction func = PaimonFunctions.load(ident.name());
+            if (func != null) {
+                return func;
+            }
+        }
+        throw new NoSuchFunctionException(ident);
     }
 
     // ======================== Read-Only: Unsupported Write Operations ========================
