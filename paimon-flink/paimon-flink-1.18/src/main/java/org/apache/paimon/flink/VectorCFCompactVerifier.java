@@ -115,6 +115,7 @@ public class VectorCFCompactVerifier {
 
         switch (params.phase) {
             case "1":
+                tableEnv.executeSql("DROP TABLE IF EXISTS " + params.table).await();
                 createTable(tableEnv, params);
                 System.out.println("Writing initial data: pk 0 ~ " + (params.rows - 1));
                 writeData(env, tableEnv, params, 0, params.rows, false);
@@ -171,11 +172,9 @@ public class VectorCFCompactVerifier {
                                 + "  'vector-column-family.compact.enabled' = 'true',\n"
                                 + "  'vector-column-family.compact.valid-ratio-threshold' = '0.5',\n"
                                 + "  'vector-column-family.compact.min-files-to-merge' = '1',\n"
+                                + "  'deletion-vectors.enabled' = 'true',\n"
                                 + "  'snapshot.num-retained.min' = '1',\n"
-                                + "  'snapshot.num-retained.max' = '3',\n"
-                                + "  'compaction.min.file-num' = '999',\n"
-                                + "  'compaction.max.file-num' = '999',\n"
-                                + "  'num-sorted-runs.compaction-trigger' = '999'\n"
+                                + "  'snapshot.num-retained.max' = '3'\n"
                                 + ")",
                         params.table, params.bucket, params.dim, params.targetFileRows);
         System.out.println("DDL:\n" + ddl);
@@ -224,8 +223,7 @@ public class VectorCFCompactVerifier {
 
         String insertSql =
                 String.format(
-                        "INSERT INTO %s /*+ OPTIONS('write-only'='true') */ "
-                                + "SELECT pt, pk, tag, embedding FROM %s",
+                        "INSERT INTO %s SELECT pt, pk, tag, embedding FROM %s",
                         params.table, viewName);
         System.out.println("Executing: " + insertSql + " (" + count + " rows)");
 

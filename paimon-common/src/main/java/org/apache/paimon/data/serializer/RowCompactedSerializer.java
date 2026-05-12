@@ -22,13 +22,17 @@ import org.apache.paimon.annotation.VisibleForTesting;
 import org.apache.paimon.data.BinaryArray;
 import org.apache.paimon.data.BinaryMap;
 import org.apache.paimon.data.BinaryString;
+import org.apache.paimon.data.BinaryVector;
 import org.apache.paimon.data.Decimal;
 import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.data.InternalArray;
 import org.apache.paimon.data.InternalMap;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.data.InternalRow.FieldGetter;
+import org.apache.paimon.data.InternalVector;
 import org.apache.paimon.data.Timestamp;
+import org.apache.paimon.data.VectorDescriptor;
+import org.apache.paimon.data.VectorRef;
 import org.apache.paimon.data.variant.Variant;
 import org.apache.paimon.io.DataInputView;
 import org.apache.paimon.io.DataOutputView;
@@ -181,6 +185,26 @@ public class RowCompactedSerializer implements Serializer<InternalRow> {
             case VARBINARY:
                 fieldWriter = (writer, pos, value) -> writer.writeBinary((byte[]) value);
                 break;
+            case VECTOR:
+                fieldWriter =
+                        (writer, pos, value) -> {
+                            InternalVector vec = (InternalVector) value;
+                            byte[] bytes;
+                            if (vec instanceof VectorRef) {
+                                bytes = ((VectorRef) vec).toDescriptorBytes();
+                            } else if (vec instanceof BinaryVector) {
+                                BinaryVector bv = (BinaryVector) vec;
+                                bytes =
+                                        org.apache.paimon.memory.MemorySegmentUtils.copyToBytes(
+                                                bv.getSegments(),
+                                                bv.getOffset(),
+                                                bv.getSizeInBytes());
+                            } else {
+                                bytes = new byte[0];
+                            }
+                            writer.writeBinary(bytes);
+                        };
+                break;
             case DECIMAL:
                 final int decimalPrecision = getPrecision(fieldType);
                 fieldWriter =
@@ -284,6 +308,16 @@ public class RowCompactedSerializer implements Serializer<InternalRow> {
             case BINARY:
             case VARBINARY:
                 fieldReader = (reader, pos) -> reader.readBinary();
+                break;
+            case VECTOR:
+                fieldReader =
+                        (reader, pos) -> {
+                            byte[] bytes = reader.readBinary();
+                            if (bytes == null || bytes.length == 0) {
+                                return null;
+                            }
+                            return new VectorRef(VectorDescriptor.deserialize(bytes));
+                        };
                 break;
             case DECIMAL:
                 final int decimalPrecision = getPrecision(fieldType);

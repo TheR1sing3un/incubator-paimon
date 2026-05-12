@@ -49,6 +49,7 @@ class VectorColumnFamilyTestBase extends PaimonSparkTestBase {
     """'primary-key' = 'pk',
       |  'bucket' = '1',
       |  'merge-engine' = 'partial-update',
+      |  'deletion-vectors.enabled' = 'true',
       |  'vector-field' = 'embedding',
       |  'field.embedding.vector-dim' = '4',
       |  'file.format' = 'parquet',
@@ -60,6 +61,7 @@ class VectorColumnFamilyTestBase extends PaimonSparkTestBase {
     """'primary-key' = 'pk',
       |  'bucket' = '1',
       |  'merge-engine' = 'partial-update',
+      |  'deletion-vectors.enabled' = 'true',
       |  'vector-field' = 'emb1,emb2',
       |  'field.emb1.vector-dim' = '4',
       |  'field.emb2.vector-dim' = '4',
@@ -446,67 +448,6 @@ class VectorColumnFamilyTestBase extends PaimonSparkTestBase {
     }
   }
 
-  test("Vector-CF: read vector column after compaction with deletion-vectors enabled") {
-    withTable("t") {
-      sql(s"""CREATE TABLE t (
-             |  pk INT,
-             |  name STRING,
-             |  embedding ARRAY<FLOAT>
-             |) TBLPROPERTIES (
-             |  'primary-key' = 'pk',
-             |  'bucket' = '1',
-             |  'merge-engine' = 'partial-update',
-             |  'vector-field' = 'embedding',
-             |  'field.embedding.vector-dim' = '4',
-             |  'file.format' = 'parquet',
-             |  'vector-column-family.enabled' = 'true',
-             |  'vector-column-family.target-file-size' = '32b',
-             |  'deletion-vectors.enabled' = 'true',
-             |  'compaction.min.file-num' = '2',
-             |  'compaction.max.file-num' = '3',
-             |  'num-sorted-run.compaction-trigger' = '2'
-             |)""".stripMargin)
-
-      sql("INSERT INTO t VALUES (1, 'alice', array(1.0, 2.0, 3.0, 4.0))")
-      sql("INSERT INTO t VALUES (2, 'bob', array(5.0, 6.0, 7.0, 8.0))")
-      sql("INSERT INTO t VALUES (3, 'charlie', array(9.0, 10.0, 11.0, 12.0))")
-
-      // Verify vector files exist in manifest
-      val vecFiles = vectorManifestFiles("t")
-      assert(vecFiles.nonEmpty, "Expected vector files in manifest after writes")
-
-      // Read vector column — this exercises the ReadBuilder path which sets
-      // levelFilter(level > 0) when deletion-vectors.enabled=true.
-      // Before the fix, vector CF files (level=0) were filtered out by levelFilter.
-      checkAnswer(
-        sql("SELECT pk, embedding FROM t ORDER BY pk"),
-        Seq(
-          Row(1, Seq(1.0f, 2.0f, 3.0f, 4.0f)),
-          Row(2, Seq(5.0f, 6.0f, 7.0f, 8.0f)),
-          Row(3, Seq(9.0f, 10.0f, 11.0f, 12.0f))
-        )
-      )
-
-      // Also verify selecting only scalar columns still works
-      checkAnswer(
-        sql("SELECT pk, name FROM t ORDER BY pk"),
-        Seq(Row(1, "alice"), Row(2, "bob"), Row(3, "charlie"))
-      )
-
-      // Verify predicate pushdown with vector columns works (exercises filterByValueFilter)
-      checkAnswer(
-        sql("SELECT pk, embedding FROM t WHERE name = 'alice'"),
-        Seq(Row(1, Seq(1.0f, 2.0f, 3.0f, 4.0f)))
-      )
-
-      // Verify predicate pushdown on scalar-only query
-      checkAnswer(
-        sql("SELECT pk FROM t WHERE name = 'bob'"),
-        Seq(Row(2))
-      )
-    }
-  }
-
   // ==================== Vector CF Compaction Tests ====================
 
   test("Vector-CF: full compaction merges low-ratio vector files and updates descriptors") {
@@ -519,6 +460,7 @@ class VectorColumnFamilyTestBase extends PaimonSparkTestBase {
              |  'primary-key' = 'pk',
              |  'bucket' = '1',
              |  'merge-engine' = 'partial-update',
+             |  'deletion-vectors.enabled' = 'true',
              |  'vector-field' = 'embedding',
              |  'field.embedding.vector-dim' = '4',
              |  'file.format' = 'parquet',
@@ -588,6 +530,7 @@ class VectorColumnFamilyTestBase extends PaimonSparkTestBase {
              |  'primary-key' = 'pk',
              |  'bucket' = '1',
              |  'merge-engine' = 'partial-update',
+             |  'deletion-vectors.enabled' = 'true',
              |  'vector-field' = 'embedding',
              |  'field.embedding.vector-dim' = '4',
              |  'file.format' = 'parquet',

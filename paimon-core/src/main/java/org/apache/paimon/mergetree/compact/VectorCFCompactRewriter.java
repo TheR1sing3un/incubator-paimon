@@ -118,7 +118,6 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         }
 
         if (bucketVectorFiles.isEmpty()) {
-            LOG.debug("No vector CF files in bucket, skipping vector compaction");
             return delegate.rewrite(outputLevel, dropDelete, sections);
         }
 
@@ -171,14 +170,6 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                 long totalRows = vecFile.rowCount();
                 double validRatio = totalRows > 0 ? (double) liveRows.size() / totalRows : 1.0;
 
-                LOG.info(
-                        "Vector file {} (col={}): liveRows={}, totalRows={}, validRatio={}",
-                        vecFile.fileName(),
-                        colInfo.fieldName,
-                        liveRows.size(),
-                        totalRows,
-                        String.format("%.3f", validRatio));
-
                 if (liveRows.isEmpty()) {
                     deadFiles.add(vecFile);
                 } else if (validRatio < options.vectorCFCompactValidRatioThreshold()) {
@@ -216,7 +207,6 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         }
 
         if (allExternalBefore.isEmpty()) {
-            LOG.info("No vector files qualified for cleanup, normal compaction");
             return delegate.rewrite(outputLevel, dropDelete, sections);
         }
 
