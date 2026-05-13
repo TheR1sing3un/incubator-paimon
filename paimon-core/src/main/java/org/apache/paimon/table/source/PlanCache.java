@@ -143,10 +143,14 @@ public class PlanCache implements Serializable {
     public byte[] serialize() throws IOException {
         DataOutputSerializer out = new DataOutputSerializer(1024 * 64);
 
-        // 1. Snapshot (nullable, as JSON)
+        // Version header for future compatibility
+        out.writeByte(1);
+
+        // 1. Snapshot (nullable, as compact JSON)
         if (snapshot != null) {
             out.writeBoolean(true);
-            byte[] snapshotJson = snapshot.toJson().getBytes(StandardCharsets.UTF_8);
+            byte[] snapshotJson =
+                    JsonSerdeUtil.toFlatJson(snapshot).getBytes(StandardCharsets.UTF_8);
             out.writeInt(snapshotJson.length);
             out.write(snapshotJson);
         } else {
@@ -209,6 +213,12 @@ public class PlanCache implements Serializable {
     public static PlanCache deserialize(byte[] bytes) throws IOException {
         DataInputDeserializer in = new DataInputDeserializer(bytes);
 
+        // Version check
+        int version = in.readByte();
+        if (version != 1) {
+            throw new IOException("Unsupported PlanCache serialization version: " + version);
+        }
+
         // 1. Snapshot
         Snapshot snapshot = null;
         if (in.readBoolean()) {
@@ -240,7 +250,9 @@ public class PlanCache implements Serializable {
             for (int j = 0; j < innerSize; j++) {
                 String fileName = in.readUTF();
                 DeletionFile df = DeletionFile.deserialize(in);
-                inner.put(fileName, df);
+                if (df != null) {
+                    inner.put(fileName, df);
+                }
             }
             dvIdx.put(Pair.of(partition, bucket), inner);
         }

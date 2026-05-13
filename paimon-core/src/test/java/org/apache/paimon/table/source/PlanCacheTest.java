@@ -314,6 +314,57 @@ public class PlanCacheTest {
         assertThat(splits).isEmpty();
     }
 
+    @Test
+    public void testSerializeDeserializeWithMultipleEntries() throws Exception {
+        // Write enough data to produce multiple manifest entries and non-trivial cache
+        writeRows(GenericRow.of(1, 1, 100), GenericRow.of(1, 2, 200), GenericRow.of(2, 3, 300));
+        writeRows(GenericRow.of(1, 4, 400), GenericRow.of(2, 5, 500));
+        writeRows(GenericRow.of(1, 1, 150)); // update
+
+        PlanCache original = table.newReadBuilder().buildPlanCache();
+        assertThat(original.resolvedEntries().size()).isGreaterThan(1);
+
+        // Serialize and deserialize
+        byte[] bytes = original.serialize();
+        assertThat(bytes.length).isGreaterThan(100);
+        PlanCache restored = PlanCache.deserialize(bytes);
+
+        // Verify all fields match
+        assertThat(restored.snapshotId()).isEqualTo(original.snapshotId());
+        assertThat(restored.schemaId()).isEqualTo(original.schemaId());
+        assertThat(restored.resolvedEntries()).hasSameSizeAs(original.resolvedEntries());
+        assertThat(restored.dvIndex().size()).isEqualTo(original.dvIndex().size());
+        assertThat(restored.indexMetas().size()).isEqualTo(original.indexMetas().size());
+        assertThat(restored.bucketPaths().size()).isEqualTo(original.bucketPaths().size());
+        assertThat(restored.vectorPkmapPaths().size())
+                .isEqualTo(original.vectorPkmapPaths().size());
+
+        // Verify each entry's file name matches after round-trip
+        java.util.List<String> origFileNames =
+                original.resolvedEntries().stream()
+                        .map(e -> e.file().fileName())
+                        .collect(java.util.stream.Collectors.toList());
+        java.util.List<String> restFileNames =
+                restored.resolvedEntries().stream()
+                        .map(e -> e.file().fileName())
+                        .collect(java.util.stream.Collectors.toList());
+        assertThat(restFileNames).isEqualTo(origFileNames);
+
+        // Verify planWithCache produces identical results from deserialized cache
+        List<Split> origSplits = table.newReadBuilder().planWithCache(original);
+        List<Split> restSplits = table.newReadBuilder().planWithCache(restored);
+        assertThat(extractFileNames(restSplits)).isEqualTo(extractFileNames(origSplits));
+
+        // Verify with partition filter on deserialized cache
+        PredicateBuilder pb = new PredicateBuilder(table.rowType());
+        Predicate filter = pb.equal(0, 1);
+        List<Split> origFiltered =
+                table.newReadBuilder().withFilter(filter).planWithCache(original);
+        List<Split> restFiltered =
+                table.newReadBuilder().withFilter(filter).planWithCache(restored);
+        assertThat(extractFileNames(restFiltered)).isEqualTo(extractFileNames(origFiltered));
+    }
+
     /**
      * Example E2E: demonstrates the full PlanCache workflow for business reference.
      *
