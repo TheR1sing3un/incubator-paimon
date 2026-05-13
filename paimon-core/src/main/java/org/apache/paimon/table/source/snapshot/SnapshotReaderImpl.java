@@ -21,11 +21,14 @@ package org.apache.paimon.table.source.snapshot;
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.accelerateindex.AccelerateIndexConstants;
+import org.apache.paimon.accelerateindex.AccelerateIndexDataFileInfo;
+import org.apache.paimon.accelerateindex.AccelerateIndexEntry;
 import org.apache.paimon.accelerateindex.AccelerateIndexMeta;
 import org.apache.paimon.accelerateindex.AccelerateIndexMetaIO;
 import org.apache.paimon.accelerateindex.AccelerateIndexSearch;
 import org.apache.paimon.accelerateindex.AccelerateIndexSearchSplitUtils;
 import org.apache.paimon.accelerateindex.AccelerateIndexSearchSplitUtils.SearchUnit;
+import org.apache.paimon.accelerateindex.AccelerateIndexState;
 import org.apache.paimon.accelerateindex.VectorCFSearchSplit;
 import org.apache.paimon.codegen.CodeGenUtils;
 import org.apache.paimon.codegen.RecordComparator;
@@ -124,6 +127,8 @@ public class SnapshotReaderImpl implements SnapshotReader {
     @Nullable private Map<Pair<BinaryRow, Integer>, Map<String, DeletionFile>> cachedDvIndex;
 
     @Nullable private Map<String, AccelerateIndexMeta> cachedIndexMetas;
+
+    @Nullable private Map<String, String> cachedPkmapPaths;
 
     public SnapshotReaderImpl(
             FileStoreScan scan,
@@ -374,6 +379,7 @@ public class SnapshotReaderImpl implements SnapshotReader {
         scan.withCachedEntries(cache.resolvedEntries(), cache.snapshot());
         this.cachedDvIndex = cache.dvIndex();
         this.cachedIndexMetas = cache.indexMetas();
+        this.cachedPkmapPaths = cache.vectorPkmapPaths();
         return this;
     }
 
@@ -411,8 +417,38 @@ public class SnapshotReaderImpl implements SnapshotReader {
             }
         }
 
+        // Resolve pkmap sidecar paths for vector CF files
+        Map<String, String> vectorPkmapPaths = new HashMap<>();
+        for (ManifestEntry entry : entries) {
+            if (entry.file().isVectorCFFile()) {
+                String vectorFileName = entry.file().fileName();
+                if (!vectorPkmapPaths.containsKey(vectorFileName)) {
+                    Pair<BinaryRow, Integer> pb = Pair.of(entry.partition(), entry.bucket());
+                    String bp = bucketPathMap.get(pb);
+                    if (bp != null) {
+                        String sidecarName =
+                                AccelerateIndexConstants.pkmapSidecarName(vectorFileName);
+                        Path sidecarPath = new Path(bp, sidecarName);
+                        try {
+                            if (fileIO.exists(sidecarPath)) {
+                                vectorPkmapPaths.put(vectorFileName, sidecarPath.toString());
+                            }
+                        } catch (java.io.IOException e) {
+                            LOG.debug("Error checking pkmap sidecar for {}", vectorFileName, e);
+                        }
+                    }
+                }
+            }
+        }
+
         return new PlanCache(
-                snapshot, snapshot.schemaId(), entries, dvIdx, idxMetas, bucketPathMap);
+                snapshot,
+                snapshot.schemaId(),
+                entries,
+                dvIdx,
+                idxMetas,
+                bucketPathMap,
+                vectorPkmapPaths);
     }
 
     @Override
@@ -594,17 +630,52 @@ public class SnapshotReaderImpl implements SnapshotReader {
                         deletionFilesMap.getOrDefault(
                                 Pair.of(partition, bucket), Collections.emptyMap());
 
-                result.addAll(
-                        AccelerateIndexSearchSplitUtils.buildVectorCFSplitsForBucket(
-                                snapshotId,
-                                partition,
-                                bucket,
-                                bucketPath,
-                                bucketFiles,
-                                dvMap,
-                                search,
-                                columnId,
-                                vectorColumnName));
+                if (cachedIndexMetas != null) {
+                    // Build index path mapping from cached AccelerateIndexMeta
+                    Map<String, String> resolvedIndexPaths = new HashMap<>();
+                    AccelerateIndexMeta meta =
+                            cachedIndexMetas.getOrDefault(bucketPath, AccelerateIndexMeta.empty());
+                    String algorithm = search.algorithm();
+                    for (AccelerateIndexEntry entry : meta.entries()) {
+                        if (entry.state() == AccelerateIndexState.READY
+                                && entry.columnId() == columnId
+                                && entry.algorithm().equals(algorithm)) {
+                            String indexFullPath =
+                                    new Path(bucketPath, entry.indexFile()).toString();
+                            for (AccelerateIndexDataFileInfo info : entry.dataFiles()) {
+                                resolvedIndexPaths.put(info.file(), indexFullPath);
+                            }
+                        }
+                    }
+                    // Pkmap paths from PlanCache (resolved during buildPlanCache)
+                    Map<String, String> pkmapPaths =
+                            cachedPkmapPaths != null ? cachedPkmapPaths : Collections.emptyMap();
+                    result.addAll(
+                            AccelerateIndexSearchSplitUtils.buildVectorCFSplitsForBucketResolved(
+                                    snapshotId,
+                                    partition,
+                                    bucket,
+                                    bucketPath,
+                                    bucketFiles,
+                                    dvMap,
+                                    search,
+                                    columnId,
+                                    vectorColumnName,
+                                    resolvedIndexPaths,
+                                    pkmapPaths));
+                } else {
+                    result.addAll(
+                            AccelerateIndexSearchSplitUtils.buildVectorCFSplitsForBucket(
+                                    snapshotId,
+                                    partition,
+                                    bucket,
+                                    bucketPath,
+                                    bucketFiles,
+                                    dvMap,
+                                    search,
+                                    columnId,
+                                    vectorColumnName));
+                }
             }
         }
 

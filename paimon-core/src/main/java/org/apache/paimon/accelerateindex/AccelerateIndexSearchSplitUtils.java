@@ -265,7 +265,74 @@ public class AccelerateIndexSearchSplitUtils {
     }
 
     /**
-     * (identified by {@link DataFileMeta#isVectorCFFile()} with matching writeCols). The DataSplit
+     * Build VectorCFSearchSplits with pre-resolved index/pkmap paths. Used by {@link
+     * org.apache.paimon.table.source.PlanCache} to embed companion file paths directly in the
+     * split, avoiding remote {@code fileIO.exists()} calls on executors.
+     *
+     * @param resolvedIndexPaths vectorFileName → full index path (null values = no index)
+     * @param resolvedPkmapPaths vectorFileName → full pkmap path (null values = no pkmap)
+     */
+    public static List<VectorCFSearchSplit> buildVectorCFSplitsForBucketResolved(
+            long snapshotId,
+            BinaryRow partition,
+            int bucket,
+            String bucketPath,
+            List<DataFileMeta> bucketFiles,
+            Map<String, DeletionFile> dvMap,
+            AccelerateIndexSearch search,
+            int columnId,
+            String vectorColumnName,
+            Map<String, String> resolvedIndexPaths,
+            Map<String, String> resolvedPkmapPaths) {
+
+        List<VectorCFSearchSplit> result = new ArrayList<>();
+
+        List<DataFileMeta> scalarFiles = new ArrayList<>();
+        List<DeletionFile> scalarDVs = new ArrayList<>();
+        Set<String> seenVectors = new LinkedHashSet<>();
+
+        for (int i = 0; i < bucketFiles.size(); i++) {
+            DataFileMeta f = bucketFiles.get(i);
+            if (f.isVectorCFFile()
+                    && f.writeCols() != null
+                    && f.writeCols().contains(vectorColumnName)
+                    && seenVectors.add(f.fileName())) {
+                // Will create a split for this vector file below
+            } else if (!f.isVectorCFFile() && f.level() >= 1) {
+                scalarFiles.add(f);
+                scalarDVs.add(dvMap.get(f.fileName()));
+            }
+        }
+
+        if (scalarFiles.isEmpty()) {
+            return result;
+        }
+
+        List<DataFileMeta> sharedScalarFiles = Collections.unmodifiableList(scalarFiles);
+        List<DeletionFile> dvList =
+                scalarDVs.stream().anyMatch(Objects::nonNull)
+                        ? Collections.unmodifiableList(scalarDVs)
+                        : null;
+        for (String vectorFileName : seenVectors) {
+            result.add(
+                    new VectorCFSearchSplit(
+                            vectorFileName,
+                            sharedScalarFiles,
+                            dvList,
+                            search,
+                            columnId,
+                            partition,
+                            bucket,
+                            bucketPath,
+                            snapshotId,
+                            resolvedIndexPaths.get(vectorFileName),
+                            resolvedPkmapPaths.get(vectorFileName)));
+        }
+
+        return result;
+    }
+
+    /**
      * in each SearchUnit contains only scalar files, while the entry's dataFiles reference vector
      * files.
      *

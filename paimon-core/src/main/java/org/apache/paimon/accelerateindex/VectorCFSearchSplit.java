@@ -66,6 +66,8 @@ public class VectorCFSearchSplit implements Split {
     private final int bucket;
     private final String bucketPath;
     private final long snapshotId;
+    @Nullable private final String resolvedIndexPath;
+    @Nullable private final String resolvedPkmapPath;
 
     public VectorCFSearchSplit(
             String vectorFileName,
@@ -77,6 +79,32 @@ public class VectorCFSearchSplit implements Split {
             int bucket,
             String bucketPath,
             long snapshotId) {
+        this(
+                vectorFileName,
+                scalarFiles,
+                deletionFiles,
+                search,
+                columnId,
+                partition,
+                bucket,
+                bucketPath,
+                snapshotId,
+                null,
+                null);
+    }
+
+    public VectorCFSearchSplit(
+            String vectorFileName,
+            List<DataFileMeta> scalarFiles,
+            @Nullable List<DeletionFile> deletionFiles,
+            AccelerateIndexSearch search,
+            int columnId,
+            BinaryRow partition,
+            int bucket,
+            String bucketPath,
+            long snapshotId,
+            @Nullable String resolvedIndexPath,
+            @Nullable String resolvedPkmapPath) {
         this.vectorFileName = vectorFileName;
         this.scalarFiles = scalarFiles;
         this.deletionFiles = deletionFiles;
@@ -86,6 +114,8 @@ public class VectorCFSearchSplit implements Split {
         this.bucket = bucket;
         this.bucketPath = bucketPath;
         this.snapshotId = snapshotId;
+        this.resolvedIndexPath = resolvedIndexPath;
+        this.resolvedPkmapPath = resolvedPkmapPath;
     }
 
     public String vectorFileName() {
@@ -122,6 +152,16 @@ public class VectorCFSearchSplit implements Split {
 
     public long snapshotId() {
         return snapshotId;
+    }
+
+    @Nullable
+    public String resolvedIndexPath() {
+        return resolvedIndexPath;
+    }
+
+    @Nullable
+    public String resolvedPkmapPath() {
+        return resolvedPkmapPath;
     }
 
     @Override
@@ -167,6 +207,16 @@ public class VectorCFSearchSplit implements Split {
         out.writeInt(searchBytes.length);
         out.write(searchBytes);
 
+        // Resolved paths (nullable)
+        out.writeBoolean(resolvedIndexPath != null);
+        if (resolvedIndexPath != null) {
+            out.writeUTF(resolvedIndexPath);
+        }
+        out.writeBoolean(resolvedPkmapPath != null);
+        if (resolvedPkmapPath != null) {
+            out.writeUTF(resolvedPkmapPath);
+        }
+
         return out.getCopyOfBuffer();
     }
 
@@ -203,6 +253,18 @@ public class VectorCFSearchSplit implements Split {
             throw new IOException("Failed to deserialize AccelerateIndexSearch", e);
         }
 
+        // Resolved paths (nullable) — may not be present in older serializations
+        String resolvedIndexPath = null;
+        String resolvedPkmapPath = null;
+        if (in.available() > 0) {
+            if (in.readBoolean()) {
+                resolvedIndexPath = in.readUTF();
+            }
+            if (in.readBoolean()) {
+                resolvedPkmapPath = in.readUTF();
+            }
+        }
+
         return new VectorCFSearchSplit(
                 vectorFileName,
                 scalarFiles,
@@ -212,7 +274,9 @@ public class VectorCFSearchSplit implements Split {
                 partition,
                 bucket,
                 bucketPath,
-                snapshotId);
+                snapshotId,
+                resolvedIndexPath,
+                resolvedPkmapPath);
     }
 
     @Override

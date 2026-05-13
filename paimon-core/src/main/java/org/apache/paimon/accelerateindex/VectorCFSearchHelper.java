@@ -82,13 +82,17 @@ public class VectorCFSearchHelper {
         int columnId = split.columnId();
         String algorithm = search.algorithm();
 
-        // Derive index/pkmap paths
-        String indexFileName =
-                AccelerateIndexConstants.indexFileName(vectorFileName, columnId, algorithm);
-        Path indexPath = new Path(bucketPath, indexFileName);
-
         try {
-            // Try-open index file
+            // Use pre-resolved index path from PlanCache if available
+            if (split.resolvedIndexPath() != null) {
+                Path indexPath = new Path(split.resolvedIndexPath());
+                return createIndexedReader(split, table, indexPath);
+            }
+
+            // Fallback: derive index path by convention
+            String indexFileName =
+                    AccelerateIndexConstants.indexFileName(vectorFileName, columnId, algorithm);
+            Path indexPath = new Path(bucketPath, indexFileName);
             if (!fileIO.exists(indexPath)) {
                 return createBruteForceReader(split, table);
             }
@@ -112,7 +116,10 @@ public class VectorCFSearchHelper {
 
         // 1. Build a minimal AccelerateIndexEntry for the scanner
         //    (scanner needs entry for the .aindex file path and file size)
-        Path pkmapPath = resolvePkmapPath(fileIO, bucketPath, vectorFileName, columnId, algorithm);
+        Path pkmapPath =
+                split.resolvedPkmapPath() != null
+                        ? new Path(split.resolvedPkmapPath())
+                        : resolvePkmapPath(fileIO, bucketPath, vectorFileName, columnId, algorithm);
 
         // Get actual index file size (scanner needs it to open the file)
         long indexFileSize = fileIO.getFileSize(indexPath);
@@ -223,7 +230,7 @@ public class VectorCFSearchHelper {
         Predicate pkInPredicate = null;
 
         try {
-            if (fileIO.exists(pkmapPath)) {
+            if (pkmapPath != null && fileIO.exists(pkmapPath)) {
                 PkMapReader pkMapReader = PkMapReader.open(fileIO, pkmapPath);
                 List<String> pkNames = table.schema().trimmedPrimaryKeys();
                 List<String> allFieldNames = table.schema().fieldNames();
@@ -619,7 +626,10 @@ public class VectorCFSearchHelper {
         // Resolve pkmap path
         int columnId = split.columnId();
         String algorithm = search.algorithm();
-        Path pkmapPath = resolvePkmapPath(fileIO, bucketPath, vectorFileName, columnId, algorithm);
+        Path pkmapPath =
+                split.resolvedPkmapPath() != null
+                        ? new Path(split.resolvedPkmapPath())
+                        : resolvePkmapPath(fileIO, bucketPath, vectorFileName, columnId, algorithm);
 
         int vectorFileId = vectorFileName.hashCode();
         int vectorColumnIndex = table.schema().fieldNames().indexOf(search.columnName());

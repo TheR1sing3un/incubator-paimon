@@ -57,13 +57,16 @@ public class PlanCache implements Serializable {
 
     private final Map<Pair<BinaryRow, Integer>, String> bucketPaths;
 
+    private final Map<String, String> vectorPkmapPaths;
+
     public PlanCache(
             @Nullable Snapshot snapshot,
             long schemaId,
             List<ManifestEntry> resolvedEntries,
             Map<Pair<BinaryRow, Integer>, Map<String, DeletionFile>> dvIndex,
             Map<String, AccelerateIndexMeta> indexMetas,
-            Map<Pair<BinaryRow, Integer>, String> bucketPaths) {
+            Map<Pair<BinaryRow, Integer>, String> bucketPaths,
+            Map<String, String> vectorPkmapPaths) {
         this.snapshot = snapshot;
         this.schemaId = schemaId;
         this.resolvedEntries = Collections.unmodifiableList(resolvedEntries);
@@ -74,6 +77,7 @@ public class PlanCache implements Serializable {
         this.dvIndex = Collections.unmodifiableMap(wrapped);
         this.indexMetas = Collections.unmodifiableMap(indexMetas);
         this.bucketPaths = Collections.unmodifiableMap(bucketPaths);
+        this.vectorPkmapPaths = Collections.unmodifiableMap(vectorPkmapPaths);
     }
 
     public static PlanCache empty() {
@@ -81,6 +85,7 @@ public class PlanCache implements Serializable {
                 null,
                 0,
                 Collections.emptyList(),
+                Collections.emptyMap(),
                 Collections.emptyMap(),
                 Collections.emptyMap(),
                 Collections.emptyMap());
@@ -113,6 +118,10 @@ public class PlanCache implements Serializable {
 
     public Map<Pair<BinaryRow, Integer>, String> bucketPaths() {
         return bucketPaths;
+    }
+
+    public Map<String, String> vectorPkmapPaths() {
+        return vectorPkmapPaths;
     }
 
     public boolean isEmpty() {
