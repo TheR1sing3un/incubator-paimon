@@ -266,6 +266,54 @@ public class PlanCacheTest {
                 () -> table.newReadBuilder().withTopN(topN).planWithCache(cache));
     }
 
+    @Test
+    public void testSerializeDeserializeRoundTrip() throws Exception {
+        writeRows(GenericRow.of(1, 1, 100), GenericRow.of(1, 2, 200), GenericRow.of(2, 3, 300));
+
+        PlanCache original = table.newReadBuilder().buildPlanCache();
+
+        // Serialize to bytes
+        byte[] bytes = original.serialize();
+        assertThat(bytes.length).isGreaterThan(0);
+
+        // Deserialize back
+        PlanCache restored = PlanCache.deserialize(bytes);
+
+        // Verify metadata matches
+        assertThat(restored.snapshotId()).isEqualTo(original.snapshotId());
+        assertThat(restored.schemaId()).isEqualTo(original.schemaId());
+        assertThat(restored.resolvedEntries()).hasSameSizeAs(original.resolvedEntries());
+        assertThat(restored.isEmpty()).isEqualTo(original.isEmpty());
+
+        // Verify planWithCache produces same results from deserialized cache
+        List<Split> originalSplits = table.newReadBuilder().planWithCache(original);
+        List<Split> restoredSplits = table.newReadBuilder().planWithCache(restored);
+        assertThat(extractFileNames(restoredSplits)).isEqualTo(extractFileNames(originalSplits));
+
+        // Verify with filter
+        PredicateBuilder pb = new PredicateBuilder(table.rowType());
+        Predicate filter = pb.equal(0, 1);
+        List<Split> origFiltered =
+                table.newReadBuilder().withFilter(filter).planWithCache(original);
+        List<Split> restFiltered =
+                table.newReadBuilder().withFilter(filter).planWithCache(restored);
+        assertThat(extractFileNames(restFiltered)).isEqualTo(extractFileNames(origFiltered));
+    }
+
+    @Test
+    public void testSerializeDeserializeEmpty() throws Exception {
+        PlanCache empty = table.newReadBuilder().buildPlanCache();
+        assertThat(empty.isEmpty()).isTrue();
+
+        byte[] bytes = empty.serialize();
+        PlanCache restored = PlanCache.deserialize(bytes);
+        assertThat(restored.isEmpty()).isTrue();
+        assertThat(restored.snapshotId()).isEqualTo(-1);
+
+        List<Split> splits = table.newReadBuilder().planWithCache(restored);
+        assertThat(splits).isEmpty();
+    }
+
     /**
      * Example E2E: demonstrates the full PlanCache workflow for business reference.
      *
