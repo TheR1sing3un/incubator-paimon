@@ -1407,3 +1407,98 @@ class ReaderBasicTest(unittest.TestCase):
             self.assertEqual(total_rows, 50, "Should read all 50 rows")
             self.assertLessEqual(max_batch_size, 20,
                                  f"Max batch size should be close to configured 10, got {max_batch_size}")
+
+    def test_to_pandas_parallel_preserves_row_order(self):
+        """Parallel to_pandas/to_arrow must yield rows in the same order as
+        sequential mode, regardless of max_workers."""
+        from pypaimon.common.options.core_options import CoreOptions
+
+        pa_schema = pa.schema([
+            ('id', pa.int64()),
+            ('value', pa.string()),
+        ])
+
+        schema = Schema.from_pyarrow_schema(
+            pa_schema,
+            options={CoreOptions.SOURCE_SPLIT_TARGET_SIZE.key(): '1kb'},
+        )
+        self.catalog.create_table('default.test_to_pandas_parallel', schema, False)
+        table = self.catalog.get_table('default.test_to_pandas_parallel')
+
+        for i in range(8):
+            write_builder = table.new_batch_write_builder()
+            table_write = write_builder.new_write()
+            table_commit = write_builder.new_commit()
+            data = pa.Table.from_pydict({
+                'id': list(range(i * 100, (i + 1) * 100)),
+                'value': [f'v_{j}' for j in range(i * 100, (i + 1) * 100)],
+            }, schema=pa_schema)
+            table_write.write_arrow(data)
+            table_commit.commit(table_write.prepare_commit())
+            table_write.close()
+            table_commit.close()
+
+        read_builder = table.new_read_builder()
+        splits = read_builder.new_scan().plan().splits()
+        self.assertGreaterEqual(len(splits), 2,
+                                "test setup expected ≥2 splits; got %d" % len(splits))
+        table_read = read_builder.new_read()
+
+        df_serial = table_read.to_pandas(splits)
+        for workers in (1, 2, 4, 8):
+            df_parallel = table_read.to_pandas(splits, max_workers=workers)
+            self.assertEqual(len(df_parallel), len(df_serial),
+                             f"row count mismatch at max_workers={workers}")
+            # Row order must match exactly — column-wise equality
+            for col in df_serial.columns:
+                self.assertTrue(
+                    df_parallel[col].reset_index(drop=True).equals(
+                        df_serial[col].reset_index(drop=True)),
+                    f"column '{col}' differs at max_workers={workers}",
+                )
+
+    def test_to_pandas_parallel_with_limit(self):
+        """Parallel to_pandas honors self.limit and produces the same prefix
+        as sequential mode."""
+        from pypaimon.common.options.core_options import CoreOptions
+
+        pa_schema = pa.schema([
+            ('id', pa.int64()),
+            ('value', pa.string()),
+        ])
+
+        schema = Schema.from_pyarrow_schema(
+            pa_schema,
+            options={CoreOptions.SOURCE_SPLIT_TARGET_SIZE.key(): '1kb'},
+        )
+        self.catalog.create_table('default.test_to_pandas_parallel_limit', schema, False)
+        table = self.catalog.get_table('default.test_to_pandas_parallel_limit')
+
+        for i in range(4):
+            write_builder = table.new_batch_write_builder()
+            table_write = write_builder.new_write()
+            table_commit = write_builder.new_commit()
+            data = pa.Table.from_pydict({
+                'id': list(range(i * 100, (i + 1) * 100)),
+                'value': [f'v_{j}' for j in range(i * 100, (i + 1) * 100)],
+            }, schema=pa_schema)
+            table_write.write_arrow(data)
+            table_commit.commit(table_write.prepare_commit())
+            table_write.close()
+            table_commit.close()
+
+        read_builder = table.new_read_builder().with_limit(50)
+        splits = read_builder.new_scan().plan().splits()
+        table_read = read_builder.new_read()
+
+        df_serial = table_read.to_pandas(splits)
+        df_parallel = table_read.to_pandas(splits, max_workers=4)
+
+        self.assertEqual(len(df_serial), 50, "sequential limit not honored")
+        self.assertEqual(len(df_parallel), 50, "parallel limit not honored")
+        for col in df_serial.columns:
+            self.assertTrue(
+                df_parallel[col].reset_index(drop=True).equals(
+                    df_serial[col].reset_index(drop=True)),
+                f"column '{col}' differs between sequential/parallel under limit",
+            )

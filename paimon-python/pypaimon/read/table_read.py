@@ -15,6 +15,7 @@
 #  See the License for the specific language governing permissions and
 # limitations under the License.
 ################################################################################
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Iterator, List, Optional
 
 import pandas
@@ -109,7 +110,28 @@ class TableRead:
 
         return pyarrow.RecordBatch.from_arrays(columns, schema=target_schema)
 
-    def to_arrow(self, splits: List[Split]) -> Optional[pyarrow.Table]:
+    def to_arrow(
+        self,
+        splits: List[Split],
+        *,
+        max_workers: Optional[int] = None,
+    ) -> Optional[pyarrow.Table]:
+        """Materialize splits into a single Arrow Table.
+
+        max_workers:
+            None or 1 (default) — read splits sequentially (original behavior).
+            >1 — read splits in parallel with a ThreadPoolExecutor. Splits are
+            submitted at once and consumed in original order, so the resulting
+            Table preserves split/file ordering. When ``self.limit`` is set,
+            already-started workers may read past the limit (wasted IO bounded
+            by ``max_workers - 1`` splits); not-yet-started workers are
+            cancelled.
+        """
+        if not max_workers or max_workers <= 1 or len(splits) <= 1:
+            return self._to_arrow_sequential(splits)
+        return self._to_arrow_parallel(splits, max_workers)
+
+    def _to_arrow_sequential(self, splits: List[Split]) -> Optional[pyarrow.Table]:
         batch_reader = self.to_arrow_batch_reader(splits)
 
         schema = PyarrowFieldParser.from_paimon_schema(self.read_type)
@@ -127,6 +149,104 @@ class TableRead:
         else:
             table = pyarrow.Table.from_batches(table_list)
             return self._convert_descriptor_stored_fields_for_read(table)
+
+    def _to_arrow_parallel(
+        self, splits: List[Split], max_workers: int
+    ) -> Optional[pyarrow.Table]:
+        schema = PyarrowFieldParser.from_paimon_schema(self.read_type)
+        if self.include_row_kind:
+            schema = self._add_row_kind_to_schema(schema)
+
+        def _read_one_split(split: Split) -> List[pyarrow.RecordBatch]:
+            reader = self._create_split_read(split).create_reader()
+            out: List[pyarrow.RecordBatch] = []
+            try:
+                for batch in self._iter_split_as_arrow_batches(reader, schema):
+                    if batch.num_rows == 0:
+                        continue
+                    out.append(self._try_to_pad_batch_by_schema(batch, schema))
+            finally:
+                reader.close()
+            return out
+
+        pool = ThreadPoolExecutor(
+            max_workers=min(max_workers, len(splits)),
+            thread_name_prefix="paimon-to-arrow",
+        )
+        all_batches: List[pyarrow.RecordBatch] = []
+        try:
+            futures = [pool.submit(_read_one_split, s) for s in splits]
+
+            remaining = self.limit
+            for i, fut in enumerate(futures):
+                if remaining is not None and remaining <= 0:
+                    for f in futures[i:]:
+                        f.cancel()
+                    break
+                split_batches = fut.result()
+                limit_hit = False
+                for batch in split_batches:
+                    if remaining is None:
+                        all_batches.append(batch)
+                        continue
+                    if batch.num_rows >= remaining:
+                        all_batches.append(batch.slice(0, remaining))
+                        remaining = 0
+                        limit_hit = True
+                        break
+                    all_batches.append(batch)
+                    remaining -= batch.num_rows
+                if limit_hit:
+                    for f in futures[i + 1:]:
+                        f.cancel()
+                    break
+        finally:
+            pool.shutdown(wait=True)
+
+        if not all_batches:
+            return pyarrow.Table.from_arrays(
+                [pyarrow.array([], type=field.type) for field in schema], schema=schema
+            )
+        table = pyarrow.Table.from_batches(all_batches)
+        return self._convert_descriptor_stored_fields_for_read(table)
+
+    def _iter_split_as_arrow_batches(
+        self, reader, schema: pyarrow.Schema,
+    ) -> Iterator[pyarrow.RecordBatch]:
+        """Yield Arrow batches from a single split's reader.
+
+        Unified path for both RecordBatchReader (Arrow-native) and the
+        row-based reader. Does NOT honor ``self.limit`` — limit is enforced by
+        the caller while accumulating batches across splits so that parallel
+        consumers can early-cancel sibling futures deterministically.
+        """
+        if isinstance(reader, RecordBatchReader):
+            for batch in iter(reader.read_arrow_batch, None):
+                if self.include_row_kind:
+                    batch = self._add_row_kind_column_to_batch(batch, "+I")
+                yield batch
+            return
+
+        chunk_size = 65536
+        row_tuple_chunk: List[tuple] = []
+        row_kind_chunk: List[str] = []
+        for row_iterator in iter(reader.read_batch, None):
+            for row in iter(row_iterator.next, None):
+                if not isinstance(row, OffsetRow):
+                    raise TypeError(f"Expected OffsetRow, but got {type(row).__name__}")
+                row_tuple_chunk.append(row.row_tuple[row.offset: row.offset + row.arity])
+                if self.include_row_kind:
+                    row_kind_chunk.append(row.get_row_kind().to_string())
+                if len(row_tuple_chunk) >= chunk_size:
+                    yield self._convert_rows_to_arrow_batch_with_row_kind(
+                        row_tuple_chunk, row_kind_chunk, schema
+                    )
+                    row_tuple_chunk = []
+                    row_kind_chunk = []
+        if row_tuple_chunk:
+            yield self._convert_rows_to_arrow_batch_with_row_kind(
+                row_tuple_chunk, row_kind_chunk, schema
+            )
 
     def _convert_descriptor_stored_fields_for_read(self, table: pyarrow.Table) -> pyarrow.Table:
         if CoreOptions.blob_as_descriptor(self.table.options):
@@ -266,8 +386,19 @@ class TableRead:
         columns = [row_kind_array] + [batch.column(i) for i in range(batch.num_columns)]
         return pyarrow.RecordBatch.from_arrays(columns, schema=new_schema)
 
-    def to_pandas(self, splits: List[Split]) -> pandas.DataFrame:
-        arrow_table = self.to_arrow(splits)
+    def to_pandas(
+        self,
+        splits: List[Split],
+        *,
+        max_workers: Optional[int] = None,
+    ) -> pandas.DataFrame:
+        """Materialize splits into a pandas DataFrame.
+
+        max_workers:
+            None or 1 (default) — sequential read (original behavior).
+            >1 — read splits in parallel; row order is preserved.
+        """
+        arrow_table = self.to_arrow(splits, max_workers=max_workers)
         return arrow_table.to_pandas()
 
     def to_duckdb(self, splits: List[Split], table_name: str,
