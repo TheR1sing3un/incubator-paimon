@@ -68,6 +68,7 @@ public class VectorCFSearchSplit implements Split {
     private final long snapshotId;
     @Nullable private final String resolvedIndexPath;
     @Nullable private final String resolvedPkmapPath;
+    @Nullable private final java.util.Set<Integer> matchingFileIds;
 
     public VectorCFSearchSplit(
             String vectorFileName,
@@ -105,6 +106,34 @@ public class VectorCFSearchSplit implements Split {
             long snapshotId,
             @Nullable String resolvedIndexPath,
             @Nullable String resolvedPkmapPath) {
+        this(
+                vectorFileName,
+                scalarFiles,
+                deletionFiles,
+                search,
+                columnId,
+                partition,
+                bucket,
+                bucketPath,
+                snapshotId,
+                resolvedIndexPath,
+                resolvedPkmapPath,
+                null);
+    }
+
+    public VectorCFSearchSplit(
+            String vectorFileName,
+            List<DataFileMeta> scalarFiles,
+            @Nullable List<DeletionFile> deletionFiles,
+            AccelerateIndexSearch search,
+            int columnId,
+            BinaryRow partition,
+            int bucket,
+            String bucketPath,
+            long snapshotId,
+            @Nullable String resolvedIndexPath,
+            @Nullable String resolvedPkmapPath,
+            @Nullable java.util.Set<Integer> matchingFileIds) {
         this.vectorFileName = vectorFileName;
         this.scalarFiles = scalarFiles;
         this.deletionFiles = deletionFiles;
@@ -116,6 +145,7 @@ public class VectorCFSearchSplit implements Split {
         this.snapshotId = snapshotId;
         this.resolvedIndexPath = resolvedIndexPath;
         this.resolvedPkmapPath = resolvedPkmapPath;
+        this.matchingFileIds = matchingFileIds;
     }
 
     public String vectorFileName() {
@@ -162,6 +192,18 @@ public class VectorCFSearchSplit implements Split {
     @Nullable
     public String resolvedPkmapPath() {
         return resolvedPkmapPath;
+    }
+
+    @Nullable
+    public java.util.Set<Integer> matchingFileIds() {
+        return matchingFileIds;
+    }
+
+    public boolean matchesFileId(int fileId) {
+        if (matchingFileIds != null) {
+            return matchingFileIds.contains(fileId);
+        }
+        return fileId == vectorFileName.hashCode();
     }
 
     @Override

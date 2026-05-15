@@ -400,7 +400,7 @@ public class VectorCFSearchHelper {
                             continue;
                         }
                         int fileId = VectorDescriptor.extractFileId(descBytes);
-                        if (fileId != vectorFileId) {
+                        if (!split.matchesFileId(fileId)) {
                             continue;
                         }
 
@@ -461,7 +461,7 @@ public class VectorCFSearchHelper {
                         byte[] descBytes = row.getBinary(0);
                         if (VectorDescriptor.isVectorDescriptor(descBytes)) {
                             int fileId = VectorDescriptor.extractFileId(descBytes);
-                            if (fileId == vectorFileId) {
+                            if (split.matchesFileId(fileId)) {
                                 long rowIdx = VectorDescriptor.extractRowIndex(descBytes);
                                 Float score = rowIndexToScore.get(rowIdx);
                                 if (score != null) {
@@ -784,7 +784,7 @@ public class VectorCFSearchHelper {
                                     continue;
                                 }
                                 int fileId = VectorDescriptor.extractFileId(descBytes);
-                                if (fileId != vectorFileId) {
+                                if (!split.matchesFileId(fileId)) {
                                     continue;
                                 }
                                 StringBuilder keyBuilder2 = new StringBuilder();
@@ -848,7 +848,7 @@ public class VectorCFSearchHelper {
                             byte[] descBytes = row.getBinary(0);
                             if (VectorDescriptor.isVectorDescriptor(descBytes)) {
                                 int fileId = VectorDescriptor.extractFileId(descBytes);
-                                if (fileId == vectorFileId) {
+                                if (split.matchesFileId(fileId)) {
                                     long rowIndex = VectorDescriptor.extractRowIndex(descBytes);
                                     Float score = topKRowIndexToScore.get(rowIndex);
                                     if (score != null) {
