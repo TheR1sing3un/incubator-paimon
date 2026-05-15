@@ -247,7 +247,7 @@ public class SparkTypeUtils {
         @Override
         public DataType visit(VectorType vectorType) {
             return DataTypes.createArrayType(
-                    vectorType.getElementType().accept(this), false);
+                    vectorType.getElementType().accept(this), true);
         }
 
         @Override
