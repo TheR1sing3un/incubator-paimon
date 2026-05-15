@@ -25,13 +25,11 @@ import org.apache.paimon.VersionedMergeMode;
 import org.apache.paimon.codegen.RecordEqualiser;
 import org.apache.paimon.compact.CompactManager;
 import org.apache.paimon.data.BinaryRow;
-import org.apache.paimon.data.BinaryVector;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.deletionvectors.BucketedDvMaintainer;
 import org.apache.paimon.disk.IOManager;
 import org.apache.paimon.format.FileFormatDiscover;
 import org.apache.paimon.fs.FileIO;
-import org.apache.paimon.fs.Path;
 import org.apache.paimon.index.DynamicBucketIndexMaintainer;
 import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.io.DataFilePathFactory;
@@ -40,7 +38,6 @@ import org.apache.paimon.io.KeyValueFileWriterFactory;
 import org.apache.paimon.io.RecordLevelExpire;
 import org.apache.paimon.mergetree.DefaultVectorFileWriter;
 import org.apache.paimon.mergetree.MergeTreeWriter;
-import org.apache.paimon.mergetree.VectorCFAppendHelper;
 import org.apache.paimon.mergetree.VectorColumnFamilyFlushHelper;
 import org.apache.paimon.mergetree.compact.KvCompactionManagerFactory;
 import org.apache.paimon.mergetree.compact.LookupMergeFunction;
@@ -72,7 +69,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.Supplier;
-import java.util.stream.Collectors;
 
 import static org.apache.paimon.format.FileFormat.fileFormat;
 import static org.apache.paimon.utils.FileStorePathFactory.createFormatPathFactories;
@@ -260,14 +256,6 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
                 }
             }
 
-            // Capture bucket path for append discovery
-            final Path bucketPath = pf.parent();
-
-            // Capture the current list reference at factory creation time
-            // to avoid reading a stale/modified field on later invocation
-            final List<DataFileMeta> capturedVectorCFFiles =
-                    new ArrayList<>(lastRestoredVectorCFFiles);
-
             vectorColumnFamilyFactory =
                     new VectorColumnFamilyFlushHelper.Factory() {
                         @Override
@@ -275,10 +263,9 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
                             VectorColumnFamilyFlushHelper.VectorFileWriter[] writers =
                                     new VectorColumnFamilyFlushHelper.VectorFileWriter
                                             [vectorFields.size()];
-                            VectorCFAppendHelper appendHelper = new VectorCFAppendHelper(fio);
 
                             for (int i = 0; i < vectorFields.size(); i++) {
-                                DefaultVectorFileWriter writer =
+                                writers[i] =
                                         new DefaultVectorFileWriter(
                                                 fio,
                                                 vectorFields.get(i),
@@ -287,42 +274,6 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
                                                 vTargetRows,
                                                 schemaId,
                                                 vPkArity);
-
-                                // Try to claim an unfilled file for this column
-                                String colName = vectorFields.get(i).name();
-                                List<DataFileMeta> unfilledForCol =
-                                        capturedVectorCFFiles.stream()
-                                                .filter(
-                                                        f ->
-                                                                f.writeCols() != null
-                                                                        && f.writeCols()
-                                                                                .contains(colName))
-                                                .collect(Collectors.toList());
-
-                                if (!unfilledForCol.isEmpty()) {
-                                    VectorType vType = (VectorType) vectorFields.get(i).type();
-                                    int bpv =
-                                            ((vType.getLength()
-                                                                            * BinaryVector
-                                                                                    .getPrimitiveElementSize(
-                                                                                            vType
-                                                                                                    .getElementType())
-                                                                    + 7)
-                                                            / 8)
-                                                    * 8;
-                                    VectorCFAppendHelper.ClaimResult claim =
-                                            appendHelper.tryClaimUnfilledFile(
-                                                    unfilledForCol,
-                                                    bucketPath,
-                                                    vTargetSize,
-                                                    bpv,
-                                                    vTargetRows);
-                                    if (claim != null) {
-                                        writer.initAppendMode(appendHelper, claim);
-                                    }
-                                }
-
-                                writers[i] = writer;
                             }
                             return new VectorColumnFamilyFlushHelper(vt, finalVectorCols, writers);
                         }

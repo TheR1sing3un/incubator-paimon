@@ -319,18 +319,6 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
     public CommitIncrement prepareCommit(boolean waitCompaction) throws Exception {
         flushWriteBuffer(waitCompaction, false);
 
-        // Commit any vector file appends (atomic overwrite rename)
-        if (persistentVectorWriters != null) {
-            for (VectorColumnFamilyFlushHelper.VectorFileWriter w : persistentVectorWriters) {
-                if (w instanceof DefaultVectorFileWriter) {
-                    DefaultVectorFileWriter dvw = (DefaultVectorFileWriter) w;
-                    if (dvw.isAppendMode()) {
-                        dvw.commitAppend();
-                    }
-                }
-            }
-        }
-
         if (commitForceCompact) {
             waitCompaction = true;
         }
