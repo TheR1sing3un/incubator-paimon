@@ -59,6 +59,8 @@ public class VectorDescriptor implements Serializable {
      */
     @Nullable private transient String resolvedFilePath;
 
+    private transient long resolvedRowIndex = -1;
+
     // V1 legacy fields (only populated when deserializing V1 format)
     private final int bytesPerVector;
     private final int dimension;
@@ -109,7 +111,15 @@ public class VectorDescriptor implements Serializable {
     }
 
     public long rowIndex() {
+        return resolvedRowIndex >= 0 ? resolvedRowIndex : rowIndex;
+    }
+
+    public long originalRowIndex() {
         return rowIndex;
+    }
+
+    public void withResolvedRowIndex(long resolvedRowIndex) {
+        this.resolvedRowIndex = resolvedRowIndex;
     }
 
     /**

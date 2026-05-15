@@ -22,6 +22,7 @@ import org.apache.paimon.data.BinaryVector;
 import org.apache.paimon.data.columnar.VectorCFReaderContext;
 import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.io.DataFilePathFactory;
+import org.apache.paimon.mergetree.compact.VectorFileMapping;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataType;
 import org.apache.paimon.types.RowType;
@@ -84,6 +85,68 @@ public class VectorCFReaderContextBuilder {
         }
 
         return new VectorCFReaderContext(fileIdToPath, bytesPerVector, dimension);
+    }
+
+    /**
+     * Build a VectorCFReaderContext with vector file mapping support for compaction-merged files.
+     *
+     * @param allFiles all files in the split (scalar + vector CF)
+     * @param dataFilePathFactory factory to construct file paths
+     * @param readRowType the projected read row type
+     * @param mapping vector file mapping from compaction (nullable)
+     * @return context with mapping resolution, or null if no vector CF files
+     */
+    @Nullable
+    public static VectorCFReaderContext build(
+            List<DataFileMeta> allFiles,
+            DataFilePathFactory dataFilePathFactory,
+            RowType readRowType,
+            @Nullable VectorFileMapping mapping) {
+        if (mapping == null || mapping.size() == 0) {
+            return build(allFiles, dataFilePathFactory, readRowType);
+        }
+
+        // Use mapping for fileId → path + offset resolution
+        Map<Integer, String> fileIdToPath = new HashMap<>();
+        Map<Integer, Long> fileIdToBaseOffset = new HashMap<>();
+
+        // First: populate from mapping entries
+        for (VectorFileMapping.MappingEntry entry : mapping.mappings()) {
+            fileIdToPath.put(entry.fileId(), entry.targetFilePath());
+            fileIdToBaseOffset.put(entry.fileId(), entry.baseOffset());
+        }
+
+        // Also: add any vector CF files from the split not in the mapping (identity, offset=0)
+        for (DataFileMeta file : allFiles) {
+            if (file.isVectorCFFile()) {
+                int fileId = file.fileName().hashCode();
+                if (!fileIdToPath.containsKey(fileId)) {
+                    fileIdToPath.put(fileId, dataFilePathFactory.toPath(file).toString());
+                    fileIdToBaseOffset.put(fileId, 0L);
+                }
+            }
+        }
+
+        if (fileIdToPath.isEmpty()) {
+            return null;
+        }
+
+        List<DataField> fields = readRowType.getFields();
+        int[] bytesPerVector = new int[fields.size()];
+        int[] dimension = new int[fields.size()];
+        for (int i = 0; i < fields.size(); i++) {
+            DataType type = fields.get(i).type();
+            if (type instanceof VectorType) {
+                VectorType vt = (VectorType) type;
+                int dim = vt.getLength();
+                int elementSize = BinaryVector.getPrimitiveElementSize(vt.getElementType());
+                bytesPerVector[i] = ((dim * elementSize + 7) / 8) * 8;
+                dimension[i] = dim;
+            }
+        }
+
+        return new VectorCFReaderContext(
+                fileIdToPath, fileIdToBaseOffset, bytesPerVector, dimension);
     }
 
     /**

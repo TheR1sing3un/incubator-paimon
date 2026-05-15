@@ -225,7 +225,10 @@ public final class ColumnarRow implements InternalRow, DataSetters, Serializable
                             + descriptor.fileId()
                             + ". No matching vector file found in the split.");
         }
+        long actualRowIndex =
+                vectorCFContext.resolveActualRowIndex(descriptor.fileId(), descriptor.rowIndex());
         descriptor.withResolvedFilePath(filePath);
+        descriptor.withResolvedRowIndex(actualRowIndex);
         int bpv = vectorCFContext.bytesPerVector(pos);
         int dim = vectorCFContext.dimension(pos);
         return VectorRef.fromDescriptor(fileIO, descriptor, bpv, dim);
