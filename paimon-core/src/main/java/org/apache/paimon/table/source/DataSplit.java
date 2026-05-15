@@ -415,6 +415,7 @@ public class DataSplit implements Split {
         this.dataDeletionFiles = other.dataDeletionFiles;
         this.isStreaming = other.isStreaming;
         this.rawConvertible = other.rawConvertible;
+        this.vectorFileMapping = other.vectorFileMapping;
     }
 
     public void serialize(DataOutputView out) throws IOException {

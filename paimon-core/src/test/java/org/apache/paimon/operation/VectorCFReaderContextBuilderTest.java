@@ -22,6 +22,7 @@ import org.apache.paimon.data.columnar.VectorCFReaderContext;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.io.DataFilePathFactory;
+import org.apache.paimon.mergetree.compact.VectorFileMapping;
 import org.apache.paimon.stats.SimpleStats;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataTypes;
@@ -191,5 +192,89 @@ public class VectorCFReaderContextBuilderTest {
                 null,
                 null,
                 Collections.singletonList(colName));
+    }
+
+    // ---- Mapping-aware tests ----
+
+    @Test
+    public void testBuildWithMappingOverridesPathAndOffset() {
+        Path bucketPath = new Path(tempDir.toString(), "bucket-0");
+        DataFilePathFactory pathFactory =
+                new DataFilePathFactory(
+                        bucketPath, "bin", "data-", "changelog-", false, "none", null);
+
+        // Old vector file (pre-compaction, no longer on disk but referenced by scalar descriptors)
+        DataFileMeta mergedVectorFile =
+                createVectorMeta("data-merged.vector.bin", 1600, 100, "embedding");
+
+        // Mapping: uuid1 → merged at offset 0, uuid2 → merged at offset 50
+        VectorFileMapping mapping =
+                VectorFileMapping.builder()
+                        .addMerged(
+                                "data-uuid1.vector.bin", bucketPath + "/data-merged.vector.bin", 0)
+                        .addMerged(
+                                "data-uuid2.vector.bin", bucketPath + "/data-merged.vector.bin", 50)
+                        .addIdentity(
+                                "data-merged.vector.bin", bucketPath + "/data-merged.vector.bin")
+                        .build();
+
+        RowType readRowType =
+                new RowType(
+                        Arrays.asList(
+                                new DataField(0, "pk", DataTypes.INT()),
+                                new DataField(
+                                        1, "embedding", new VectorType(4, DataTypes.FLOAT()))));
+
+        VectorCFReaderContext ctx =
+                VectorCFReaderContextBuilder.build(
+                        Arrays.asList(mergedVectorFile), pathFactory, readRowType, mapping);
+
+        assertThat(ctx).isNotNull();
+
+        // Resolving uuid1 (old file) → should get merged file path
+        int uuid1Id = "data-uuid1.vector.bin".hashCode();
+        assertThat(ctx.resolveFilePath(uuid1Id)).contains("data-merged.vector.bin");
+        assertThat(ctx.resolveBaseOffset(uuid1Id)).isEqualTo(0);
+        assertThat(ctx.resolveActualRowIndex(uuid1Id, 10)).isEqualTo(10);
+
+        // Resolving uuid2 (old file) → should get merged file path + offset 50
+        int uuid2Id = "data-uuid2.vector.bin".hashCode();
+        assertThat(ctx.resolveFilePath(uuid2Id)).contains("data-merged.vector.bin");
+        assertThat(ctx.resolveBaseOffset(uuid2Id)).isEqualTo(50);
+        assertThat(ctx.resolveActualRowIndex(uuid2Id, 3)).isEqualTo(53);
+
+        // Resolving merged file directly → identity, offset 0
+        int mergedId = "data-merged.vector.bin".hashCode();
+        assertThat(ctx.resolveFilePath(mergedId)).contains("data-merged.vector.bin");
+        assertThat(ctx.resolveBaseOffset(mergedId)).isEqualTo(0);
+    }
+
+    @Test
+    public void testBuildWithNullMappingFallsBackToIdentity() {
+        Path bucketPath = new Path(tempDir.toString(), "bucket-0");
+        DataFilePathFactory pathFactory =
+                new DataFilePathFactory(
+                        bucketPath, "bin", "data-", "changelog-", false, "none", null);
+
+        DataFileMeta vectorFile = createVectorMeta("data-uuid1.vector.bin", 160, 10, "embedding");
+
+        RowType readRowType =
+                new RowType(
+                        Arrays.asList(
+                                new DataField(0, "pk", DataTypes.INT()),
+                                new DataField(
+                                        1, "embedding", new VectorType(4, DataTypes.FLOAT()))));
+
+        VectorCFReaderContext ctx =
+                VectorCFReaderContextBuilder.build(
+                        Arrays.asList(vectorFile), pathFactory, readRowType, null);
+
+        assertThat(ctx).isNotNull();
+
+        int fileId = "data-uuid1.vector.bin".hashCode();
+        assertThat(ctx.resolveFilePath(fileId)).isNotNull();
+        // Without mapping, baseOffset should be 0
+        assertThat(ctx.resolveBaseOffset(fileId)).isEqualTo(0);
+        assertThat(ctx.resolveActualRowIndex(fileId, 5)).isEqualTo(5);
     }
 }

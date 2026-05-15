@@ -180,4 +180,77 @@ public class DataSplitVectorCFTest {
         }
         return builder.build();
     }
+
+    // ---- VectorFileMapping serialization tests ----
+
+    @Test
+    public void testSerializeDeserializeWithVectorFileMapping() throws Exception {
+        org.apache.paimon.mergetree.compact.VectorFileMapping mapping =
+                org.apache.paimon.mergetree.compact.VectorFileMapping.builder()
+                        .addMerged("uuid1.vector.bin", "/bucket-0/uuid3.vector.bin", 0)
+                        .addMerged("uuid2.vector.bin", "/bucket-0/uuid3.vector.bin", 1000)
+                        .build();
+
+        DataSplit original =
+                DataSplit.builder()
+                        .withSnapshot(1)
+                        .withPartition(BinaryRow.EMPTY_ROW)
+                        .withBucket(0)
+                        .withBucketPath("bucket-0")
+                        .rawConvertible(true)
+                        .withDataFiles(
+                                java.util.Arrays.asList(newScalarFile("data-0.parquet", 100)))
+                        .withVectorFileMapping(mapping)
+                        .build();
+
+        assertThat(original.vectorFileMapping()).isNotNull();
+        assertThat(original.vectorFileMapping().size()).isEqualTo(2);
+
+        // Serialize + deserialize
+        org.apache.paimon.io.DataOutputSerializer out =
+                new org.apache.paimon.io.DataOutputSerializer(4096);
+        original.serialize(out);
+        byte[] bytes = out.getCopyOfBuffer();
+
+        DataSplit restored =
+                DataSplit.deserialize(new org.apache.paimon.io.DataInputDeserializer(bytes));
+
+        assertThat(restored.vectorFileMapping()).isNotNull();
+        assertThat(restored.vectorFileMapping().size()).isEqualTo(2);
+
+        // Verify mapping resolves correctly after round-trip
+        assertThat(restored.vectorFileMapping().mappings()).hasSize(2);
+        org.apache.paimon.mergetree.compact.VectorFileMapping.ResolvedLocation loc =
+                restored.vectorFileMapping().resolve("uuid2.vector.bin".hashCode(), 42);
+        assertThat(loc).isNotNull();
+        assertThat(loc.actualFilePath()).isEqualTo("/bucket-0/uuid3.vector.bin");
+        assertThat(loc.actualRowIndex()).isEqualTo(1042);
+    }
+
+    @Test
+    public void testSerializeDeserializeWithNullMapping() throws Exception {
+        DataSplit original =
+                DataSplit.builder()
+                        .withSnapshot(1)
+                        .withPartition(BinaryRow.EMPTY_ROW)
+                        .withBucket(0)
+                        .withBucketPath("bucket-0")
+                        .rawConvertible(true)
+                        .withDataFiles(
+                                java.util.Arrays.asList(newScalarFile("data-0.parquet", 100)))
+                        .build();
+
+        assertThat(original.vectorFileMapping()).isNull();
+
+        org.apache.paimon.io.DataOutputSerializer out =
+                new org.apache.paimon.io.DataOutputSerializer(4096);
+        original.serialize(out);
+
+        DataSplit restored =
+                DataSplit.deserialize(
+                        new org.apache.paimon.io.DataInputDeserializer(out.getCopyOfBuffer()));
+
+        assertThat(restored.vectorFileMapping()).isNull();
+        assertThat(restored.dataFiles()).hasSize(1);
+    }
 }
