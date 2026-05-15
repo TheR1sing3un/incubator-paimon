@@ -25,6 +25,7 @@ import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonPro
 
 import javax.annotation.Nullable;
 
+import java.io.ObjectInputStream;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -59,7 +60,7 @@ public class VectorFileMapping implements Serializable {
     @JsonProperty(FIELD_MAPPINGS)
     private final List<MappingEntry> mappings;
 
-    private final transient Map<Integer, MappingEntry> lookupMap;
+    private transient Map<Integer, MappingEntry> lookupMap;
 
     @JsonCreator
     public VectorFileMapping(
@@ -67,11 +68,21 @@ public class VectorFileMapping implements Serializable {
             @JsonProperty(FIELD_MAPPINGS) List<MappingEntry> mappings) {
         this.version = version;
         this.mappings = mappings != null ? mappings : Collections.emptyList();
-        Map<Integer, MappingEntry> map = new HashMap<>(this.mappings.size());
-        for (MappingEntry e : this.mappings) {
+        this.lookupMap = buildLookup(this.mappings);
+    }
+
+    private static Map<Integer, MappingEntry> buildLookup(List<MappingEntry> mappings) {
+        Map<Integer, MappingEntry> map = new HashMap<>(mappings.size());
+        for (MappingEntry e : mappings) {
             map.put(e.fileId, e);
         }
-        this.lookupMap = map;
+        return map;
+    }
+
+    private void readObject(ObjectInputStream in)
+            throws java.io.IOException, ClassNotFoundException {
+        in.defaultReadObject();
+        this.lookupMap = buildLookup(this.mappings);
     }
 
     public static VectorFileMapping empty() {

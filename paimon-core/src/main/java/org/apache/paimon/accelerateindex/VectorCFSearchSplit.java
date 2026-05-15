@@ -259,6 +259,16 @@ public class VectorCFSearchSplit implements Split {
             out.writeUTF(resolvedPkmapPath);
         }
 
+        // Matching file IDs (nullable set)
+        if (matchingFileIds != null) {
+            out.writeInt(matchingFileIds.size());
+            for (int id : matchingFileIds) {
+                out.writeInt(id);
+            }
+        } else {
+            out.writeInt(-1);
+        }
+
         return out.getCopyOfBuffer();
     }
 
@@ -307,6 +317,18 @@ public class VectorCFSearchSplit implements Split {
             }
         }
 
+        // Matching file IDs (nullable set)
+        java.util.Set<Integer> matchingFileIds = null;
+        if (in.available() > 0) {
+            int count = in.readInt();
+            if (count >= 0) {
+                matchingFileIds = new java.util.HashSet<>(count);
+                for (int i = 0; i < count; i++) {
+                    matchingFileIds.add(in.readInt());
+                }
+            }
+        }
+
         return new VectorCFSearchSplit(
                 vectorFileName,
                 scalarFiles,
@@ -318,7 +340,8 @@ public class VectorCFSearchSplit implements Split {
                 bucketPath,
                 snapshotId,
                 resolvedIndexPath,
-                resolvedPkmapPath);
+                resolvedPkmapPath,
+                matchingFileIds);
     }
 
     @Override

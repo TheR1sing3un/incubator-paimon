@@ -72,6 +72,7 @@ public class DefaultVectorFileWriter implements VectorColumnFamilyFlushHelper.Ve
     @Nullable private PositionOutputStream currentOutput;
     @Nullable private Path currentPath;
     private long currentRowCount;
+    private boolean currentFileReported;
 
     private final List<DataFileMeta> completedFileMetas;
 
@@ -121,6 +122,7 @@ public class DefaultVectorFileWriter implements VectorColumnFamilyFlushHelper.Ve
                 new InternalVectorSerializer(vectorType.getElementType(), dimension);
         this.completedFileMetas = new ArrayList<>();
         this.pkBuffer = new ArrayList<>();
+        this.currentFileReported = false;
     }
 
     public void bufferPk(@Nullable BinaryRow pkRow) {
@@ -162,9 +164,10 @@ public class DefaultVectorFileWriter implements VectorColumnFamilyFlushHelper.Ve
         List<DataFileMeta> result = new ArrayList<>(completedFileMetas);
         completedFileMetas.clear();
 
-        if (currentOutput != null) {
+        if (currentOutput != null && !currentFileReported) {
             result.add(
                     createFileMeta(currentPath, currentRowCount * bytesPerVector, currentRowCount));
+            currentFileReported = true;
         }
 
         return result;
@@ -179,6 +182,7 @@ public class DefaultVectorFileWriter implements VectorColumnFamilyFlushHelper.Ve
         Path path = pathFactory.newVectorPath("bin");
         currentPath = path;
         currentRowCount = 0;
+        currentFileReported = false;
         currentOutput = fileIO.newOutputStream(path, false);
     }
 
