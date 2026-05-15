@@ -28,6 +28,7 @@ import org.apache.paimon.data.VectorDescriptor;
 import org.apache.paimon.data.VectorRef;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
+import org.apache.paimon.index.IndexFileMeta;
 import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.io.DataFilePathFactory;
 import org.apache.paimon.io.RollingFileWriter;
@@ -75,6 +76,8 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
 
     private static final Logger LOG = LoggerFactory.getLogger(VectorCFCompactRewriter.class);
 
+    public static final String VECTOR_FILE_MAPPING_TYPE = "VECTOR_FILE_MAPPING";
+
     private final MergeTreeCompactRewriter delegate;
     private final CoreOptions options;
     private final FileIO fileIO;
@@ -113,27 +116,132 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
     @Override
     public CompactResult rewrite(
             int outputLevel, boolean dropDelete, List<List<SortedRun>> sections) throws Exception {
-        if (outputLevel != maxLevel || !options.vectorCFCompactEnabled()) {
+        if (!options.vectorCFCompactEnabled() || bucketVectorFiles.isEmpty()) {
             return delegate.rewrite(outputLevel, dropDelete, sections);
         }
 
-        if (bucketVectorFiles.isEmpty()) {
-            return delegate.rewrite(outputLevel, dropDelete, sections);
+        if (outputLevel == maxLevel) {
+            // Full compaction: merge vector files + rewrite scalar files with remapped descriptors
+            LOG.info(
+                    "Full compaction with vector file compact: {} vector files",
+                    bucketVectorFiles.size());
+            return rewriteWithVectorCompaction(outputLevel, dropDelete, sections);
+        } else {
+            // Normal compaction: merge small vector files + generate mapping (no scalar rewrite)
+            return rewriteWithVectorMergeOnly(outputLevel, dropDelete, sections);
         }
-
-        LOG.info(
-                "Full compaction with vector file compact: {} vector files, "
-                        + "threshold={}, minFiles={}",
-                bucketVectorFiles.size(),
-                options.vectorCFCompactValidRatioThreshold(),
-                options.vectorCFCompactMinFiles());
-
-        return rewriteWithVectorCompaction(outputLevel, dropDelete, sections);
     }
 
     @Override
     public CompactResult upgrade(int outputLevel, DataFileMeta file) throws Exception {
         return delegate.upgrade(outputLevel, file);
+    }
+
+    /**
+     * Normal compaction: merge small vector files into larger ones and generate a {@link
+     * VectorFileMapping} stored as an {@link IndexFileMeta}. Scalar files are NOT rewritten.
+     */
+    private CompactResult rewriteWithVectorMergeOnly(
+            int outputLevel, boolean dropDelete, List<List<SortedRun>> sections) throws Exception {
+
+        // Delegate scalar compaction first
+        CompactResult scalarResult = delegate.rewrite(outputLevel, dropDelete, sections);
+
+        List<VectorColumnInfo> vectorColumns = detectVectorColumns();
+        if (vectorColumns.isEmpty()
+                || bucketVectorFiles.size() < options.vectorCFCompactMinFiles()) {
+            return scalarResult;
+        }
+
+        DataFilePathFactory dataFilePathFactory = writerFactory.pathFactory(outputLevel);
+        Path bucketPath = dataFilePathFactory.parent();
+
+        List<DataFileMeta> vectorBefore = new ArrayList<>();
+        List<DataFileMeta> vectorAfter = new ArrayList<>();
+        VectorFileMapping.Builder mappingBuilder = VectorFileMapping.builder();
+
+        for (VectorColumnInfo colInfo : vectorColumns) {
+            List<DataFileMeta> columnVectorFiles = new ArrayList<>();
+            for (DataFileMeta f : bucketVectorFiles) {
+                if (f.writeCols() != null && f.writeCols().contains(colInfo.fieldName)) {
+                    columnVectorFiles.add(f);
+                }
+            }
+
+            if (columnVectorFiles.size() < options.vectorCFCompactMinFiles()) {
+                // Keep identity mappings for unmerged files
+                for (DataFileMeta f : columnVectorFiles) {
+                    mappingBuilder.addIdentity(
+                            f.fileName(), dataFilePathFactory.toPath(f).toString());
+                }
+                continue;
+            }
+
+            long schemaId = columnVectorFiles.get(0).schemaId();
+            VectorFileMerger merger =
+                    new VectorFileMerger(
+                            fileIO,
+                            bucketPath,
+                            colInfo.bytesPerVector,
+                            schemaId,
+                            colInfo.fieldName,
+                            dataFilePathFactory);
+
+            // Merge all vectors (no live-ref filtering — scalar files not rewritten)
+            Map<Integer, Set<Long>> allRefs = new HashMap<>();
+            for (DataFileMeta f : columnVectorFiles) {
+                int fileId = f.fileName().hashCode();
+                Set<Long> allRows = new HashSet<>();
+                for (long i = 0; i < f.rowCount(); i++) {
+                    allRows.add(i);
+                }
+                allRefs.put(fileId, allRows);
+            }
+
+            VectorFileMerger.MergeResult mergeResult = merger.merge(columnVectorFiles, allRefs);
+            if (mergeResult != null) {
+                vectorBefore.addAll(columnVectorFiles);
+                vectorAfter.add(mergeResult.newFileMeta());
+
+                // Build mapping: old fileIds → new file + offsets
+                String mergedFilePath =
+                        dataFilePathFactory.toPath(mergeResult.newFileMeta()).toString();
+                long offset = 0;
+                for (DataFileMeta f : columnVectorFiles) {
+                    mappingBuilder.addMerged(f.fileName(), mergedFilePath, offset);
+                    offset += f.rowCount();
+                }
+
+                LOG.info(
+                        "Normal compaction: vector column {} merged {} files -> {}",
+                        colInfo.fieldName,
+                        columnVectorFiles.size(),
+                        mergeResult.newFileMeta().fileName());
+            }
+        }
+
+        if (vectorBefore.isEmpty()) {
+            return scalarResult;
+        }
+
+        // Write the mapping file as an IndexFileMeta
+        VectorFileMapping mapping = mappingBuilder.build();
+        Path mappingPath = VectorFileMappingIO.write(fileIO, bucketPath, mapping);
+        IndexFileMeta mappingIndexMeta =
+                new IndexFileMeta(
+                        VECTOR_FILE_MAPPING_TYPE,
+                        mappingPath.getName(),
+                        fileIO.getFileSize(mappingPath),
+                        mapping.size(),
+                        null,
+                        null,
+                        null);
+
+        // Combine scalar + vector results
+        scalarResult.before().addAll(vectorBefore);
+        scalarResult.after().addAll(vectorAfter);
+        scalarResult.newIndexFiles().add(mappingIndexMeta);
+        return scalarResult;
     }
 
     private CompactResult rewriteWithVectorCompaction(

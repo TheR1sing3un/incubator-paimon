@@ -28,6 +28,7 @@ import org.apache.paimon.compact.CompactResult;
 import org.apache.paimon.compression.CompressOptions;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.disk.IOManager;
+import org.apache.paimon.index.IndexFileMeta;
 import org.apache.paimon.io.CompactIncrement;
 import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.io.DataIncrement;
@@ -81,6 +82,8 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
     private final LinkedHashMap<String, DataFileMeta> compactBefore;
     private final LinkedHashSet<DataFileMeta> compactAfter;
     private final LinkedHashSet<DataFileMeta> compactChangelog;
+    private final List<IndexFileMeta> compactNewIndexFiles;
+    private final List<IndexFileMeta> compactDeletedIndexFiles;
 
     @Nullable private CompactDeletionFile compactDeletionFile;
 
@@ -149,6 +152,8 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
         this.compactBefore = new LinkedHashMap<>();
         this.compactAfter = new LinkedHashSet<>();
         this.compactChangelog = new LinkedHashSet<>();
+        this.compactNewIndexFiles = new ArrayList<>();
+        this.compactDeletedIndexFiles = new ArrayList<>();
         if (increment != null) {
             newFiles.addAll(increment.newFilesIncrement().newFiles());
             deletedFiles.addAll(increment.newFilesIncrement().deletedFiles());
@@ -355,7 +360,9 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
                 new CompactIncrement(
                         new ArrayList<>(compactBefore.values()),
                         new ArrayList<>(compactAfter),
-                        new ArrayList<>(compactChangelog));
+                        new ArrayList<>(compactChangelog),
+                        new ArrayList<>(compactNewIndexFiles),
+                        new ArrayList<>(compactDeletedIndexFiles));
         CompactDeletionFile drainDeletionFile = compactDeletionFile;
 
         newFiles.clear();
@@ -364,6 +371,8 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
         compactBefore.clear();
         compactAfter.clear();
         compactChangelog.clear();
+        compactNewIndexFiles.clear();
+        compactDeletedIndexFiles.clear();
         compactDeletionFile = null;
 
         return new CommitIncrement(dataIncrement, compactIncrement, drainDeletionFile);
@@ -394,6 +403,8 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
         }
         compactAfter.addAll(result.after());
         compactChangelog.addAll(result.changelog());
+        compactNewIndexFiles.addAll(result.newIndexFiles());
+        compactDeletedIndexFiles.addAll(result.deletedIndexFiles());
 
         updateCompactDeletionFile(result.deletionFile());
     }
