@@ -542,7 +542,7 @@ public class DataSplit implements Split {
         } else if (version == 8) {
             DataFileMetaV11LegacySerializer serializer = new DataFileMetaV11LegacySerializer();
             return serializer::deserialize;
-        } else if (version == 9) {
+        } else if (version == 9 || version == 10) {
             DataFileMetaSerializer serializer = new DataFileMetaSerializer();
             return serializer::deserialize;
         } else {
