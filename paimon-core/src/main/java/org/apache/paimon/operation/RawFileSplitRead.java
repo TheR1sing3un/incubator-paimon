@@ -157,7 +157,8 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
                     split.partition(),
                     split.bucket(),
                     split.dataFiles(),
-                    split.deletionFiles().orElse(null));
+                    split.deletionFiles().orElse(null),
+                    split.vectorFileMapping());
         } else {
             IncrementalSplit split = (IncrementalSplit) s;
             if (!split.beforeFiles().isEmpty()) {
@@ -167,7 +168,8 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
                     split.partition(),
                     split.bucket(),
                     split.afterFiles(),
-                    split.afterDeletionFiles());
+                    split.afterDeletionFiles(),
+                    null);
         }
     }
 
@@ -177,12 +179,22 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
             List<DataFileMeta> files,
             List<DeletionFile> deletionFiles)
             throws IOException {
+        return createReader(partition, bucket, files, deletionFiles, null);
+    }
+
+    public RecordReader<InternalRow> createReader(
+            BinaryRow partition,
+            int bucket,
+            List<DataFileMeta> files,
+            List<DeletionFile> deletionFiles,
+            @Nullable org.apache.paimon.mergetree.compact.VectorFileMapping vectorFileMapping)
+            throws IOException {
         DeletionVector.Factory dvFactory = DeletionVector.factory(fileIO, files, deletionFiles);
         Map<String, IOExceptionSupplier<DeletionVector>> dvFactories = new HashMap<>();
         for (DataFileMeta file : files) {
             dvFactories.put(file.fileName(), () -> dvFactory.create(file.fileName()).orElse(null));
         }
-        return createReader(partition, bucket, files, dvFactories);
+        return createReader(partition, bucket, files, dvFactories, vectorFileMapping);
     }
 
     public RecordReader<InternalRow> createReader(
@@ -191,12 +203,23 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
             List<DataFileMeta> files,
             @Nullable Map<String, IOExceptionSupplier<DeletionVector>> dvFactories)
             throws IOException {
+        return createReader(partition, bucket, files, dvFactories, null);
+    }
+
+    public RecordReader<InternalRow> createReader(
+            BinaryRow partition,
+            int bucket,
+            List<DataFileMeta> files,
+            @Nullable Map<String, IOExceptionSupplier<DeletionVector>> dvFactories,
+            @Nullable org.apache.paimon.mergetree.compact.VectorFileMapping vectorFileMapping)
+            throws IOException {
         DataFilePathFactory dataFilePathFactory =
                 pathFactory.createDataFilePathFactory(partition, bucket);
 
         // Build vector CF resolver and filter out vector CF files from reading
         VectorCFReaderContext vectorCFContext =
-                VectorCFReaderContextBuilder.build(files, dataFilePathFactory, readRowType);
+                VectorCFReaderContextBuilder.build(
+                        files, dataFilePathFactory, readRowType, vectorFileMapping);
         List<DataFileMeta> scalarFiles = VectorCFReaderContextBuilder.filterScalarFiles(files);
 
         List<ReaderSupplier<InternalRow>> suppliers = new ArrayList<>();

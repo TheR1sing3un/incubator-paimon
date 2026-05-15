@@ -64,7 +64,7 @@ public class DataSplit implements Split {
 
     private static final long serialVersionUID = 7L;
     private static final long MAGIC = -2394839472490812314L;
-    private static final int VERSION = 9;
+    private static final int VERSION = 10;
 
     private long snapshotId = 0;
     private BinaryRow partition;
@@ -77,6 +77,8 @@ public class DataSplit implements Split {
 
     private boolean isStreaming = false;
     private boolean rawConvertible;
+
+    @Nullable private org.apache.paimon.mergetree.compact.VectorFileMapping vectorFileMapping;
 
     public DataSplit() {}
 
@@ -115,6 +117,11 @@ public class DataSplit implements Split {
 
     public boolean rawConvertible() {
         return rawConvertible;
+    }
+
+    @Nullable
+    public org.apache.paimon.mergetree.compact.VectorFileMapping vectorFileMapping() {
+        return vectorFileMapping;
     }
 
     public OptionalLong earliestFileCreationEpochMillis() {
@@ -440,6 +447,15 @@ public class DataSplit implements Split {
         out.writeBoolean(isStreaming);
 
         out.writeBoolean(rawConvertible);
+
+        // VERSION 10: vector file mapping
+        if (vectorFileMapping != null) {
+            String json = org.apache.paimon.utils.JsonSerdeUtil.toFlatJson(vectorFileMapping);
+            out.writeBoolean(true);
+            out.writeUTF(json);
+        } else {
+            out.writeBoolean(false);
+        }
     }
 
     public static DataSplit deserialize(DataInputView in) throws IOException {
@@ -478,6 +494,15 @@ public class DataSplit implements Split {
         boolean isStreaming = in.readBoolean();
         boolean rawConvertible = in.readBoolean();
 
+        // VERSION 10: vector file mapping
+        org.apache.paimon.mergetree.compact.VectorFileMapping vectorFileMapping = null;
+        if (version >= 10 && in.readBoolean()) {
+            String json = in.readUTF();
+            vectorFileMapping =
+                    org.apache.paimon.utils.JsonSerdeUtil.fromJson(
+                            json, org.apache.paimon.mergetree.compact.VectorFileMapping.class);
+        }
+
         DataSplit.Builder builder =
                 builder()
                         .withSnapshot(snapshotId)
@@ -487,7 +512,8 @@ public class DataSplit implements Split {
                         .withTotalBuckets(totalBuckets)
                         .withDataFiles(dataFiles)
                         .isStreaming(isStreaming)
-                        .rawConvertible(rawConvertible);
+                        .rawConvertible(rawConvertible)
+                        .withVectorFileMapping(vectorFileMapping);
 
         if (dataDeletionFiles != null) {
             builder.withDataDeletionFiles(dataDeletionFiles);
@@ -586,6 +612,12 @@ public class DataSplit implements Split {
 
         public Builder rawConvertible(boolean rawConvertible) {
             this.split.rawConvertible = rawConvertible;
+            return this;
+        }
+
+        public Builder withVectorFileMapping(
+                @Nullable org.apache.paimon.mergetree.compact.VectorFileMapping mapping) {
+            this.split.vectorFileMapping = mapping;
             return this;
         }
 

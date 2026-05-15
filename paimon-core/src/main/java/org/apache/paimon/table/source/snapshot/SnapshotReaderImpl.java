@@ -46,6 +46,9 @@ import org.apache.paimon.manifest.FileKind;
 import org.apache.paimon.manifest.ManifestEntry;
 import org.apache.paimon.manifest.ManifestFileMeta;
 import org.apache.paimon.manifest.PartitionEntry;
+import org.apache.paimon.mergetree.compact.VectorCFCompactRewriter;
+import org.apache.paimon.mergetree.compact.VectorFileMapping;
+import org.apache.paimon.mergetree.compact.VectorFileMappingIO;
 import org.apache.paimon.metrics.MetricRegistry;
 import org.apache.paimon.operation.FileStoreScan;
 import org.apache.paimon.operation.ManifestsReader;
@@ -501,6 +504,9 @@ public class SnapshotReaderImpl implements SnapshotReader {
                                     ? scanDvIndex(snapshot, toPartBuckets(entries))
                                     : Collections.emptyMap());
         }
+
+        // Load vector file mapping from index manifest (if any)
+        VectorFileMapping vectorFileMapping = loadVectorFileMapping(snapshot);
         for (Map.Entry<BinaryRow, Map<Integer, List<ManifestEntry>>> entry : entries.entrySet()) {
             BinaryRow partition = entry.getKey();
             Map<Integer, List<ManifestEntry>> buckets = entry.getValue();
@@ -545,7 +551,8 @@ public class SnapshotReaderImpl implements SnapshotReader {
                     }
                     builder.withDataFiles(dataFiles)
                             .rawConvertible(splitGroup.rawConvertible)
-                            .withBucketPath(bucketPath);
+                            .withBucketPath(bucketPath)
+                            .withVectorFileMapping(vectorFileMapping);
                     if (deletionVectors && deletionFilesMap != null) {
                         builder.withDataDeletionFiles(
                                 getDeletionFiles(
@@ -913,6 +920,40 @@ public class SnapshotReaderImpl implements SnapshotReader {
                                 e.getValue().keySet().stream()
                                         .map(bucket -> Pair.of(e.getKey(), bucket)))
                 .collect(Collectors.toSet());
+    }
+
+    @Nullable
+    private VectorFileMapping loadVectorFileMapping(@Nullable Snapshot snapshot) {
+        if (snapshot == null || snapshot.indexManifest() == null) {
+            return null;
+        }
+        try {
+            List<org.apache.paimon.manifest.IndexManifestEntry> entries =
+                    indexFileHandler.scan(
+                            snapshot, VectorCFCompactRewriter.VECTOR_FILE_MAPPING_TYPE);
+            if (entries.isEmpty()) {
+                return null;
+            }
+            VectorFileMapping.Builder builder = VectorFileMapping.builder();
+            FileIO fileIO = snapshotManager.fileIO();
+            for (org.apache.paimon.manifest.IndexManifestEntry entry : entries) {
+                Path mappingPath = indexFileHandler.filePath(entry);
+                try {
+                    VectorFileMapping partial = VectorFileMappingIO.read(fileIO, mappingPath);
+                    builder.addAll(partial);
+                } catch (Exception e) {
+                    LOG.warn(
+                            "Failed to read vector file mapping {}",
+                            entry.indexFile().fileName(),
+                            e);
+                }
+            }
+            VectorFileMapping result = builder.build();
+            return result.size() > 0 ? result : null;
+        } catch (Exception e) {
+            LOG.warn("Failed to load vector file mapping from index manifest", e);
+            return null;
+        }
     }
 
     private Map<Pair<BinaryRow, Integer>, Map<String, DeletionFile>> scanDvIndex(

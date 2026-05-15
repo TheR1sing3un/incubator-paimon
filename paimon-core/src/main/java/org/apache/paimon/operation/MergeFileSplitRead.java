@@ -248,7 +248,10 @@ public class MergeFileSplitRead implements SplitRead<KeyValue> {
                         readerFactoryBuilder.keyType(), readerFactoryBuilder.readValueType());
         VectorCFReaderContext vectorCFContext =
                 VectorCFReaderContextBuilder.build(
-                        split.dataFiles(), dataFilePathFactory, kvReadType);
+                        split.dataFiles(),
+                        dataFilePathFactory,
+                        kvReadType,
+                        split.vectorFileMapping());
 
         if (split.isStreaming() || split.bucket() == BucketMode.POSTPONE_BUCKET) {
             return createNoMergeReader(
