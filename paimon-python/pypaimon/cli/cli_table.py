@@ -608,7 +608,49 @@ def add_table_subcommands(table_parser):
         help='Maximum number of results to display (default: 100)'
     )
     read_parser.set_defaults(func=cmd_table_read)
-    
+
+    # table explain command
+    from pypaimon.cli.cli_explain import cmd_table_explain
+    explain_parser = table_subparsers.add_parser(
+        'explain',
+        help='Show scan plan metrics (splits, files, rows, skew) without reading data'
+    )
+    explain_parser.add_argument(
+        'table',
+        help='Table identifier in format: database.table'
+    )
+    explain_parser.add_argument(
+        '--select', '-s',
+        type=str,
+        default=None,
+        help='Project columns (comma-separated) before planning'
+    )
+    explain_parser.add_argument(
+        '--where', '-w',
+        type=str,
+        default=None,
+        help='Filter condition in SQL-like syntax (same grammar as `table read`)'
+    )
+    explain_parser.add_argument(
+        '--limit', '-l',
+        type=int,
+        default=None,
+        help='Push-down limit for the scan plan (optional)'
+    )
+    explain_parser.add_argument(
+        '--output', '-o',
+        choices=['text', 'json'],
+        default='text',
+        help='Output format (default: text)'
+    )
+    explain_parser.add_argument(
+        '--top-k', '-k',
+        type=int,
+        default=5,
+        help='How many top splits to show in text mode (default: 5)'
+    )
+    explain_parser.set_defaults(func=cmd_table_explain)
+
     # table get command
     get_parser = table_subparsers.add_parser('get', help='Get table schema information')
     get_parser.add_argument(

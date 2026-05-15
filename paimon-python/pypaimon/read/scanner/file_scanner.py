@@ -252,8 +252,15 @@ class FileScanner:
                 self._deletion_files_map(entries)
             )
 
+        predicate_repr = repr(self.predicate) if self.predicate is not None else None
+
         if not entries:
-            return Plan([])
+            return Plan(
+                [],
+                plan_duration_ms=int(time.time() * 1000 - start_ms),
+                num_manifest_entries=0,
+                predicate_repr=predicate_repr,
+            )
 
         # Configure sharding if needed
         if self.idx_of_this_subtask is not None:
@@ -270,7 +277,12 @@ class FileScanner:
             "File store scan plan completed in %d ms. Files size: %d",
             duration_ms, len(entries)
         )
-        return Plan(splits)
+        return Plan(
+            splits,
+            plan_duration_ms=duration_ms,
+            num_manifest_entries=len(entries),
+            predicate_repr=predicate_repr,
+        )
 
     def _create_data_evolution_split_generator(self):
         row_ranges = None
