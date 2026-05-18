@@ -168,16 +168,25 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                 }
             }
 
-            if (columnVectorFiles.size() < options.vectorCFCompactMinFiles()) {
-                // Keep identity mappings for unmerged files
-                for (DataFileMeta f : columnVectorFiles) {
+            // Only merge small files (below target rows). Large files are "done".
+            long targetRows = options.vectorColumnFamilyTargetFileRows();
+            List<DataFileMeta> smallFiles = new ArrayList<>();
+            for (DataFileMeta f : columnVectorFiles) {
+                if (targetRows <= 0 || f.rowCount() < targetRows) {
+                    smallFiles.add(f);
+                }
+            }
+
+            if (smallFiles.size() < options.vectorCFCompactMinFiles()) {
+                // Keep identity mappings for unmerged small files
+                for (DataFileMeta f : smallFiles) {
                     mappingBuilder.addIdentity(
                             f.fileName(), dataFilePathFactory.toPath(f).toString());
                 }
                 continue;
             }
 
-            long schemaId = columnVectorFiles.get(0).schemaId();
+            long schemaId = smallFiles.get(0).schemaId();
             VectorFileMerger merger =
                     new VectorFileMerger(
                             fileIO,
@@ -187,39 +196,41 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                             colInfo.fieldName,
                             dataFilePathFactory);
 
-            // Merge all vectors (no live-ref filtering — scalar files not rewritten)
-            Map<Integer, Set<Long>> allRefs = new HashMap<>();
-            for (DataFileMeta f : columnVectorFiles) {
-                int fileId = f.fileName().hashCode();
-                Set<Long> allRows = new HashSet<>();
-                for (long i = 0; i < f.rowCount(); i++) {
-                    allRows.add(i);
+            // Merge small files with target row limit:
+            // accumulate files until first exceeds targetRows → seal output, start new one
+            List<VectorFileMerger.MergeAllResult> mergeResults =
+                    merger.mergeAllWithTargetRows(smallFiles, targetRows);
+
+            if (!mergeResults.isEmpty()) {
+                vectorBefore.addAll(smallFiles);
+                for (VectorFileMerger.MergeAllResult mr : mergeResults) {
+                    vectorAfter.add(mr.newFileMeta());
+
+                    // Build mapping from source file offsets
+                    String mergedFilePath = dataFilePathFactory.toPath(mr.newFileMeta()).toString();
+                    for (VectorFileMerger.MergeAllResult.SourceMapping sm : mr.sourceMappings()) {
+                        mappingBuilder.addMerged(
+                                sm.sourceFileName(), mergedFilePath, sm.baseOffset());
+                    }
+
+                    // Merge pkmaps for this output file's sources
+                    List<DataFileMeta> batchSources = new ArrayList<>();
+                    for (VectorFileMerger.MergeAllResult.SourceMapping sm : mr.sourceMappings()) {
+                        for (DataFileMeta f : smallFiles) {
+                            if (f.fileName().equals(sm.sourceFileName())) {
+                                batchSources.add(f);
+                                break;
+                            }
+                        }
+                    }
+                    mergePkMaps(bucketPath, mr.newFileMeta().fileName(), batchSources);
                 }
-                allRefs.put(fileId, allRows);
-            }
-
-            VectorFileMerger.MergeResult mergeResult = merger.merge(columnVectorFiles, allRefs);
-            if (mergeResult != null) {
-                vectorBefore.addAll(columnVectorFiles);
-                vectorAfter.add(mergeResult.newFileMeta());
-
-                // Build mapping: old fileIds → new file + offsets
-                String mergedFilePath =
-                        dataFilePathFactory.toPath(mergeResult.newFileMeta()).toString();
-                long offset = 0;
-                for (DataFileMeta f : columnVectorFiles) {
-                    mappingBuilder.addMerged(f.fileName(), mergedFilePath, offset);
-                    offset += f.rowCount();
-                }
-
-                // Merge pkmaps: concatenate each file's pkmap body in order
-                mergePkMaps(bucketPath, mergeResult.newFileMeta().fileName(), columnVectorFiles);
 
                 LOG.info(
-                        "Normal compaction: vector column {} merged {} files -> {}",
+                        "Normal compaction: vector column {} merged {} small files -> {} output files",
                         colInfo.fieldName,
-                        columnVectorFiles.size(),
-                        mergeResult.newFileMeta().fileName());
+                        smallFiles.size(),
+                        mergeResults.size());
             }
         }
 

@@ -690,27 +690,14 @@ public class AccelerateIndexBuildOrchestrator {
                             new AccelerateIndexDataFileInfo(
                                     vectorFileMeta.fileName(), actualRowCount, 0));
 
-            // Idempotent check
+            // Idempotent check — skip if already built
             AccelerateIndexEntry coveredEntry =
                     findCoveredEntry(meta, singleFileInfo, columnId, algorithm, snapshotId);
-            if (coveredEntry != null && coveredEntry.buildSnapshotId() <= snapshotId) {
-                if (includeUnfilled
-                        && coveredEntry.state() == AccelerateIndexState.READY
-                        && !coveredEntry.dataFiles().isEmpty()) {
-                    long indexedRows = coveredEntry.dataFiles().get(0).rowCount();
-                    if (indexedRows != actualRowCount) {
-                        // File has grown since last build — delete old index and rebuild
-                        deleteOldIndexFile(fileIO, bucketPath, coveredEntry);
-                        casRemoveEntryById(fileIO, metaPath, coveredEntry.indexId());
-                        meta = AccelerateIndexMetaIO.readOrEmpty(fileIO, metaPath);
-                    } else {
-                        skipped++;
-                        continue;
-                    }
-                } else {
-                    skipped++;
-                    continue;
-                }
+            if (coveredEntry != null
+                    && coveredEntry.state() == AccelerateIndexState.READY
+                    && coveredEntry.buildSnapshotId() <= snapshotId) {
+                skipped++;
+                continue;
             }
 
             long startTime = System.currentTimeMillis();
@@ -1116,23 +1103,14 @@ public class AccelerateIndexBuildOrchestrator {
             }
         }
 
-        // Filter for sealed files (check actual file size on filesystem)
+        // In the new immutable model, all vector files are eligible for index build.
+        // No sealed/unfilled distinction — every file gets an index.
         List<Map.Entry<DataFileMeta, Long>> result = new ArrayList<>();
         for (DataFileMeta meta : seen.values()) {
             try {
                 Path filePath = new Path(bucketPath, meta.fileName());
                 long actualSize = fileIO.getFileSize(filePath);
-                if (includeUnfilled) {
-                    result.add(new java.util.AbstractMap.SimpleEntry<>(meta, actualSize));
-                } else {
-                    long actualRows = bytesPerVector > 0 ? actualSize / bytesPerVector : 0;
-                    boolean noLimit = targetFileSize <= 0 && targetFileRows <= 0;
-                    boolean sealedBySize = targetFileSize > 0 && actualSize >= targetFileSize;
-                    boolean sealedByRows = targetFileRows > 0 && actualRows >= targetFileRows;
-                    if (noLimit || sealedBySize || sealedByRows) {
-                        result.add(new java.util.AbstractMap.SimpleEntry<>(meta, actualSize));
-                    }
-                }
+                result.add(new java.util.AbstractMap.SimpleEntry<>(meta, actualSize));
             } catch (IOException e) {
                 LOG.warn("Cannot check file size for {}, skipping", meta.fileName(), e);
             }

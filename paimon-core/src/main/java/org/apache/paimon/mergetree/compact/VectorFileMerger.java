@@ -24,6 +24,7 @@ import org.apache.paimon.fs.PositionOutputStream;
 import org.apache.paimon.fs.SeekableInputStream;
 import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.io.DataFilePathFactory;
+import org.apache.paimon.manifest.FileSource;
 import org.apache.paimon.stats.SimpleStats;
 import org.apache.paimon.utils.IOUtils;
 
@@ -162,7 +163,7 @@ public class VectorFileMerger {
         return new MergeResult(newFileMeta, remapTable);
     }
 
-    /** Result of a vector file merge operation. */
+    /** Result of a vector file merge operation (with live-ref filtering). */
     public static class MergeResult {
         private final DataFileMeta newFileMeta;
         private final VectorDescriptorRemapTable remapTable;
@@ -178,6 +179,157 @@ public class VectorFileMerger {
 
         public VectorDescriptorRemapTable remapTable() {
             return remapTable;
+        }
+    }
+
+    /**
+     * Merge small vector files by concatenating whole files until the accumulated row count exceeds
+     * targetFileRows. Once exceeded, seal the current output and start a new one for remaining
+     * files. This operates at file granularity (not row granularity).
+     *
+     * <p>Example: files [A(5万), B(8万), C(6万), D(9万), E(7万)], target=20万:
+     *
+     * <ul>
+     *   <li>Output 1: A+B+C+D = 28万 (first exceeds 20万 → seal)
+     *   <li>Output 2: E = 7万 (below target, stays as-is for future merge)
+     * </ul>
+     *
+     * @param filesToMerge source files (only those with rowCount < targetFileRows)
+     * @param targetFileRows threshold; output is sealed when accumulated rows >= this value
+     * @return list of merge results (one per output file)
+     */
+    public List<MergeAllResult> mergeAllWithTargetRows(
+            List<DataFileMeta> filesToMerge, long targetFileRows) throws IOException {
+        if (filesToMerge.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        List<MergeAllResult> results = new ArrayList<>();
+        byte[] buffer = new byte[bytesPerVector];
+
+        List<DataFileMeta> currentBatch = new ArrayList<>();
+        long currentBatchRows = 0;
+
+        for (DataFileMeta fileMeta : filesToMerge) {
+            currentBatch.add(fileMeta);
+            currentBatchRows += fileMeta.rowCount();
+
+            if (targetFileRows > 0 && currentBatchRows >= targetFileRows) {
+                // Seal this batch into one output file
+                MergeAllResult result = writeBatch(currentBatch, buffer);
+                if (result != null) {
+                    results.add(result);
+                }
+                currentBatch = new ArrayList<>();
+                currentBatchRows = 0;
+            }
+        }
+
+        // Remaining files that didn't reach target — still merge them into one file
+        // (they'll be < target and eligible for future merge, unless only 1 file remains)
+        if (currentBatch.size() >= 2) {
+            MergeAllResult result = writeBatch(currentBatch, buffer);
+            if (result != null) {
+                results.add(result);
+            }
+        }
+        // If only 1 file remains, leave it as-is (no merge needed)
+
+        return results;
+    }
+
+    private MergeAllResult writeBatch(List<DataFileMeta> batch, byte[] buffer) throws IOException {
+        Path outPath = pathFactory.newVectorPath("bin");
+        long totalRows = 0;
+        List<MergeAllResult.SourceMapping> mappings = new ArrayList<>();
+
+        PositionOutputStream out = fileIO.newOutputStream(outPath, false);
+        try {
+            for (DataFileMeta fileMeta : batch) {
+                long baseOffset = totalRows;
+                mappings.add(new MergeAllResult.SourceMapping(fileMeta.fileName(), baseOffset));
+
+                Path filePath = new Path(bucketPath, fileMeta.fileName());
+                try (SeekableInputStream in = fileIO.newInputStream(filePath)) {
+                    for (long row = 0; row < fileMeta.rowCount(); row++) {
+                        in.seek(row * bytesPerVector);
+                        IOUtils.readFully(in, buffer);
+                        out.write(buffer);
+                        totalRows++;
+                    }
+                }
+            }
+        } catch (IOException e) {
+            IOUtils.closeQuietly(out);
+            fileIO.deleteQuietly(outPath);
+            throw e;
+        } finally {
+            out.close();
+        }
+
+        if (totalRows == 0) {
+            fileIO.deleteQuietly(outPath);
+            return null;
+        }
+
+        DataFileMeta newMeta =
+                DataFileMeta.forAppend(
+                        outPath.getName(),
+                        totalRows * bytesPerVector,
+                        totalRows,
+                        SimpleStats.EMPTY_STATS,
+                        0L,
+                        0L,
+                        schemaId,
+                        Collections.emptyList(),
+                        null,
+                        FileSource.COMPACT,
+                        null,
+                        null,
+                        null,
+                        Collections.singletonList(vectorColumnName));
+
+        LOG.info(
+                "Merge batch: {} files → {} ({} rows)", batch.size(), outPath.getName(), totalRows);
+
+        return new MergeAllResult(newMeta, mappings);
+    }
+
+    /** Result of mergeAllWithTargetRows for a single output file. */
+    public static class MergeAllResult {
+        private final DataFileMeta newFileMeta;
+        private final List<SourceMapping> sourceMappings;
+
+        public MergeAllResult(DataFileMeta newFileMeta, List<SourceMapping> sourceMappings) {
+            this.newFileMeta = newFileMeta;
+            this.sourceMappings = sourceMappings;
+        }
+
+        public DataFileMeta newFileMeta() {
+            return newFileMeta;
+        }
+
+        public List<SourceMapping> sourceMappings() {
+            return sourceMappings;
+        }
+
+        /** Mapping from a source file to its starting row offset in the output file. */
+        public static class SourceMapping {
+            private final String sourceFileName;
+            private final long baseOffset;
+
+            public SourceMapping(String sourceFileName, long baseOffset) {
+                this.sourceFileName = sourceFileName;
+                this.baseOffset = baseOffset;
+            }
+
+            public String sourceFileName() {
+                return sourceFileName;
+            }
+
+            public long baseOffset() {
+                return baseOffset;
+            }
         }
     }
 }
