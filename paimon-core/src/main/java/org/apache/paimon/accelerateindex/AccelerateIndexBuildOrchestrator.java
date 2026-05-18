@@ -740,23 +740,33 @@ public class AccelerateIndexBuildOrchestrator {
                 }
 
                 // Build .pkmap (scan scalar files to find rowIndex→PK mapping)
+                // Skip if pkmap already exists (e.g., merged during compaction)
                 if (!result.isSkipped()) {
-                    Path pkMapPath =
-                            buildPkMap(
-                                    fileIO,
-                                    table,
-                                    bucketPath,
-                                    vectorFileMeta.fileName(),
-                                    columnId,
-                                    algorithm,
-                                    actualRowCount,
-                                    scalarFiles,
-                                    ctx.vectorColumnIndex(),
-                                    pkRowType,
-                                    firstSplit.partition(),
-                                    firstSplit.bucket(),
-                                    snapshotId);
-                    result = result.withPkMapFilePath(pkMapPath);
+                    String sidecarName =
+                            AccelerateIndexConstants.pkmapSidecarName(vectorFileMeta.fileName());
+                    Path existingSidecar = new Path(bucketPath, sidecarName);
+                    if (fileIO.exists(existingSidecar)) {
+                        LOG.info(
+                                "Skipping pkmap build for {} — sidecar already exists",
+                                vectorFileMeta.fileName());
+                    } else {
+                        Path pkMapPath =
+                                buildPkMap(
+                                        fileIO,
+                                        table,
+                                        bucketPath,
+                                        vectorFileMeta.fileName(),
+                                        columnId,
+                                        algorithm,
+                                        actualRowCount,
+                                        scalarFiles,
+                                        ctx.vectorColumnIndex(),
+                                        pkRowType,
+                                        firstSplit.partition(),
+                                        firstSplit.bucket(),
+                                        snapshotId);
+                        result = result.withPkMapFilePath(pkMapPath);
+                    }
                 }
 
                 long buildTimeMs = System.currentTimeMillis() - startTime;

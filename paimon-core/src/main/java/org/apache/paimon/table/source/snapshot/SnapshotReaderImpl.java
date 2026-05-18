@@ -133,6 +133,8 @@ public class SnapshotReaderImpl implements SnapshotReader {
 
     @Nullable private Map<String, String> cachedPkmapPaths;
 
+    @Nullable private VectorFileMapping cachedVectorFileMapping;
+
     public SnapshotReaderImpl(
             FileStoreScan scan,
             TableSchema tableSchema,
@@ -383,6 +385,7 @@ public class SnapshotReaderImpl implements SnapshotReader {
         this.cachedDvIndex = cache.dvIndex();
         this.cachedIndexMetas = cache.indexMetas();
         this.cachedPkmapPaths = cache.vectorPkmapPaths();
+        this.cachedVectorFileMapping = cache.vectorFileMapping();
         return this;
     }
 
@@ -444,6 +447,9 @@ public class SnapshotReaderImpl implements SnapshotReader {
             }
         }
 
+        // Load vector file mapping for VCF search
+        VectorFileMapping vecMapping = loadVectorFileMapping(snapshot);
+
         return new PlanCache(
                 snapshot,
                 snapshot.schemaId(),
@@ -451,7 +457,8 @@ public class SnapshotReaderImpl implements SnapshotReader {
                 dvIdx,
                 idxMetas,
                 bucketPathMap,
-                vectorPkmapPaths);
+                vectorPkmapPaths,
+                vecMapping);
     }
 
     @Override
@@ -620,8 +627,11 @@ public class SnapshotReaderImpl implements SnapshotReader {
                                 ? scanDvIndex(snapshot, toPartBuckets(grouped))
                                 : Collections.emptyMap());
 
-        // Load vector file mapping for descriptor resolution
-        VectorFileMapping vectorFileMapping = loadVectorFileMapping(snapshot);
+        // Load vector file mapping for descriptor resolution (use cache if available)
+        VectorFileMapping vectorFileMapping =
+                cachedVectorFileMapping != null
+                        ? cachedVectorFileMapping
+                        : loadVectorFileMapping(snapshot);
 
         List<VectorCFSearchSplit> result = new ArrayList<>();
 

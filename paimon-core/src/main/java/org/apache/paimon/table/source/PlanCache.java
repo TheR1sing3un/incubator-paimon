@@ -67,6 +67,8 @@ public class PlanCache implements Serializable {
 
     private final Map<String, String> vectorPkmapPaths;
 
+    @Nullable private final org.apache.paimon.mergetree.compact.VectorFileMapping vectorFileMapping;
+
     public PlanCache(
             @Nullable Snapshot snapshot,
             long schemaId,
@@ -75,10 +77,29 @@ public class PlanCache implements Serializable {
             Map<String, AccelerateIndexMeta> indexMetas,
             Map<Pair<BinaryRow, Integer>, String> bucketPaths,
             Map<String, String> vectorPkmapPaths) {
+        this(
+                snapshot,
+                schemaId,
+                resolvedEntries,
+                dvIndex,
+                indexMetas,
+                bucketPaths,
+                vectorPkmapPaths,
+                null);
+    }
+
+    public PlanCache(
+            @Nullable Snapshot snapshot,
+            long schemaId,
+            List<ManifestEntry> resolvedEntries,
+            Map<Pair<BinaryRow, Integer>, Map<String, DeletionFile>> dvIndex,
+            Map<String, AccelerateIndexMeta> indexMetas,
+            Map<Pair<BinaryRow, Integer>, String> bucketPaths,
+            Map<String, String> vectorPkmapPaths,
+            @Nullable org.apache.paimon.mergetree.compact.VectorFileMapping vectorFileMapping) {
         this.snapshot = snapshot;
         this.schemaId = schemaId;
         this.resolvedEntries = Collections.unmodifiableList(resolvedEntries);
-        // Deep-wrap inner DV maps as unmodifiable
         java.util.Map<Pair<BinaryRow, Integer>, Map<String, DeletionFile>> wrapped =
                 new java.util.HashMap<>();
         dvIndex.forEach((k, v) -> wrapped.put(k, Collections.unmodifiableMap(v)));
@@ -86,6 +107,7 @@ public class PlanCache implements Serializable {
         this.indexMetas = Collections.unmodifiableMap(indexMetas);
         this.bucketPaths = Collections.unmodifiableMap(bucketPaths);
         this.vectorPkmapPaths = Collections.unmodifiableMap(vectorPkmapPaths);
+        this.vectorFileMapping = vectorFileMapping;
     }
 
     public static PlanCache empty() {
@@ -130,6 +152,11 @@ public class PlanCache implements Serializable {
 
     public Map<String, String> vectorPkmapPaths() {
         return vectorPkmapPaths;
+    }
+
+    @Nullable
+    public org.apache.paimon.mergetree.compact.VectorFileMapping vectorFileMapping() {
+        return vectorFileMapping;
     }
 
     public boolean isEmpty() {

@@ -341,7 +341,12 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         List<DataFileMeta> allAfter = new ArrayList<>(scalarResult.after());
         allAfter.addAll(allExternalAfter);
 
-        return new CompactResult(allBefore, allAfter, scalarResult.changelog());
+        return new CompactResult(
+                allBefore,
+                allAfter,
+                scalarResult.changelog(),
+                scalarResult.newIndexFiles(),
+                scalarResult.deletedIndexFiles());
     }
 
     private List<VectorColumnInfo> detectVectorColumns() {
