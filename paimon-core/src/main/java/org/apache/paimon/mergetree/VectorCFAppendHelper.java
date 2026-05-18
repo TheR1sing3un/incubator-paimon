@@ -52,6 +52,7 @@ import java.util.stream.Collectors;
  *   <li>On failure/close without commit: delete temp and lock
  * </ol>
  */
+@Deprecated
 public class VectorCFAppendHelper {
 
     private static final Logger LOG = LoggerFactory.getLogger(VectorCFAppendHelper.class);
