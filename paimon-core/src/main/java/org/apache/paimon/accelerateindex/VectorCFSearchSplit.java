@@ -296,6 +296,17 @@ public class VectorCFSearchSplit implements Split {
             out.writeInt(-1);
         }
 
+        // FileId to base offset (nullable map)
+        if (fileIdToBaseOffset != null) {
+            out.writeInt(fileIdToBaseOffset.size());
+            for (java.util.Map.Entry<Integer, Long> e : fileIdToBaseOffset.entrySet()) {
+                out.writeInt(e.getKey());
+                out.writeLong(e.getValue());
+            }
+        } else {
+            out.writeInt(-1);
+        }
+
         return out.getCopyOfBuffer();
     }
 
@@ -356,19 +367,34 @@ public class VectorCFSearchSplit implements Split {
             }
         }
 
-        return new VectorCFSearchSplit(
-                vectorFileName,
-                scalarFiles,
-                deletionFiles,
-                search,
-                columnId,
-                partition,
-                bucket,
-                bucketPath,
-                snapshotId,
-                resolvedIndexPath,
-                resolvedPkmapPath,
-                matchingFileIds);
+        // FileId to base offset (nullable map)
+        java.util.Map<Integer, Long> fileIdToBaseOffset = null;
+        if (in.available() > 0) {
+            int count = in.readInt();
+            if (count >= 0) {
+                fileIdToBaseOffset = new java.util.HashMap<>(count);
+                for (int i = 0; i < count; i++) {
+                    fileIdToBaseOffset.put(in.readInt(), in.readLong());
+                }
+            }
+        }
+
+        VectorCFSearchSplit split =
+                new VectorCFSearchSplit(
+                        vectorFileName,
+                        scalarFiles,
+                        deletionFiles,
+                        search,
+                        columnId,
+                        partition,
+                        bucket,
+                        bucketPath,
+                        snapshotId,
+                        resolvedIndexPath,
+                        resolvedPkmapPath,
+                        matchingFileIds);
+        split.setFileIdToBaseOffset(fileIdToBaseOffset);
+        return split;
     }
 
     @Override

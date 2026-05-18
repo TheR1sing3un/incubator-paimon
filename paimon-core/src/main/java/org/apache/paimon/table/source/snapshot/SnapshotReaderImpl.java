@@ -976,7 +976,8 @@ public class SnapshotReaderImpl implements SnapshotReader {
             matchingIds.add(vectorFileName.hashCode());
             baseOffsets.put(vectorFileName.hashCode(), 0L);
             for (VectorFileMapping.MappingEntry entry : mapping.mappings()) {
-                if (entry.targetFilePath().endsWith(vectorFileName)) {
+                if (entry.targetFilePath().endsWith("/" + vectorFileName)
+                        || entry.targetFilePath().equals(vectorFileName)) {
                     matchingIds.add(entry.fileId());
                     baseOffsets.put(entry.fileId(), entry.baseOffset());
                 }
