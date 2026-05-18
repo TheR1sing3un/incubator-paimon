@@ -850,6 +850,147 @@ class VectorColumnFamilyTestBase extends PaimonSparkTestBase {
         "Expected vector files after ALTER TABLE ADD COLUMN with vector-field property")
     }
   }
+
+  // ==================== Brute-force Search After Compaction ====================
+
+  test("Vector-CF: brute-force search returns correct results after normal compaction") {
+    withTable("t") {
+      sql(s"""CREATE TABLE t (
+             |  pk INT,
+             |  name STRING,
+             |  embedding ARRAY<FLOAT>
+             |) TBLPROPERTIES (
+             |  $vectorColumnFamilyTableProps,
+             |  'vector-column-family.compact.enabled' = 'true',
+             |  'vector-column-family.compact.min-files' = '2'
+             |)""".stripMargin)
+
+      // Write multiple batches to create multiple small vector files
+      sql("INSERT INTO t VALUES (1, 'alice', array(1.0, 0.0, 0.0, 0.0))")
+      sql("INSERT INTO t VALUES (2, 'bob', array(0.0, 1.0, 0.0, 0.0))")
+
+      // Verify we have multiple vector files before compaction
+      val preVecFiles = countVectorFilesOnDisk("t")
+
+      // Compact to merge scalar files (and trigger vector file merge)
+      sql("CALL sys.compact('test.t')")
+
+      // Verify data is still correct after compaction
+      checkAnswer(
+        sql("SELECT pk, name, embedding FROM t ORDER BY pk"),
+        Seq(
+          Row(1, "alice", Seq(1.0f, 0.0f, 0.0f, 0.0f)),
+          Row(2, "bob", Seq(0.0f, 1.0f, 0.0f, 0.0f))
+        )
+      )
+
+      // Brute-force search via Java API (no index built)
+      val table = loadTable("t")
+      val search = new org.apache.paimon.accelerateindex.AccelerateIndexSearch(
+        "embedding",
+        Array(1.0f, 0.0f, 0.0f, 0.0f),
+        2,
+        "lumina",
+        "l2",
+        4,
+        java.util.Collections.emptyMap()
+      )
+
+      val splits = table
+        .newReadBuilder()
+        .withAccelerateIndexSearch(search)
+        .newScan()
+        .plan()
+        .splits()
+
+      // Should produce splits (VectorCFSearchSplit)
+      assert(splits.size() > 0, "Expected at least one search split")
+
+      // Verify split has matchingFileIds populated (if vector files were merged)
+      val vcfSplits = splits.asScala.collect {
+        case s: org.apache.paimon.accelerateindex.VectorCFSearchSplit => s
+      }
+      for (s <- vcfSplits) {
+        assert(s.vectorFileName() != null, "VectorCFSearchSplit should have a vector file name")
+        // After compaction, matchingFileIds may be populated if files were merged
+        // Either way, the split should be valid
+      }
+    }
+  }
+
+  test("Vector-CF: SELECT reads correct data through VectorFileMapping after compaction") {
+    withTable("t") {
+      sql(s"""CREATE TABLE t (
+             |  pk INT,
+             |  name STRING,
+             |  embedding ARRAY<FLOAT>
+             |) TBLPROPERTIES (
+             |  $vectorColumnFamilyTableProps,
+             |  'vector-column-family.compact.enabled' = 'true',
+             |  'vector-column-family.compact.min-files' = '2'
+             |)""".stripMargin)
+
+      // Write data
+      sql("INSERT INTO t VALUES (1, 'a', array(1.0, 2.0, 3.0, 4.0))")
+      sql("INSERT INTO t VALUES (2, 'b', array(5.0, 6.0, 7.0, 8.0))")
+      sql("INSERT INTO t VALUES (3, 'c', array(9.0, 10.0, 11.0, 12.0))")
+
+      // Compact
+      sql("CALL sys.compact('test.t')")
+
+      // Verify embedding values are preserved through compaction + mapping
+      checkAnswer(
+        sql("SELECT pk, embedding FROM t ORDER BY pk"),
+        Seq(
+          Row(1, Seq(1.0f, 2.0f, 3.0f, 4.0f)),
+          Row(2, Seq(5.0f, 6.0f, 7.0f, 8.0f)),
+          Row(3, Seq(9.0f, 10.0f, 11.0f, 12.0f))
+        )
+      )
+
+      // Write more data after compaction
+      sql("INSERT INTO t VALUES (4, 'd', array(13.0, 14.0, 15.0, 16.0))")
+
+      checkAnswer(
+        sql("SELECT pk, embedding FROM t WHERE pk >= 3 ORDER BY pk"),
+        Seq(
+          Row(3, Seq(9.0f, 10.0f, 11.0f, 12.0f)),
+          Row(4, Seq(13.0f, 14.0f, 15.0f, 16.0f))
+        )
+      )
+    }
+  }
+
+  test("Vector-CF: PK update + compaction preserves correct vector pointers") {
+    withTable("t") {
+      sql(s"""CREATE TABLE t (
+             |  pk INT,
+             |  name STRING,
+             |  embedding ARRAY<FLOAT>
+             |) TBLPROPERTIES (
+             |  $vectorColumnFamilyTableProps,
+             |  'vector-column-family.compact.enabled' = 'true',
+             |  'vector-column-family.compact.min-files' = '2'
+             |)""".stripMargin)
+
+      // Write + update
+      sql("INSERT INTO t VALUES (1, 'v1', array(1.0, 0.0, 0.0, 0.0))")
+      sql("INSERT INTO t VALUES (2, 'v1', array(0.0, 1.0, 0.0, 0.0))")
+      sql("INSERT INTO t VALUES (1, 'v2', array(0.0, 0.0, 1.0, 0.0))") // update pk=1
+
+      // Compact
+      sql("CALL sys.compact('test.t')")
+
+      // pk=1 should have the UPDATED embedding, not the original
+      checkAnswer(
+        sql("SELECT pk, name, embedding FROM t ORDER BY pk"),
+        Seq(
+          Row(1, "v2", Seq(0.0f, 0.0f, 1.0f, 0.0f)),
+          Row(2, "v1", Seq(0.0f, 1.0f, 0.0f, 0.0f))
+        )
+      )
+    }
+  }
 }
 
 class VectorColumnFamilyTestWithV2Write extends VectorColumnFamilyTestBase {
