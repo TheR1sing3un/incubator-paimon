@@ -462,7 +462,10 @@ public class VectorCFSearchHelper {
                         if (VectorDescriptor.isVectorDescriptor(descBytes)) {
                             int fileId = VectorDescriptor.extractFileId(descBytes);
                             if (split.matchesFileId(fileId)) {
-                                long rowIdx = VectorDescriptor.extractRowIndex(descBytes);
+                                long rowIdx =
+                                        split.resolveRowIndex(
+                                                fileId,
+                                                VectorDescriptor.extractRowIndex(descBytes));
                                 Float score = rowIndexToScore.get(rowIdx);
                                 if (score != null) {
                                     matchedPositions
@@ -849,7 +852,10 @@ public class VectorCFSearchHelper {
                             if (VectorDescriptor.isVectorDescriptor(descBytes)) {
                                 int fileId = VectorDescriptor.extractFileId(descBytes);
                                 if (split.matchesFileId(fileId)) {
-                                    long rowIndex = VectorDescriptor.extractRowIndex(descBytes);
+                                    long rowIndex =
+                                            split.resolveRowIndex(
+                                                    fileId,
+                                                    VectorDescriptor.extractRowIndex(descBytes));
                                     Float score = topKRowIndexToScore.get(rowIndex);
                                     if (score != null) {
                                         matchedPositions.add(
