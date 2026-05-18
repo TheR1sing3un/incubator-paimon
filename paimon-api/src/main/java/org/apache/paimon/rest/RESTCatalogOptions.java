@@ -161,4 +161,19 @@ public class RESTCatalogOptions {
                     .withDescription(
                             "The commit message attached to snapshot commits. "
                                     + "Used for audit tracking in the REST catalog metadata store.");
+
+    public static final ConfigOption<Integer> IO_THREAD_POOL_SIZE =
+            ConfigOptions.key("io-thread-pool-size")
+                    .intType()
+                    .defaultValue(128)
+                    .withDescription(
+                            "Max thread pool size for async IO operations in REST catalog server.");
+
+    public static final ConfigOption<Integer> IO_THREAD_POOL_CORE_SIZE =
+            ConfigOptions.key("io-thread-pool-core-size")
+                    .intType()
+                    .defaultValue(32)
+                    .withDescription(
+                            "Core (resident) thread pool size for async IO operations in REST catalog server. "
+                                    + "These threads are always kept alive.");
 }

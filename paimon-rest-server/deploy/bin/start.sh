@@ -85,7 +85,7 @@ if [ -n "${EXTRA_CLASSPATH}" ]; then
 fi
 
 # ---- JVM Options ----
-JAVA_OPTS="${JAVA_OPTS:--Xms512m -Xmx2g}"
+JAVA_OPTS="${JAVA_OPTS:--Xms512m -Xmx56g}"
 GC_OPTS="${GC_OPTS:--XX:+UseParallelGC}"
 JMX_OPTS=""
 if [ -n "${JMX_PORT}" ]; then

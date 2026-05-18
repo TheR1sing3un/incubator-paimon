@@ -60,6 +60,13 @@ public class RESTCatalogServerOptions {
                     .defaultValue(10 * 1024 * 1024)
                     .withDescription("Maximum allowed content length for HTTP requests in bytes.");
 
+    public static final ConfigOption<Integer> BOSS_THREADS =
+            ConfigOptions.key("rest-server.boss-threads")
+                    .intType()
+                    .defaultValue(1)
+                    .withDescription(
+                            "Number of Netty boss group threads for accepting connections.");
+
     public static final ConfigOption<Integer> SO_BACKLOG =
             ConfigOptions.key("rest-server.so-backlog")
                     .intType()
@@ -68,6 +75,14 @@ public class RESTCatalogServerOptions {
                             "The maximum length of the TCP accept queue. "
                                     + "Controls how many pending connections can wait "
                                     + "when all worker threads are busy.");
+
+    public static final ConfigOption<Integer> SO_RCVBUF =
+            ConfigOptions.key("rest-server.so-rcvbuf")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The TCP receive buffer size in bytes (SO_RCVBUF). "
+                                    + "When not set, the OS default is used.");
 
     public static final ConfigOption<String> METADATA_RESOURCE_ID =
             ConfigOptions.key("rest-server.metadata.resource-id")

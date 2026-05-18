@@ -49,10 +49,12 @@ public class HttpServer {
 
     private final String host;
     private final int port;
+    private final int bossThreads;
     private final int ioThreads;
     private final int workerThreads;
     private final int maxContentLength;
     private final int soBacklog;
+    private final Integer soRcvBuf;
     private final ChannelHandler authHandler;
     private final HttpRequestHandler requestHandler;
     private final ConnectionMetricsHandler connectionMetricsHandler;
@@ -65,18 +67,22 @@ public class HttpServer {
     public HttpServer(
             String host,
             int port,
+            int bossThreads,
             int ioThreads,
             int workerThreads,
             int maxContentLength,
             int soBacklog,
+            Integer soRcvBuf,
             ChannelHandler authHandler,
             HttpRequestHandler requestHandler) {
         this.host = Preconditions.checkNotNull(host);
         this.port = port;
+        this.bossThreads = bossThreads;
         this.ioThreads = ioThreads;
         this.workerThreads = workerThreads;
         this.maxContentLength = maxContentLength;
         this.soBacklog = soBacklog;
+        this.soRcvBuf = soRcvBuf;
         this.authHandler = Preconditions.checkNotNull(authHandler);
         this.requestHandler = Preconditions.checkNotNull(requestHandler);
         this.connectionMetricsHandler = new ConnectionMetricsHandler();
@@ -99,7 +105,7 @@ public class HttpServer {
                         .setNameFormat("paimon-rest-worker-%d")
                         .build();
 
-        bossGroup = new NioEventLoopGroup(1, bossFactory);
+        bossGroup = new NioEventLoopGroup(bossThreads, bossFactory);
         workerGroup = new NioEventLoopGroup(ioThreads, workerFactory);
         businessGroup = new DefaultEventExecutorGroup(workerThreads, businessFactory);
 
@@ -116,6 +122,10 @@ public class HttpServer {
                                         businessGroup))
                         .option(ChannelOption.SO_BACKLOG, soBacklog)
                         .childOption(ChannelOption.SO_KEEPALIVE, true);
+
+        if (soRcvBuf != null) {
+            bootstrap.option(ChannelOption.SO_RCVBUF, soRcvBuf);
+        }
 
         serverChannel = bootstrap.bind(host, port).sync().channel();
         InetSocketAddress address = (InetSocketAddress) serverChannel.localAddress();

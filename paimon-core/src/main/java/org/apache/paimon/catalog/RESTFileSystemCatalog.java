@@ -26,6 +26,7 @@ import org.apache.paimon.fs.Path;
 import org.apache.paimon.operation.BranchMergeOperation;
 import org.apache.paimon.options.CatalogOptions;
 import org.apache.paimon.partition.PartitionStatistics;
+import org.apache.paimon.rest.RESTCatalogOptions;
 import org.apache.paimon.rest.responses.GetTagResponse;
 import org.apache.paimon.schema.SchemaManager;
 import org.apache.paimon.table.FileStoreTable;
@@ -53,7 +54,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.SortedMap;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
@@ -84,6 +90,8 @@ public class RESTFileSystemCatalog extends FileSystemCatalog {
 
     /** If the remaining TTL is less than this margin, release the lock proactively. */
     private static final double LOCK_TTL_SAFETY_RATIO = 0.8;
+
+    private final ExecutorService ioExecutor;
 
     private <T> T withBranchLock(String database, String table, String branch, Callable<T> callable)
             throws Exception {
@@ -134,6 +142,24 @@ public class RESTFileSystemCatalog extends FileSystemCatalog {
                         context.options().get(CatalogOptions.LOCK_ACQUIRE_TIMEOUT),
                         context.options().get(CatalogOptions.LOCK_CHECK_MAX_SLEEP),
                         context.options().get(CatalogOptions.LOCK_TTL));
+        this.ioExecutor =
+                createIOExecutor(
+                        context.options().get(RESTCatalogOptions.IO_THREAD_POOL_CORE_SIZE),
+                        context.options().get(RESTCatalogOptions.IO_THREAD_POOL_SIZE));
+    }
+
+    private static ExecutorService createIOExecutor(int coreSize, int maxSize) {
+        ThreadPoolExecutor executor =
+                new ThreadPoolExecutor(
+                        coreSize,
+                        maxSize,
+                        60L,
+                        TimeUnit.SECONDS,
+                        new LinkedBlockingQueue<>(maxSize),
+                        org.apache.paimon.utils.ThreadUtils.newDaemonThreadFactory(
+                                "REST-CATALOG-IO"),
+                        new ThreadPoolExecutor.CallerRunsPolicy());
+        return executor;
     }
 
     @Override
@@ -230,19 +256,41 @@ public class RESTFileSystemCatalog extends FileSystemCatalog {
         }
         int limit = (maxResults != null && maxResults > 0) ? maxResults : 100;
 
+        List<Long> candidateIds = new ArrayList<>();
+        for (long id = startId; id >= earliestId && candidateIds.size() < limit; id--) {
+            candidateIds.add(id);
+        }
+
+        if (candidateIds.isEmpty()) {
+            return new PagedList<>(Collections.emptyList(), null);
+        }
+
+        List<CompletableFuture<Snapshot>> futures = new ArrayList<>(candidateIds.size());
+        for (long id : candidateIds) {
+            futures.add(
+                    CompletableFuture.supplyAsync(
+                            () -> {
+                                try {
+                                    return SnapshotManager.tryFromPath(fileIO, sm.snapshotPath(id));
+                                } catch (FileNotFoundException ignored) {
+                                }
+                                return null;
+                            },
+                            ioExecutor));
+        }
+
         List<Snapshot> snapshots = new ArrayList<>();
-        for (long id = startId; id >= earliestId && snapshots.size() < limit; id--) {
-            if (sm.snapshotExists(id)) {
-                snapshots.add(sm.snapshot(id));
+        for (CompletableFuture<Snapshot> future : futures) {
+            Snapshot s = future.join();
+            if (s != null) {
+                snapshots.add(s);
             }
         }
 
         String nextToken = null;
-        if (!snapshots.isEmpty()) {
-            long lastId = snapshots.get(snapshots.size() - 1).id();
-            if (lastId > earliestId) {
-                nextToken = String.valueOf(lastId);
-            }
+        long smallestCheckedId = candidateIds.get(candidateIds.size() - 1);
+        if (!snapshots.isEmpty() && smallestCheckedId > earliestId) {
+            nextToken = String.valueOf(smallestCheckedId);
         }
         return new PagedList<>(snapshots, nextToken);
     }
@@ -614,5 +662,11 @@ public class RESTFileSystemCatalog extends FileSystemCatalog {
             }
         }
         return null;
+    }
+
+    @Override
+    public void close() throws Exception {
+        ioExecutor.shutdown();
+        super.close();
     }
 }
