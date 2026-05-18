@@ -25,7 +25,10 @@ import org.apache.paimon.fs.Path;
 import org.apache.paimon.fs.PositionOutputStream;
 import org.apache.paimon.io.DataOutputViewStreamWrapper;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -172,5 +175,89 @@ public class PkMapWriter implements AutoCloseable {
         fileIO.deleteQuietly(finalPath);
         fileIO.rename(tempPath, finalPath);
         return finalPath;
+    }
+
+    /**
+     * Merge multiple pkmap files into one by concatenating their bodies in order. Used during
+     * vector file compaction to produce a merged pkmap that covers the merged vector file's
+     * coordinate space.
+     *
+     * <p>If a source pkmap doesn't exist, empty entries are written for that file's row range.
+     *
+     * @param fileIO file IO
+     * @param bucketPath bucket directory
+     * @param outputFileName output pkmap file name
+     * @param pkArity PK column count
+     * @param sourceFiles ordered list of (pkmap path or null, rowCount) pairs
+     * @return path to the merged pkmap file
+     */
+    public static Path mergePkMaps(
+            FileIO fileIO,
+            Path bucketPath,
+            String outputFileName,
+            int pkArity,
+            List<PkMapSource> sourceFiles)
+            throws IOException {
+        long totalRowCount = 0;
+        for (PkMapSource src : sourceFiles) {
+            totalRowCount += src.rowCount;
+        }
+
+        Path finalPath = new Path(bucketPath, outputFileName);
+        Path tempPath =
+                new Path(
+                        bucketPath,
+                        outputFileName
+                                + AccelerateIndexConstants.PKMAP_TEMP_SUFFIX
+                                + UUID.randomUUID());
+
+        try (PositionOutputStream out = fileIO.newOutputStream(tempPath, false)) {
+            DataOutputViewStreamWrapper output = new DataOutputViewStreamWrapper(out);
+
+            // Write header
+            output.writeLong(MAGIC);
+            output.writeInt(VERSION);
+            output.writeInt(pkArity);
+            output.writeLong(totalRowCount);
+
+            // Concatenate bodies from each source
+            for (PkMapSource src : sourceFiles) {
+                if (src.pkmapPath != null && fileIO.exists(src.pkmapPath)) {
+                    // Copy body bytes (skip 24-byte header)
+                    try (org.apache.paimon.fs.SeekableInputStream existIn =
+                            fileIO.newInputStream(src.pkmapPath)) {
+                        existIn.seek(24);
+                        byte[] copyBuf = new byte[8192];
+                        int n;
+                        while ((n = existIn.read(copyBuf)) > 0) {
+                            out.write(copyBuf, 0, n);
+                        }
+                    }
+                } else {
+                    // No pkmap for this source — write empty entries
+                    for (long i = 0; i < src.rowCount; i++) {
+                        output.writeInt(0);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            fileIO.deleteQuietly(tempPath);
+            throw new IOException("Failed to merge pkmaps into " + outputFileName, e);
+        }
+
+        fileIO.deleteQuietly(finalPath);
+        fileIO.rename(tempPath, finalPath);
+        return finalPath;
+    }
+
+    /** Source descriptor for pkmap merge. */
+    public static class PkMapSource {
+        @Nullable public final Path pkmapPath;
+        public final long rowCount;
+
+        public PkMapSource(@Nullable Path pkmapPath, long rowCount) {
+            this.pkmapPath = pkmapPath;
+            this.rowCount = rowCount;
+        }
     }
 }

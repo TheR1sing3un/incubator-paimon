@@ -212,6 +212,9 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                     offset += f.rowCount();
                 }
 
+                // Merge pkmaps: concatenate each file's pkmap body in order
+                mergePkMaps(bucketPath, mergeResult.newFileMeta().fileName(), columnVectorFiles);
+
                 LOG.info(
                         "Normal compaction: vector column {} merged {} files -> {}",
                         colInfo.fieldName,
@@ -472,6 +475,62 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         after = preAssignCommitSnapshotId(after, sections);
         after = notifyRewriteCompactAfter(after);
         return new CompactResult(before, after);
+    }
+
+    private void mergePkMaps(
+            Path bucketPath, String mergedFileName, List<DataFileMeta> sourceFiles) {
+        String mergedPkmapName =
+                org.apache.paimon.accelerateindex.AccelerateIndexConstants.pkmapSidecarName(
+                        mergedFileName);
+        try {
+            List<org.apache.paimon.accelerateindex.PkMapWriter.PkMapSource> sources =
+                    new ArrayList<>();
+            for (DataFileMeta f : sourceFiles) {
+                String srcPkmapName =
+                        org.apache.paimon.accelerateindex.AccelerateIndexConstants.pkmapSidecarName(
+                                f.fileName());
+                Path srcPkmapPath = new Path(bucketPath, srcPkmapName);
+                sources.add(
+                        new org.apache.paimon.accelerateindex.PkMapWriter.PkMapSource(
+                                srcPkmapPath, f.rowCount()));
+            }
+            // Use pkArity from table schema — for now derive from first source pkmap header
+            // or use a default. The actual pkArity is encoded in the pkmap header of each source.
+            int pkArity = readPkArityFromAnySource(sources);
+            if (pkArity > 0) {
+                org.apache.paimon.accelerateindex.PkMapWriter.mergePkMaps(
+                        fileIO, bucketPath, mergedPkmapName, pkArity, sources);
+                LOG.info("Merged pkmaps into {}", mergedPkmapName);
+            }
+        } catch (Exception e) {
+            LOG.warn("Failed to merge pkmaps for {}, search may use fallback", mergedFileName, e);
+        }
+    }
+
+    private int readPkArityFromAnySource(
+            List<org.apache.paimon.accelerateindex.PkMapWriter.PkMapSource> sources) {
+        for (org.apache.paimon.accelerateindex.PkMapWriter.PkMapSource src : sources) {
+            if (src.pkmapPath != null) {
+                try {
+                    if (fileIO.exists(src.pkmapPath)) {
+                        try (org.apache.paimon.fs.SeekableInputStream in =
+                                fileIO.newInputStream(src.pkmapPath)) {
+                            in.seek(12); // skip magic(8) + version(4)
+                            byte[] buf = new byte[4];
+                            int read = in.read(buf);
+                            if (read == 4) {
+                                return ((buf[0] & 0xFF) << 24)
+                                        | ((buf[1] & 0xFF) << 16)
+                                        | ((buf[2] & 0xFF) << 8)
+                                        | (buf[3] & 0xFF);
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        return 0;
     }
 
     static class VectorColumnInfo {
