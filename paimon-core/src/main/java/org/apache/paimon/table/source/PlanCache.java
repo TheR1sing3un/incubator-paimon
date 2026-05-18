@@ -233,6 +233,15 @@ public class PlanCache implements Serializable {
             out.writeUTF(e.getValue());
         }
 
+        // 8. VectorFileMapping (nullable)
+        if (vectorFileMapping != null && vectorFileMapping.size() > 0) {
+            out.writeBoolean(true);
+            String mappingJson = JsonSerdeUtil.toFlatJson(vectorFileMapping);
+            out.writeUTF(mappingJson);
+        } else {
+            out.writeBoolean(false);
+        }
+
         return out.getCopyOfBuffer();
     }
 
@@ -318,6 +327,17 @@ public class PlanCache implements Serializable {
             pkmapPaths.put(key, val);
         }
 
-        return new PlanCache(snapshot, schemaId, entries, dvIdx, idxMetas, bucketPaths, pkmapPaths);
+        // 8. VectorFileMapping (nullable, added later — check available)
+        org.apache.paimon.mergetree.compact.VectorFileMapping vecMapping = null;
+        if (in.available() > 0 && in.readBoolean()) {
+            String mappingJson = in.readUTF();
+            vecMapping =
+                    JsonSerdeUtil.fromJson(
+                            mappingJson,
+                            org.apache.paimon.mergetree.compact.VectorFileMapping.class);
+        }
+
+        return new PlanCache(
+                snapshot, schemaId, entries, dvIdx, idxMetas, bucketPaths, pkmapPaths, vecMapping);
     }
 }
