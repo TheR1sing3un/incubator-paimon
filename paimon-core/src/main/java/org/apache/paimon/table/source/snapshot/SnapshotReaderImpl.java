@@ -620,6 +620,9 @@ public class SnapshotReaderImpl implements SnapshotReader {
                                 ? scanDvIndex(snapshot, toPartBuckets(grouped))
                                 : Collections.emptyMap());
 
+        // Load vector file mapping for descriptor resolution
+        VectorFileMapping vectorFileMapping = loadVectorFileMapping(snapshot);
+
         List<VectorCFSearchSplit> result = new ArrayList<>();
 
         for (Map.Entry<BinaryRow, Map<Integer, List<ManifestEntry>>> partEntry :
@@ -657,7 +660,8 @@ public class SnapshotReaderImpl implements SnapshotReader {
                     // Pkmap paths from PlanCache (resolved during buildPlanCache)
                     Map<String, String> pkmapPaths =
                             cachedPkmapPaths != null ? cachedPkmapPaths : Collections.emptyMap();
-                    result.addAll(
+
+                    List<VectorCFSearchSplit> bucketSplits =
                             AccelerateIndexSearchSplitUtils.buildVectorCFSplitsForBucketResolved(
                                     snapshotId,
                                     partition,
@@ -669,9 +673,11 @@ public class SnapshotReaderImpl implements SnapshotReader {
                                     columnId,
                                     vectorColumnName,
                                     resolvedIndexPaths,
-                                    pkmapPaths));
+                                    pkmapPaths);
+                    enrichSplitsWithMapping(bucketSplits, vectorFileMapping);
+                    result.addAll(bucketSplits);
                 } else {
-                    result.addAll(
+                    List<VectorCFSearchSplit> bucketSplits =
                             AccelerateIndexSearchSplitUtils.buildVectorCFSplitsForBucket(
                                     snapshotId,
                                     partition,
@@ -681,7 +687,9 @@ public class SnapshotReaderImpl implements SnapshotReader {
                                     dvMap,
                                     search,
                                     columnId,
-                                    vectorColumnName));
+                                    vectorColumnName);
+                    enrichSplitsWithMapping(bucketSplits, vectorFileMapping);
+                    result.addAll(bucketSplits);
                 }
             }
         }
@@ -954,6 +962,82 @@ public class SnapshotReaderImpl implements SnapshotReader {
             LOG.warn("Failed to load vector file mapping from index manifest", e);
             return null;
         }
+    }
+
+    private void enrichSplitsWithMapping(
+            List<VectorCFSearchSplit> splits, @Nullable VectorFileMapping mapping) {
+        if (mapping == null || mapping.size() == 0) {
+            return;
+        }
+        for (VectorCFSearchSplit split : splits) {
+            String vectorFileName = split.vectorFileName();
+            Set<Integer> matchingIds = new HashSet<>();
+            Map<Integer, Long> baseOffsets = new HashMap<>();
+            matchingIds.add(vectorFileName.hashCode());
+            baseOffsets.put(vectorFileName.hashCode(), 0L);
+            for (VectorFileMapping.MappingEntry entry : mapping.mappings()) {
+                if (entry.targetFilePath().endsWith(vectorFileName)) {
+                    matchingIds.add(entry.fileId());
+                    baseOffsets.put(entry.fileId(), entry.baseOffset());
+                }
+            }
+            if (matchingIds.size() > 1) {
+                split.setMatchingFileIds(matchingIds);
+                split.setFileIdToBaseOffset(baseOffsets);
+            }
+        }
+    }
+
+    private Map<String, Set<Integer>> computeMatchingFileIds(
+            @Nullable VectorFileMapping mapping, List<DataFileMeta> bucketFiles) {
+        Map<String, Set<Integer>> result = new HashMap<>();
+        if (mapping == null) {
+            return result;
+        }
+        // For each vector file in the bucket, collect all fileIds from the mapping
+        // that resolve to that file's path
+        for (DataFileMeta f : bucketFiles) {
+            if (f.isVectorCFFile()) {
+                String targetPath =
+                        pathFactory.bucketPath(null, 0).getParent() != null
+                                ? f.fileName()
+                                : f.fileName();
+                Set<Integer> ids = new HashSet<>();
+                ids.add(f.fileName().hashCode());
+                for (VectorFileMapping.MappingEntry entry : mapping.mappings()) {
+                    if (entry.targetFilePath().endsWith(f.fileName())) {
+                        ids.add(entry.fileId());
+                    }
+                }
+                if (ids.size() > 1) {
+                    result.put(f.fileName(), ids);
+                }
+            }
+        }
+        return result;
+    }
+
+    private Map<String, Map<Integer, Long>> computeFileIdToBaseOffset(
+            @Nullable VectorFileMapping mapping, List<DataFileMeta> bucketFiles) {
+        Map<String, Map<Integer, Long>> result = new HashMap<>();
+        if (mapping == null) {
+            return result;
+        }
+        for (DataFileMeta f : bucketFiles) {
+            if (f.isVectorCFFile()) {
+                Map<Integer, Long> offsets = new HashMap<>();
+                offsets.put(f.fileName().hashCode(), 0L);
+                for (VectorFileMapping.MappingEntry entry : mapping.mappings()) {
+                    if (entry.targetFilePath().endsWith(f.fileName())) {
+                        offsets.put(entry.fileId(), entry.baseOffset());
+                    }
+                }
+                if (offsets.size() > 1) {
+                    result.put(f.fileName(), offsets);
+                }
+            }
+        }
+        return result;
     }
 
     private Map<Pair<BinaryRow, Integer>, Map<String, DeletionFile>> scanDvIndex(

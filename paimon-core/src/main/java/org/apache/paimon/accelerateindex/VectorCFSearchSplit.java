@@ -68,7 +68,33 @@ public class VectorCFSearchSplit implements Split {
     private final long snapshotId;
     @Nullable private final String resolvedIndexPath;
     @Nullable private final String resolvedPkmapPath;
-    @Nullable private final java.util.Set<Integer> matchingFileIds;
+    @Nullable private java.util.Set<Integer> matchingFileIds;
+    @Nullable private java.util.Map<Integer, Long> fileIdToBaseOffset;
+
+    // ... existing constructors delegate to the full one ...
+
+    public long resolveRowIndex(int fileId, long originalRowIndex) {
+        if (fileIdToBaseOffset != null) {
+            Long offset = fileIdToBaseOffset.get(fileId);
+            if (offset != null) {
+                return offset + originalRowIndex;
+            }
+        }
+        return originalRowIndex;
+    }
+
+    public void setMatchingFileIds(@Nullable java.util.Set<Integer> matchingFileIds) {
+        this.matchingFileIds = matchingFileIds;
+    }
+
+    public void setFileIdToBaseOffset(@Nullable java.util.Map<Integer, Long> fileIdToBaseOffset) {
+        this.fileIdToBaseOffset = fileIdToBaseOffset;
+    }
+
+    @Nullable
+    public java.util.Map<Integer, Long> fileIdToBaseOffset() {
+        return fileIdToBaseOffset;
+    }
 
     public VectorCFSearchSplit(
             String vectorFileName,
@@ -146,6 +172,7 @@ public class VectorCFSearchSplit implements Split {
         this.resolvedIndexPath = resolvedIndexPath;
         this.resolvedPkmapPath = resolvedPkmapPath;
         this.matchingFileIds = matchingFileIds;
+        this.fileIdToBaseOffset = null;
     }
 
     public String vectorFileName() {
