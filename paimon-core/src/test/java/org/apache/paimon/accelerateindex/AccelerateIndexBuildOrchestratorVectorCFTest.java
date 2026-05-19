@@ -106,7 +106,7 @@ public class AccelerateIndexBuildOrchestratorVectorCFTest {
                         .withDataFiles(Arrays.asList(large, small))
                         .build();
 
-        // Target file size = 5 vectors * 16 bytes = 80 bytes
+        // In the new immutable model, all vector files are eligible (no sealed filter)
         List<Map.Entry<DataFileMeta, Long>> result =
                 AccelerateIndexBuildOrchestrator.collectVectorCFFiles(
                         Collections.singletonList(split),
@@ -118,9 +118,8 @@ public class AccelerateIndexBuildOrchestratorVectorCFTest {
                         BYTES_PER_VECTOR,
                         false);
 
-        // Only the large file passes the sealed check
-        assertThat(result).hasSize(1);
-        assertThat(result.get(0).getKey().fileName()).isEqualTo("large.vector.bin");
+        // Both files are returned (no sealed/unfilled distinction)
+        assertThat(result).hasSize(2);
     }
 
     @Test
@@ -240,8 +239,8 @@ public class AccelerateIndexBuildOrchestratorVectorCFTest {
                         .withDataFiles(Arrays.asList(sealed, unfilled))
                         .build();
 
-        // Without includeUnfilled — only sealed
-        List<Map.Entry<DataFileMeta, Long>> sealedOnly =
+        // In the new immutable model, includeUnfilled flag has no effect — all files returned
+        List<Map.Entry<DataFileMeta, Long>> withoutFlag =
                 AccelerateIndexBuildOrchestrator.collectVectorCFFiles(
                         Collections.singletonList(split),
                         "emb",
@@ -251,11 +250,9 @@ public class AccelerateIndexBuildOrchestratorVectorCFTest {
                         -1,
                         BYTES_PER_VECTOR,
                         false);
-        assertThat(sealedOnly).hasSize(1);
-        assertThat(sealedOnly.get(0).getKey().fileName()).isEqualTo("sealed.vector.bin");
+        assertThat(withoutFlag).hasSize(2);
 
-        // With includeUnfilled — both files
-        List<Map.Entry<DataFileMeta, Long>> all =
+        List<Map.Entry<DataFileMeta, Long>> withFlag =
                 AccelerateIndexBuildOrchestrator.collectVectorCFFiles(
                         Collections.singletonList(split),
                         "emb",
@@ -265,9 +262,9 @@ public class AccelerateIndexBuildOrchestratorVectorCFTest {
                         -1,
                         BYTES_PER_VECTOR,
                         true);
-        assertThat(all).hasSize(2);
+        assertThat(withFlag).hasSize(2);
         List<String> names = new ArrayList<>();
-        for (Map.Entry<DataFileMeta, Long> e : all) {
+        for (Map.Entry<DataFileMeta, Long> e : withFlag) {
             names.add(e.getKey().fileName());
         }
         assertThat(names).containsExactlyInAnyOrder("sealed.vector.bin", "unfilled.vector.bin");

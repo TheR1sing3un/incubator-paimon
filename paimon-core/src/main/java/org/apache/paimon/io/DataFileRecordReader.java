@@ -63,6 +63,7 @@ public class DataFileRecordReader implements FileRecordReader<InternalRow> {
     private final Map<String, Integer> systemFields;
     @Nullable private final RoaringBitmap32 selection;
     @Nullable private final VectorCFReaderContext vectorCFContext;
+    @Nullable private org.apache.paimon.data.columnar.VectorBatchResolver vectorBatchResolver;
 
     public DataFileRecordReader(
             RowType tableRowType,
@@ -93,6 +94,11 @@ public class DataFileRecordReader implements FileRecordReader<InternalRow> {
                 context.selection(),
                 context.filePath(),
                 context.vectorCFContext());
+        if (vectorCFContext != null) {
+            this.vectorBatchResolver =
+                    new org.apache.paimon.data.columnar.VectorBatchResolver(
+                            context.fileIO(), vectorCFContext);
+        }
     }
 
     public DataFileRecordReader(
@@ -154,6 +160,7 @@ public class DataFileRecordReader implements FileRecordReader<InternalRow> {
         this.selection = selection;
         this.filePath = filePath;
         this.vectorCFContext = vectorCFContext;
+        this.vectorBatchResolver = null; // initialized on first use via setFileIO
     }
 
     private static FileRecordReader<InternalRow> createReader(
@@ -220,6 +227,12 @@ public class DataFileRecordReader implements FileRecordReader<InternalRow> {
                 ColumnarRow columnarRow = ((ColumnarRowIterator) iterator).getColumnarRow();
                 if (columnarRow != null) {
                     columnarRow.setVectorCFContext(vectorCFContext);
+                    // Batch-resolve: coalesced I/O, results cached in ColumnarRow
+                    if (vectorBatchResolver != null) {
+                        columnarRow.setResolvedVectors(
+                                vectorBatchResolver.resolve(
+                                        columnarRow.batch(), columnarRow.batch().getNumRows()));
+                    }
                 }
             }
             iterator = ((ColumnarRowIterator) iterator).mapping(partitionInfo, indexMapping);

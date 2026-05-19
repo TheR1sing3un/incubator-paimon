@@ -51,6 +51,7 @@ public final class ColumnarRow implements InternalRow, DataSetters, Serializable
     private VectorizedColumnBatch vectorizedColumnBatch;
     private FileIO fileIO;
     @Nullable private VectorCFReaderContext vectorCFContext;
+    @Nullable private java.util.Map<Integer, ArrayColumnVector> resolvedVectors;
     private int rowId;
 
     public ColumnarRow() {}
@@ -75,6 +76,11 @@ public final class ColumnarRow implements InternalRow, DataSetters, Serializable
 
     public void setVectorCFContext(@Nullable VectorCFReaderContext vectorCFContext) {
         this.vectorCFContext = vectorCFContext;
+    }
+
+    public void setResolvedVectors(
+            @Nullable java.util.Map<Integer, ArrayColumnVector> resolvedVectors) {
+        this.resolvedVectors = resolvedVectors;
     }
 
     public VectorizedColumnBatch batch() {
@@ -192,8 +198,17 @@ public final class ColumnarRow implements InternalRow, DataSetters, Serializable
         if (column instanceof ArrayColumnVector) {
             return ((ArrayColumnVector) column).getArray(rowId);
         }
-        // Vector column family mode: the vector column stores VectorDescriptor bytes
-        // in the scalar file. Resolve it to a float array for callers expecting ARRAY<FLOAT>.
+        // Check batch-resolved vectors (from VectorBatchResolver)
+        if (resolvedVectors != null) {
+            ArrayColumnVector resolved = resolvedVectors.get(pos);
+            if (resolved != null) {
+                if (resolved.isNullAt(rowId)) {
+                    return null;
+                }
+                return resolved.getArray(rowId);
+            }
+        }
+        // Vector column family mode: resolve descriptor and convert to float array
         InternalVector vec = getVector(pos);
         if (vec == null) {
             return null;
@@ -206,6 +221,20 @@ public final class ColumnarRow implements InternalRow, DataSetters, Serializable
         ColumnVector column = vectorizedColumnBatch.columns[pos];
         if (column instanceof VecColumnVector) {
             return ((VecColumnVector) column).getVector(rowId);
+        }
+        // Check batch-resolved vectors (from VectorBatchResolver)
+        if (resolvedVectors != null) {
+            ArrayColumnVector resolved = resolvedVectors.get(pos);
+            if (resolved != null) {
+                if (resolved.isNullAt(rowId)) {
+                    return null;
+                }
+                InternalArray arr = resolved.getArray(rowId);
+                return arr == null
+                        ? null
+                        : org.apache.paimon.data.BinaryVector.fromPrimitiveArray(
+                                arr.toFloatArray());
+            }
         }
         // Vector column family mode: descriptor stored as bytes
         byte[] bytes = getBinary(pos);

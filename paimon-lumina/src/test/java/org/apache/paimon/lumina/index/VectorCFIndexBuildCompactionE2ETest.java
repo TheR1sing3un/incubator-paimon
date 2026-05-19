@@ -498,7 +498,9 @@ public class VectorCFIndexBuildCompactionE2ETest {
             if (sr.score > 0.5f) {
                 // High-relevance results must be from cluster 0 (pk 3-9)
                 assertThat(pk)
-                        .as("High-score result pk=%d (score=%.4f) should be in cluster 0 (3-9)", pk, sr.score)
+                        .as(
+                                "High-score result pk=%d (score=%.4f) should be in cluster 0 (3-9)",
+                                pk, sr.score)
                         .isBetween(3, 9);
                 assertThat(movedPks)
                         .as("Moved pk=%d should NOT appear in high-score results", pk)
