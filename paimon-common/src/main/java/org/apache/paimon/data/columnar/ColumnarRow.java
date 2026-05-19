@@ -188,7 +188,17 @@ public final class ColumnarRow implements InternalRow, DataSetters, Serializable
 
     @Override
     public InternalArray getArray(int pos) {
-        return vectorizedColumnBatch.getArray(rowId, pos);
+        ColumnVector column = vectorizedColumnBatch.columns[pos];
+        if (column instanceof ArrayColumnVector) {
+            return ((ArrayColumnVector) column).getArray(rowId);
+        }
+        // Vector column family mode: the vector column stores VectorDescriptor bytes
+        // in the scalar file. Resolve it to a float array for callers expecting ARRAY<FLOAT>.
+        InternalVector vec = getVector(pos);
+        if (vec == null) {
+            return null;
+        }
+        return new org.apache.paimon.data.GenericArray(vec.toFloatArray());
     }
 
     @Override
