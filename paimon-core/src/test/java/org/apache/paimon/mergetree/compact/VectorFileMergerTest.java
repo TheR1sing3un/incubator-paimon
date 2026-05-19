@@ -267,4 +267,154 @@ public class VectorFileMergerTest {
                 null,
                 Collections.singletonList("emb"));
     }
+
+    // ---- mergeAllWithTargetRows tests ----
+
+    @Test
+    public void testMergeAllSingleOutputBelowTarget() throws Exception {
+        FileIO fileIO = new LocalFileIO();
+        Path bucketPath = new Path(tempDir.toString());
+
+        createVectorFile(fileIO, bucketPath, "a.vector.bin", 5);
+        createVectorFile(fileIO, bucketPath, "b.vector.bin", 3);
+
+        DataFilePathFactory pathFactory =
+                new DataFilePathFactory(bucketPath, "bin", "data-", "changelog-", false, "", null);
+        VectorFileMerger merger =
+                new VectorFileMerger(fileIO, bucketPath, BYTES_PER_VECTOR, 0L, "emb", pathFactory);
+
+        // Target = 100 rows → all 8 rows fit in one output (below target, but >=2 files so merge)
+        java.util.List<VectorFileMerger.MergeAllResult> results =
+                merger.mergeAllWithTargetRows(
+                        Arrays.asList(vectorMeta("a.vector.bin", 5), vectorMeta("b.vector.bin", 3)),
+                        100);
+
+        // Only 2 files → still merged into one output (even though below target)
+        assertThat(results).hasSize(1);
+        assertThat(results.get(0).newFileMeta().rowCount()).isEqualTo(8);
+        assertThat(results.get(0).sourceMappings()).hasSize(2);
+        assertThat(results.get(0).sourceMappings().get(0).sourceFileName())
+                .isEqualTo("a.vector.bin");
+        assertThat(results.get(0).sourceMappings().get(0).baseOffset()).isEqualTo(0);
+        assertThat(results.get(0).sourceMappings().get(1).sourceFileName())
+                .isEqualTo("b.vector.bin");
+        assertThat(results.get(0).sourceMappings().get(1).baseOffset()).isEqualTo(5);
+    }
+
+    @Test
+    public void testMergeAllSplitsOutputWhenExceedsTarget() throws Exception {
+        FileIO fileIO = new LocalFileIO();
+        Path bucketPath = new Path(tempDir.toString());
+
+        // 5 files with: 5, 8, 6, 9, 7 rows = 35 total. Target = 15 rows.
+        createVectorFile(fileIO, bucketPath, "f1.vector.bin", 5);
+        createVectorFile(fileIO, bucketPath, "f2.vector.bin", 8);
+        createVectorFile(fileIO, bucketPath, "f3.vector.bin", 6);
+        createVectorFile(fileIO, bucketPath, "f4.vector.bin", 9);
+        createVectorFile(fileIO, bucketPath, "f5.vector.bin", 7);
+
+        DataFilePathFactory pathFactory =
+                new DataFilePathFactory(bucketPath, "bin", "data-", "changelog-", false, "", null);
+        VectorFileMerger merger =
+                new VectorFileMerger(fileIO, bucketPath, BYTES_PER_VECTOR, 0L, "emb", pathFactory);
+
+        java.util.List<VectorFileMerger.MergeAllResult> results =
+                merger.mergeAllWithTargetRows(
+                        Arrays.asList(
+                                vectorMeta("f1.vector.bin", 5),
+                                vectorMeta("f2.vector.bin", 8),
+                                vectorMeta("f3.vector.bin", 6),
+                                vectorMeta("f4.vector.bin", 9),
+                                vectorMeta("f5.vector.bin", 7)),
+                        15);
+
+        // Expected split:
+        //   Output 1: f1(5) + f2(8) + f3(6) = 19 rows (first exceeds 15 after adding f3)
+        //   Remaining: f4(9) + f5(7) = 16 rows → >=2 files, merge into output 2
+        assertThat(results).hasSize(2);
+
+        // Output 1: 19 rows
+        assertThat(results.get(0).newFileMeta().rowCount()).isEqualTo(19);
+        assertThat(results.get(0).sourceMappings()).hasSize(3);
+        assertThat(results.get(0).sourceMappings().get(0).baseOffset()).isEqualTo(0); // f1 at 0
+        assertThat(results.get(0).sourceMappings().get(1).baseOffset()).isEqualTo(5); // f2 at 5
+        assertThat(results.get(0).sourceMappings().get(2).baseOffset()).isEqualTo(13); // f3 at 13
+
+        // Output 2: 16 rows
+        assertThat(results.get(1).newFileMeta().rowCount()).isEqualTo(16);
+        assertThat(results.get(1).sourceMappings()).hasSize(2);
+        assertThat(results.get(1).sourceMappings().get(0).baseOffset()).isEqualTo(0); // f4 at 0
+        assertThat(results.get(1).sourceMappings().get(1).baseOffset()).isEqualTo(9); // f5 at 9
+    }
+
+    @Test
+    public void testMergeAllSingleFileRemainingNotMerged() throws Exception {
+        FileIO fileIO = new LocalFileIO();
+        Path bucketPath = new Path(tempDir.toString());
+
+        createVectorFile(fileIO, bucketPath, "f1.vector.bin", 10);
+        createVectorFile(fileIO, bucketPath, "f2.vector.bin", 8);
+        createVectorFile(fileIO, bucketPath, "f3.vector.bin", 3);
+
+        DataFilePathFactory pathFactory =
+                new DataFilePathFactory(bucketPath, "bin", "data-", "changelog-", false, "", null);
+        VectorFileMerger merger =
+                new VectorFileMerger(fileIO, bucketPath, BYTES_PER_VECTOR, 0L, "emb", pathFactory);
+
+        // Target = 12. f1(10)+f2(8) = 18 >= 12 → seal. Remaining: f3(3) alone → not merged.
+        java.util.List<VectorFileMerger.MergeAllResult> results =
+                merger.mergeAllWithTargetRows(
+                        Arrays.asList(
+                                vectorMeta("f1.vector.bin", 10),
+                                vectorMeta("f2.vector.bin", 8),
+                                vectorMeta("f3.vector.bin", 3)),
+                        12);
+
+        // Only 1 output (f1+f2=18). f3 alone = not merged (size < 2).
+        assertThat(results).hasSize(1);
+        assertThat(results.get(0).newFileMeta().rowCount()).isEqualTo(18);
+        assertThat(results.get(0).sourceMappings()).hasSize(2);
+    }
+
+    @Test
+    public void testMergeAllVectorDataPreserved() throws Exception {
+        FileIO fileIO = new LocalFileIO();
+        Path bucketPath = new Path(tempDir.toString());
+
+        createVectorFile(fileIO, bucketPath, "a.vector.bin", 3);
+        createVectorFile(fileIO, bucketPath, "b.vector.bin", 2);
+
+        DataFilePathFactory pathFactory =
+                new DataFilePathFactory(bucketPath, "bin", "data-", "changelog-", false, "", null);
+        VectorFileMerger merger =
+                new VectorFileMerger(fileIO, bucketPath, BYTES_PER_VECTOR, 0L, "emb", pathFactory);
+
+        java.util.List<VectorFileMerger.MergeAllResult> results =
+                merger.mergeAllWithTargetRows(
+                        Arrays.asList(vectorMeta("a.vector.bin", 3), vectorMeta("b.vector.bin", 2)),
+                        100);
+
+        assertThat(results).hasSize(1);
+        Path outputPath = new Path(bucketPath, results.get(0).newFileMeta().fileName());
+        byte[] outputData = readFile(fileIO, outputPath);
+
+        // Total 5 vectors × 16 bytes = 80 bytes
+        assertThat(outputData.length).isEqualTo(5 * BYTES_PER_VECTOR);
+
+        // Verify first vector from a.vector.bin row 0: floats [1,2,3,4]
+        ByteBuffer buf = ByteBuffer.wrap(outputData, 0, BYTES_PER_VECTOR);
+        buf.order(ByteOrder.LITTLE_ENDIAN);
+        assertThat(buf.getFloat()).isEqualTo(1.0f);
+        assertThat(buf.getFloat()).isEqualTo(2.0f);
+        assertThat(buf.getFloat()).isEqualTo(3.0f);
+        assertThat(buf.getFloat()).isEqualTo(4.0f);
+
+        // Verify first vector from b.vector.bin (row 3 of output): floats [1,2,3,4] (row 0 of b)
+        buf = ByteBuffer.wrap(outputData, 3 * BYTES_PER_VECTOR, BYTES_PER_VECTOR);
+        buf.order(ByteOrder.LITTLE_ENDIAN);
+        assertThat(buf.getFloat()).isEqualTo(1.0f);
+        assertThat(buf.getFloat()).isEqualTo(2.0f);
+        assertThat(buf.getFloat()).isEqualTo(3.0f);
+        assertThat(buf.getFloat()).isEqualTo(4.0f);
+    }
 }
