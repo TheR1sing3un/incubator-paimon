@@ -578,11 +578,17 @@ public class VectorCFAccelerateIndexE2ETest {
         assertThat(entry.dataFiles().get(0).rowCount()).isGreaterThan(0);
         assertThat(entry.dataFiles().get(0).offset()).isEqualTo(0);
 
-        // Verify .pkmap sidecar exists
-        String pkmapFileName =
+        // Verify .pkmap sidecar exists (sync-written during flush, or index-style from build)
+        String sidecarName =
+                AccelerateIndexConstants.pkmapSidecarName(entry.dataFiles().get(0).file());
+        String indexStyleName =
                 AccelerateIndexConstants.pkmapFileName(
                         entry.dataFiles().get(0).file(), entry.columnId(), "lumina");
-        assertThat(table.fileIO().exists(new Path(bucketPath, pkmapFileName))).isTrue();
+        assertThat(
+                        table.fileIO().exists(new Path(bucketPath, sidecarName))
+                                || table.fileIO().exists(new Path(bucketPath, indexStyleName)))
+                .as("Either sidecar or index-style pkmap should exist")
+                .isTrue();
     }
 
     /**
