@@ -19,7 +19,6 @@
 package org.apache.paimon.rest.server.auth;
 
 import org.apache.paimon.rest.responses.ErrorResponse;
-import org.apache.paimon.rest.server.utils.LegacyPerfCompat;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
 import org.apache.paimon.shade.netty4.io.netty.buffer.Unpooled;
@@ -88,7 +87,7 @@ public class AuthChannelHandler extends SimpleChannelInboundHandler<FullHttpRequ
         } catch (AuthenticationException e) {
             long authDuration = System.currentTimeMillis() - authStart;
             MetricsReporter.count("auth_failure");
-            LegacyPerfCompat.count(uri, "", "auth_failure_detail");
+            MetricsReporter.count("auth_failure_detail");
             MetricsReporter.value("auth_latency", authDuration);
             sendAuthError(ctx, e.statusCode(), e.getMessage());
             request.release();

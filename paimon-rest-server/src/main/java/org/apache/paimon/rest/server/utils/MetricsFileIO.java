@@ -27,30 +27,51 @@ import org.apache.paimon.fs.PositionOutputStreamWrapper;
 import org.apache.paimon.fs.SeekableInputStream;
 import org.apache.paimon.fs.SeekableInputStreamWrapper;
 
+import com.kuaishou.kling.lakehouse.metrics.MetricsReporter;
 import com.kuaishou.kling.lakehouse.metrics.dependency.DependencyTracker;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * A {@link FileIO} wrapper that reports per-operation HDFS/FileIO metrics via {@link PerfUtil}.
+ * A {@link FileIO} wrapper that reports per-operation HDFS/FileIO metrics via {@link
+ * MetricsReporter}.
  *
- * <p>Instruments the 8 core abstract methods with latency, error count, QPS, and slow-op tracking.
- * Stream operations additionally track cumulative bytes read/written.
+ * <p>Instruments the 8 core abstract methods with latency, error count, slow-op tracking, and
+ * operation-level metrics using the same naming pattern as catalog metrics: operation name as
+ * metric name and `metric_type` tag for semantic distinction. Stream operations additionally track
+ * cumulative bytes read/written.
  *
  * <p>Metrics reported:
  *
  * <ul>
- *   <li>{@code hdfs_op_total} — per-op-type call count
- *   <li>{@code hdfs_op_latency} — per-op-type latency in ms
- *   <li>{@code hdfs_op_error} — per-op-type error count
- *   <li>{@code hdfs_op_slow_1s} — ops exceeding 1 second
- *   <li>{@code hdfs_op_slow_5s} — ops exceeding 5 seconds
+ *   <li>{@code <opName>{metric_type=hdfs_op_total}} — per-op-type call count
+ *   <li>{@code <opName>{metric_type=hdfs_op_latency}} — per-op-type latency in ms
+ *   <li>{@code <opName>{metric_type=hdfs_op_error}} — per-op-type error count
+ *   <li>{@code <opName>{metric_type=hdfs_op_slow_1s}} — ops exceeding 1 second
+ *   <li>{@code <opName>{metric_type=hdfs_op_slow_5s}} — ops exceeding 5 seconds
+ *   <li>{@code <opName>{metric_type=hdfs_op_exception, exception_class=...}} — exception count
  *   <li>{@code hdfs_read_bytes} — bytes read per stream lifetime
  *   <li>{@code hdfs_write_bytes} — bytes written per stream lifetime
  * </ul>
  */
 public class MetricsFileIO implements FileIO {
+
+    interface MetricsEmitListener {
+        void onCount(String name, Map<String, String> tags);
+
+        void onValue(String name, long value, @Nullable Map<String, String> tags);
+    }
+
+    @Nullable private static volatile MetricsEmitListener testMetricsListener;
+
+    static void setTestMetricsListener(@Nullable MetricsEmitListener listener) {
+        testMetricsListener = listener;
+    }
 
     private static final long serialVersionUID = 1L;
 
@@ -200,21 +221,49 @@ public class MetricsFileIO implements FileIO {
     }
 
     private void reportSuccess(String opName, long duration) {
-        LegacyPerfCompat.count(opName, "hdfs_op_total");
-        LegacyPerfCompat.value(opName, "hdfs_op_latency", duration);
+        emitCount(opName, hdfsMetricTags(opName, "hdfs_op_total"));
+        emitValue(opName, duration, hdfsMetricTags(opName, "hdfs_op_latency"));
         if (duration >= SLOW_THRESHOLD_1S) {
-            LegacyPerfCompat.count(opName, "hdfs_op_slow_1s");
+            emitCount(opName, hdfsMetricTags(opName, "hdfs_op_slow_1s"));
         }
         if (duration >= SLOW_THRESHOLD_5S) {
-            LegacyPerfCompat.count(opName, "hdfs_op_slow_5s");
+            emitCount(opName, hdfsMetricTags(opName, "hdfs_op_slow_5s"));
         }
     }
 
     private void reportError(String opName, long duration, IOException e) {
         reportSuccess(opName, duration);
-        LegacyPerfCompat.count(opName, "hdfs_op_error");
-        String exceptionName = e.getClass().getSimpleName();
-        LegacyPerfCompat.count(exceptionName, opName, "hdfs_op_exception");
+        emitCount(opName, hdfsMetricTags(opName, "hdfs_op_error"));
+        Map<String, String> exceptionTags = hdfsMetricTags(opName, "hdfs_op_exception");
+        exceptionTags.put("exception_class", e.getClass().getSimpleName());
+        emitCount(opName, exceptionTags);
+    }
+
+    private static void emitCount(String name, Map<String, String> tags) {
+        MetricsReporter.count(name, tags);
+        MetricsEmitListener listener = testMetricsListener;
+        if (listener != null) {
+            listener.onCount(name, tags);
+        }
+    }
+
+    private static void emitValue(String name, long value, @Nullable Map<String, String> tags) {
+        if (tags == null) {
+            MetricsReporter.value(name, value);
+        } else {
+            MetricsReporter.value(name, value, tags);
+        }
+        MetricsEmitListener listener = testMetricsListener;
+        if (listener != null) {
+            listener.onValue(name, value, tags);
+        }
+    }
+
+    private static Map<String, String> hdfsMetricTags(String opName, String metricType) {
+        Map<String, String> tags = new HashMap<>();
+        tags.put("op", opName);
+        tags.put("metric_type", metricType);
+        return tags;
     }
 
     // --- stream wrappers ---
@@ -252,7 +301,7 @@ public class MetricsFileIO implements FileIO {
             } finally {
                 long total = bytesRead.get();
                 if (total > 0) {
-                    LegacyPerfCompat.value("hdfs_read_bytes", total);
+                    emitValue("hdfs_read_bytes", total, null);
                 }
             }
         }
@@ -291,7 +340,7 @@ public class MetricsFileIO implements FileIO {
             } finally {
                 long total = bytesWritten.get();
                 if (total > 0) {
-                    LegacyPerfCompat.value("hdfs_write_bytes", total);
+                    emitValue("hdfs_write_bytes", total, null);
                 }
             }
         }

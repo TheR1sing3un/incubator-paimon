@@ -20,6 +20,7 @@ package org.apache.paimon.rest.server;
 
 import org.apache.paimon.options.Options;
 
+import com.kuaishou.kling.lakehouse.metrics.MetricsConfig;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -69,7 +70,6 @@ class RESTCatalogServerConfigTest {
         props.setProperty("metrics.cluster", "test-cluster");
         props.setProperty("metrics.namespace", "test.namespace");
         props.setProperty("metrics.deploy-group", "canary");
-        props.setProperty("metrics.version", "2.0.0");
         props.setProperty("metrics.conf-version", "v1");
         props.setProperty("metrics.caller-registry", "app1,app2,app3");
         try (FileOutputStream fos = new FileOutputStream(configFile.toFile())) {
@@ -84,7 +84,6 @@ class RESTCatalogServerConfigTest {
         assertThat(options.get(RESTCatalogServerOptions.METRICS_NAMESPACE))
                 .isEqualTo("test.namespace");
         assertThat(options.get(RESTCatalogServerOptions.METRICS_DEPLOY_GROUP)).isEqualTo("canary");
-        assertThat(options.get(RESTCatalogServerOptions.METRICS_VERSION)).isEqualTo("2.0.0");
         assertThat(options.get(RESTCatalogServerOptions.METRICS_CONF_VERSION)).isEqualTo("v1");
         assertThat(options.get(RESTCatalogServerOptions.METRICS_CALLER_REGISTRY))
                 .isEqualTo("app1,app2,app3");
@@ -97,10 +96,110 @@ class RESTCatalogServerConfigTest {
                 .isEqualTo("paimon-catalog");
         assertThat(options.get(RESTCatalogServerOptions.METRICS_CLUSTER)).isEqualTo("default");
         assertThat(options.get(RESTCatalogServerOptions.METRICS_NAMESPACE))
-                .isEqualTo("paimon.rest.catalog");
+                .isEqualTo("kling.paimon.catalog");
         assertThat(options.get(RESTCatalogServerOptions.METRICS_DEPLOY_GROUP)).isEqualTo("stable");
-        assertThat(options.get(RESTCatalogServerOptions.METRICS_VERSION)).isEqualTo("SNAPSHOT");
         assertThat(options.get(RESTCatalogServerOptions.METRICS_CONF_VERSION)).isEqualTo("");
         assertThat(options.get(RESTCatalogServerOptions.METRICS_CALLER_REGISTRY)).isEqualTo("");
+    }
+
+    @Test
+    void testBuildMetricsConfigFromOptions() {
+        Options options = new Options();
+        options.set(RESTCatalogServerOptions.METRICS_SERVICE, "my-service");
+        options.set(RESTCatalogServerOptions.METRICS_CLUSTER, "my-cluster");
+        options.set(RESTCatalogServerOptions.METRICS_DEPLOY_GROUP, "canary");
+        options.set(RESTCatalogServerOptions.METRICS_CONF_VERSION, "v2");
+
+        // No env overrides (all null)
+        MetricsConfig config =
+                RESTCatalogServer.buildMetricsConfig(
+                        options, "test-host", 8080, "3.0.0", null, null, null, null);
+
+        assertThat(config.getService()).isEqualTo("my-service");
+        assertThat(config.getCluster()).isEqualTo("my-cluster");
+        // Namespace is hardcoded as cluster + ".kling.paimon.catalog"
+        assertThat(config.getNamespace()).isEqualTo("my-cluster.kling.paimon.catalog");
+        assertThat(config.getDeployGroup()).isEqualTo("canary");
+        assertThat(config.getVersion()).isEqualTo("3.0.0");
+        assertThat(config.getConfVersion()).isEqualTo("v2");
+        assertThat(config.getHost()).isEqualTo("test-host");
+        assertThat(config.getPort()).isEqualTo("8080");
+    }
+
+    @Test
+    void testBuildMetricsConfigDefaults() {
+        Options options = new Options();
+
+        MetricsConfig config =
+                RESTCatalogServer.buildMetricsConfig(
+                        options, "host1", 9090, "dev", null, null, null, null);
+
+        // Aligned with dataset-catalog: namespace is {cluster}.{suffix}
+        assertThat(config.getNamespace()).isEqualTo("default.kling.paimon.catalog");
+        assertThat(config.getService()).isEqualTo("paimon-catalog");
+        assertThat(config.getCluster()).isEqualTo("default");
+        assertThat(config.getDeployGroup()).isEqualTo("stable");
+        assertThat(config.getVersion()).isEqualTo("dev");
+        assertThat(config.getConfVersion()).isEqualTo("");
+    }
+
+    @Test
+    void testBuildMetricsConfigEnvOverrides() {
+        Options options = new Options();
+        options.set(RESTCatalogServerOptions.METRICS_CLUSTER, "config-cluster");
+        options.set(RESTCatalogServerOptions.METRICS_DEPLOY_GROUP, "config-deploy");
+
+        // Env vars override config options, and cluster dots are normalized to underscores.
+        // KCS_IMAGE_VERSION (envDeployGroup) wins over config when GRAY_GROUP_NAME is null.
+        MetricsConfig config =
+                RESTCatalogServer.buildMetricsConfig(
+                        options, "host1", 8080, "dev", "env.cluster", null, "env-deploy", "pod-1");
+
+        assertThat(config.getCluster()).isEqualTo("env_cluster");
+        assertThat(config.getNamespace()).isEqualTo("env_cluster.kling.paimon.catalog");
+        assertThat(config.getDeployGroup()).isEqualTo("env-deploy");
+        // version uses KCS_IMAGE_VERSION when set
+        assertThat(config.getVersion()).isEqualTo("env-deploy");
+        assertThat(config.getPodName()).isEqualTo("pod-1");
+    }
+
+    @Test
+    void testBuildMetricsConfigGrayGroupPrecedence() {
+        Options options = new Options();
+        options.set(RESTCatalogServerOptions.METRICS_DEPLOY_GROUP, "config-deploy");
+
+        // GRAY_GROUP_NAME wins over KCS_IMAGE_VERSION and config for deployGroup.
+        // version still follows KCS_IMAGE_VERSION regardless of gray group.
+        MetricsConfig config =
+                RESTCatalogServer.buildMetricsConfig(
+                        options, "host", 8080, "project-ver", null, "gray-123", "image-v5", null);
+
+        assertThat(config.getDeployGroup()).isEqualTo("gray-123");
+        assertThat(config.getVersion()).isEqualTo("image-v5");
+    }
+
+    @Test
+    void testBuildMetricsConfigVersionFallback() {
+        Options options = new Options();
+
+        // Case 1: no env -> projectVersion
+        MetricsConfig config1 =
+                RESTCatalogServer.buildMetricsConfig(
+                        options, "host", 8080, "1.2.3", null, null, null, null);
+        assertThat(config1.getVersion()).isEqualTo("1.2.3");
+        assertThat(config1.getDeployGroup()).isEqualTo("stable");
+
+        // Case 2: KCS_IMAGE_VERSION (envDeployGroup) set -> used for both deployGroup and version
+        MetricsConfig config2 =
+                RESTCatalogServer.buildMetricsConfig(
+                        options, "host", 8080, "1.2.3", null, null, "image-v2", null);
+        assertThat(config2.getVersion()).isEqualTo("image-v2");
+        assertThat(config2.getDeployGroup()).isEqualTo("image-v2");
+
+        // Case 3: projectVersion "dev" is still used verbatim when no env
+        MetricsConfig config3 =
+                RESTCatalogServer.buildMetricsConfig(
+                        options, "host", 8080, "dev", null, null, null, null);
+        assertThat(config3.getVersion()).isEqualTo("dev");
     }
 }

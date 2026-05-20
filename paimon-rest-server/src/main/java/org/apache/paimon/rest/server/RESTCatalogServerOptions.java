@@ -186,21 +186,18 @@ public class RESTCatalogServerOptions {
     public static final ConfigOption<String> METRICS_NAMESPACE =
             ConfigOptions.key("metrics.namespace")
                     .stringType()
-                    .defaultValue("paimon.rest.catalog")
+                    .defaultValue("kling.paimon.catalog")
                     .withDescription(
-                            "Metrics namespace. Default preserves legacy PerfUtil compatibility.");
+                            "Metrics namespace suffix. The cluster name is prepended at runtime, "
+                                    + "producing \"{cluster}.{suffix}\" (e.g. "
+                                    + "\"prod.kling.paimon.catalog\"). Aligned with "
+                                    + "dataset-catalog's namespace convention.");
 
     public static final ConfigOption<String> METRICS_DEPLOY_GROUP =
             ConfigOptions.key("metrics.deploy-group")
                     .stringType()
                     .defaultValue("stable")
                     .withDescription("Deploy group tag for metrics.");
-
-    public static final ConfigOption<String> METRICS_VERSION =
-            ConfigOptions.key("metrics.version")
-                    .stringType()
-                    .defaultValue("SNAPSHOT")
-                    .withDescription("Application version tag for metrics.");
 
     public static final ConfigOption<String> METRICS_CONF_VERSION =
             ConfigOptions.key("metrics.conf-version")

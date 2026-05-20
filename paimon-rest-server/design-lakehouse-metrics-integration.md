@@ -7,7 +7,7 @@
 | 指标域 | 现有指标 key | 当前来源 |
 |---|---|---|
 | Catalog 操作 | `catalog_op_total`、`catalog_op_latency`、`catalog_op_error`、`commit_conflict_total` | `MetricsHelper` / `SnapshotHandler` |
-| HTTP 请求 | `request_latency`、`request_body_size`、`request_{statusCode}`、`request_by_app`、`request_error_detail`、`request_slow_1s`、`request_slow_5s`、`request_exception` | `RouteDispatcher` |
+| HTTP 请求 | `request_body_size` 以及以 `routeKey`（`METHOD:endpoint`）为 subtag、按 `metric_type` tag 区分语义的 legacy 兼容指标（`request_latency` / `request_count` / `request_by_app` / `request_slow_1s` / `request_slow_5s` / `request_error_detail` / `request_exception`） | `RouteDispatcher` |
 | 文件 I/O | `hdfs_op_total`、`hdfs_op_latency`、`hdfs_op_error`、`hdfs_op_exception`、`hdfs_op_slow_1s`、`hdfs_op_slow_5s`、`hdfs_read_bytes`、`hdfs_write_bytes` | `MetricsFileIO` |
 | 认证 | `auth_success`、`auth_failure`、`auth_failure_detail`、`auth_latency` | `AuthChannelHandler` |
 | 元数据 | `metadata_op_total`、`metadata_op_latency`、`metadata_op_error` | `JdbcMetadataStore` |
@@ -55,8 +55,9 @@ namespace + fixed subtag + low-cardinality tags + sample
 
 1. 新图表和新告警优先按 tags 查询。
 2. `endpoint`、`caller_app`、`status_code`、`error_code`、`dep_service`、`dep_endpoint` 等维度进入 tags。
-3. 不再把 `endpoint`、`caller` 等动态部分继续编码进新 subtag。
+3. 不再把 `endpoint`、`caller` 等动态部分继续编码进**新增**的标准 subtag。
 4. `{endpoint}.qps`、`{endpoint}.latency`、`{endpoint}.hdfs.latency` 这类命名不作为新接入标准。
+5. **例外（legacy bridge）**：`RouteDispatcher.reportLegacyRequestMetrics` 路径上的旧 `request_*` 兼容指标采用 `subtag = routeKey = METHOD:endpoint`（如 `POST:commit_snapshot`），并通过 `metric_type` tag 承载原指标名语义（参见 §3.1.B / §6.5.1）；仅作为旧 dashboard / alert 的桥接，新接入仍应使用标准 subtag。`request_body_size` 是该路径上的唯一保留字面 subtag。
 
 ### 2.3 Netty 适配，不直接使用 Jersey Filter
 
@@ -174,25 +175,51 @@ paimon.rest.catalog
 4. **dependency tags**：如 `dep_service`、`dep_endpoint`、`status`，由 `DependencyTracker` 单独产生。
 5. **高基数字段**：如 `trace_id`、`caller_ip`、`caller_user`，仅进入 access log，不进入 metrics tags。
 
-### 3.3 存量业务指标继续保留
+### 3.3 存量业务指标的处置策略
 
-以下指标保持 key 不变，但**不能简单理解为“把 `PerfUtil` 全部改成 `MetricsReporter.count/value(Map tags)` 就完成兼容”**。原因是旧 `PerfUtil` 依赖历史 `PerfUtils` 的参数位语义（`namespace + subtag + table + key`），而当前 `MetricsReporter` 真实模型是 `namespace + subtag + encoded extras`。
+存量指标按当前真实落地状态分为三类，不再统一走"全部 legacy bridge"路线：
 
-因此本文档要求：
+#### A. catalog 操作类：直接采用新口径，不再恢复旧固定 key 兼容语义
 
-- 存量业务指标迁移时引入 **legacy bridge / compatibility adapter**；
-- 由适配层兼容旧 `PerfUtils.perf(namespace, subtag, table, key)` 语义；
-- 新增固定 subtag 指标才直接走 `MetricsReporter.count/value/gauge(Map tags)`。
-
-需要通过 legacy bridge 保持兼容的存量指标包括：
-
+涉及指标：
 - `catalog_op_total` / `catalog_op_latency` / `catalog_op_error`
 - `commit_conflict_total`
-- `request_latency` / `request_body_size` / `request_{statusCode}` / `request_by_app` / `request_error_detail` / `request_slow_1s` / `request_slow_5s` / `request_exception`
-- `hdfs_op_total` / `hdfs_op_latency` / `hdfs_op_error` / `hdfs_op_exception` / `hdfs_op_slow_1s` / `hdfs_op_slow_5s` / `hdfs_read_bytes` / `hdfs_write_bytes`
-- `auth_success` / `auth_failure` / `auth_failure_detail` / `auth_latency`
-- `metadata_op_total` / `metadata_op_latency` / `metadata_op_error`
-- `netty_connection_total`
+
+编码方式：
+- metric name = opName（如 `get_table` / `commit_snapshot`）
+- tags = `op + (optional) table + metric_type`
+- 错误路径补 `error_class`
+
+调用入口：`MetricsHelper.wrapCatalogOp(opName[, tableId | tableIdHolder], callable)` / `MetricsHelper.reportCount(opName, tableId, metricKey)`。直接调用 `MetricsReporter.count/value(name, tags)`，不再走 legacy bridge。
+
+#### B. request 类：新旧并行
+
+旧 `request_*` 指标保留并通过本地 legacy 编码恢复，与新 `http.request.*` / `caller.request.*` 同时上报：
+
+- 新口径：`http.request.total` / `http.request.latency` / `http.request.error_total` / `http.request.body_size` / `http.request.slow_total` / `http.request.in_flight` / `http.request.app_total` / `http.request.stage.{db|hdfs|rpc|permission|internal}.latency` / `caller.request.total` / `caller.request.latency`
+- 旧口径（兼容口）：除 `request_body_size` 保留字面 subtag 外，其余 legacy 指标的 subtag 一律改为 `routeKey = METHOD:endpoint`，并通过 `metric_type` tag 区分原语义（`request_latency` / `request_count` / `request_by_app` / `request_slow_1s` / `request_slow_5s` / `request_error_detail` / `request_exception`）。这是为旧 dashboard / alert 提供的 legacy bridge，新增图表/告警应优先使用新口径。
+
+旧 `request_*` 的维度通过本地 `legacyTags(...)` / `legacyTagsWithType(...)` 直接放进 tags map，不引入跨模块的 legacy bridge：
+- `route` 维度统一为 `method:endpoint`（例如 `GET:GET__v1_test_endpoint`），同时作为非 body_size 类指标的 subtag
+- `request_latency` / `request_slow_1s` / `request_slow_5s` 使用 `route + user + metric_type`
+- `request_count`（即原 `request_{statusCode}`）使用 `route + user + status_code + metric_type`
+- `request_by_app` 使用 `route + app + metric_type`
+- `request_body_size`（唯一保留字面 subtag）使用 `route + user`，不带 `metric_type`
+- `request_error_detail` 使用 `route + detail + metric_type`
+- `request_exception` 使用 `exception + detail + metric_type`
+
+#### C. HDFS / FileIO 类：操作类已切新口径，bytes 类保持原名
+
+操作类指标（原 `hdfs_op_total` / `hdfs_op_latency` / `hdfs_op_error` / `hdfs_op_exception` / `hdfs_op_slow_1s` / `hdfs_op_slow_5s`）改为新口径：
+- metric name = opName（如 `open_input` / `exists` / `delete`）
+- tags = `op + metric_type`
+- 异常路径额外补 `exception_class`
+
+bytes 指标保留原名：`hdfs_read_bytes` / `hdfs_write_bytes`，无业务 tags（仅由 stream wrapper 在 close 时上报累计字节）。
+
+#### D. 其他模块（auth / metadata / netty）
+
+`auth_success` / `auth_failure` / `auth_failure_detail` / `auth_latency` / `metadata_op_total` / `metadata_op_latency` / `metadata_op_error` / `netty_connection_total` 仅做上报通道替换，不在本轮迁移中重新设计 key 命名。具体编码保持现状。
 
 ### 3.4 关于 Dashboard / Alert 的口径
 
@@ -353,71 +380,101 @@ if (poolCollector != null) {
 2. collector 启动/停止失败不能影响主服务启动/停机。
 3. 不能遗留非 daemon 线程阻塞退出。
 
-## 6.4 `MetricsHelper`：存量 catalog 指标迁移
+## 6.4 `MetricsHelper`：catalog 操作类指标采用新口径
 
-`MetricsHelper` 保留当前模板方法接口，但迁移方式必须显式走 **legacy bridge**，而不是直接把 `op` / `table` 塞进 `Map tags` 伪装成兼容。
+`MetricsHelper` 保留当前模板方法接口，但**已明确不再恢复 `catalog_op_*` 旧固定 key 兼容语义**，直接以新口径 `MetricsReporter.count/value(name, tags)` 上报。
 
-改造后示意：
+新口径编码规则：
+- metric name = opName（例如 `get_table` / `list_databases` / `commit_snapshot`）
+- tags = `op + (optional) table + metric_type`，其中 `metric_type ∈ {catalog_op_total, catalog_op_latency, catalog_op_error, commit_conflict_total}`
+- 错误路径额外补 `error_class`
+
+实际实现（与 `MetricsHelper.java` 一致）：
 
 ```java
 public static <T> T wrapCatalogOp(String opName, String tableId, Callable<T> callable)
         throws Exception {
     long start = System.currentTimeMillis();
+    Map<String, String> totalTags = catalogTags(opName, tableId, "catalog_op_total");
+    Map<String, String> latencyTags = catalogTags(opName, tableId, "catalog_op_latency");
     try {
         T result = callable.call();
         long duration = System.currentTimeMillis() - start;
-        LegacyPerfCompat.count(opName, tableId, "catalog_op_total");
-        LegacyPerfCompat.value(opName, tableId, "catalog_op_latency", duration);
+        MetricsReporter.count(opName, totalTags);
+        MetricsReporter.value(opName, duration, latencyTags);
         return result;
     } catch (Exception e) {
         long duration = System.currentTimeMillis() - start;
-        LegacyPerfCompat.count(opName, tableId, "catalog_op_total");
-        LegacyPerfCompat.count(opName, tableId, "catalog_op_error");
-        LegacyPerfCompat.value(opName, tableId, "catalog_op_latency", duration);
+        MetricsReporter.count(opName, totalTags);
+        Map<String, String> errorTags = catalogTags(opName, tableId, "catalog_op_error");
+        errorTags.put("error_class", e.getClass().getSimpleName());
+        MetricsReporter.count(opName, errorTags);
+        MetricsReporter.value(opName, duration, latencyTags);
         throw e;
     }
 }
 ```
 
 说明：
-
-- 旧 key 保持不变；
-- legacy bridge 的职责是兼容旧 `PerfUtils` 参数位，而不是引入新的 tags 模型；
-- `safePerf()` 不再需要由调用方显式包裹，fail-safe 由适配层或 `MetricsReporter` 兜底；
-- `SnapshotHandler` 通过 `MetricsHelper.reportCount()` 间接受益，无需单独改指标名。
+- 不再引入跨模块 legacy bridge；catalog 类指标的所有 op/table/metric_type 维度都通过 tags map 直接传递。
+- 兼容旧查询的责任已移出代码层 —— 旧 `subtag + table + key` 三段式查询不再被保留，需要在 Dashboard / Alert 侧按新口径迁移。
+- `wrapCatalogOp(String, Callable)` / `wrapCatalogOp(String, String[], Callable)` / `wrapCatalogOpVoid(...)` / `reportCount(String, String, String)` 共四个重载，分别处理"无 tableId"/"延迟解析 tableId"/"void 操作"/"显式 count"四类场景。
+- `safePerf()` 已废弃；fail-safe 由 `MetricsReporter` 自身在未初始化时 no-op 兜底。
 
 ## 6.5 `RouteDispatcher`：手动实现 request lifecycle
 
-### 6.5.1 保留旧 request 指标
+### 6.5.1 旧 `request_*` 指标的处置：本地 legacy 编码，新旧并行
 
-`reportRequestMetrics()` 继续保留以下指标：
+`reportLegacyRequestMetrics(...)` 继续保留以下 legacy 兼容指标，与新 `http.request.*` / `caller.request.*` 同时上报；除 `request_body_size` 仍以字面值作 subtag 之外，其余指标的 subtag 均改为 `routeKey = METHOD:endpoint`，原指标名通过 `metric_type` tag 携带：
 
-- `request_latency`
-- `request_body_size`
-- `request_{statusCode}`
-- `request_by_app`
-- `request_error_detail`
-- `request_slow_1s`
-- `request_slow_5s`
-- `request_exception`
+- `request_latency`（subtag = routeKey, metric_type = `request_latency`）
+- `request_body_size`（subtag = 字面 `request_body_size`，无 metric_type）
+- `request_count`（subtag = routeKey, metric_type = `request_count`，新增 `status_code` tag）— 取代原 `request_{statusCode}`
+- `request_by_app`（subtag = routeKey, metric_type = `request_by_app`）
+- `request_error_detail`（subtag = routeKey, metric_type = `request_error_detail`）
+- `request_slow_1s`（subtag = routeKey, metric_type = `request_slow_1s`）
+- `request_slow_5s`（subtag = routeKey, metric_type = `request_slow_5s`）
+- `request_exception`（subtag = routeKey, metric_type = `request_exception`）
 
-其改造目标是：**仅替换上报通道，不改变旧 key 语义**，因此这里同样应通过 legacy bridge 保持 `route` / `user` / `app` 等历史参数位语义。
+**编码方式不再依赖跨模块 legacy bridge**，而是在 `RouteDispatcher` 内部用 `legacyTags(k1, v1, k2, v2)` / `legacyTagsWithType(k1, v1, k2, v2, metricType)` 直接构造 tags map 后调用 `MetricsReporter.count/value(name, tags)`。route 维度统一为 `method:endpoint`（例如 `GET:GET__v1_test_endpoint`）。
 
-示意：
-
-```java
-String routeKey = method + ":" + routePattern;
-LegacyPerfCompat.value(routeKey, userId, "request_latency", durationMs);
-LegacyPerfCompat.value(routeKey, userId, "request_body_size", bodyLength);
-LegacyPerfCompat.count(routeKey, userId, "request_" + statusCode);
-LegacyPerfCompat.count(routeKey, appId, "request_by_app");
-```
-
-异常路径还必须补上：
+实际实现（与 `RouteDispatcher.java` 一致）：
 
 ```java
-LegacyPerfCompat.count(exceptionName, exceptionExtra, "request_exception");
+String routeKey = buildLegacyRouteKey(snapshot); // method + ":" + endpointName
+String callerUser = firstNonEmpty(snapshot.getCallerUser(), "-");
+String callerApp = firstNonEmpty(snapshot.getCallerApp(), "unknown");
+
+emitValue(
+        routeKey,
+        snapshot.getDurationMs(),
+        legacyTagsWithType("route", routeKey, "user", callerUser, "request_latency"));
+Map<String, String> countTags =
+        legacyTagsWithType("route", routeKey, "user", callerUser, "request_count");
+countTags.put("status_code", String.valueOf(snapshot.getStatusCode()));
+emitCount(routeKey, countTags);
+emitCount(
+        routeKey,
+        legacyTagsWithType("route", routeKey, "app", callerApp, "request_by_app"));
 ```
+
+异常路径补：
+
+```java
+emitCount(
+        routeKey,
+        legacyTagsWithType(
+                "exception",
+                exceptionType,
+                "detail",
+                firstNonEmpty(errorDetail, exceptionType),
+                "request_exception"));
+```
+
+说明：
+- `reportLegacyRequestMetrics(...)` 在 `reportStandardRequestMetrics(...)` 末尾被显式调用，确保新旧指标在同一收尾路径里同步上报。
+- 不再引入 `LegacyPerfCompat` 等跨模块适配层；本服务的"旧 request 兼容"语义局部内聚于 `RouteDispatcher`。
+- 旧查询如果原本依赖 `subtag + table + key` 三段式，需要在 Dashboard / Alert 侧改为按 tags map 查询。
 
 ### 6.5.2 引入 `RequestMetricsContext`
 
@@ -457,25 +514,24 @@ ctx.setSdkVersion(callerInfo.getSdkVersion());
 - `{endpoint}.internal.latency`
 - `{endpoint}.paimon.latency`
 
-因此本文档在 Paimon 场景明确采用：
+因此本文档在 Paimon 场景明确采用 **方案 B（已落地）**：
 
 1. `RequestMetricsSnapshot` 仍然作为 request lifecycle 的聚合结果；
-2. `paimon-rest-server` 在 `finishMetricsContext(...)` 中显式调用本地方法（如 `reportStandardRequestMetrics(snapshot)`）输出固定 subtag 指标；
-3. 当前不把 `MetricsReporter.reportRequestSnapshot(snapshot)` 作为本服务新指标的标准出口，除非后续先改造 `kling-lakehouse-metrics` 源码。
+2. `paimon-rest-server` 在 `finishRequestMetricsContext(...)` 中显式调用本地方法 `reportStandardRequestMetrics(snapshot, requestSize, exceptionType)` 输出固定 subtag 指标；
+3. **不**把 `MetricsReporter.reportRequestSnapshot(snapshot)` 作为本服务新指标的标准出口。
 
-`reportStandardRequestMetrics(snapshot)` 应统一产生以下新增指标：
+`reportStandardRequestMetrics(snapshot, requestSize, exceptionType)` 当前一次性产出：
 
-- `http.request.total`
-- `http.request.latency`
-- `http.request.error_total`
-- `caller.request.total`
-- `caller.request.latency`
-- `http.request.stage.hdfs.latency`
-- `http.request.stage.rpc.latency`
-- `http.request.stage.permission.latency`
-- `http.request.stage.internal.latency`
+- `http.request.total` / `http.request.latency`
+- `caller.request.total` / `caller.request.latency`
+- `http.request.app_total`（仅含 `caller_app` 维度，避免高基数）
+- `http.request.body_size`（requestSize ≥ 0 时）
+- `http.request.slow_total`（duration > 1s / 5s 各打一次，threshold tag 区分）
+- `http.request.error_total`（status ≥ 400 时，附带 `error_code` 与 `exception_type`）
+- `http.request.stage.{db|hdfs|rpc|permission|internal}.latency`（各阶段 > 0 时分别上报）
+- 末尾调用 `reportLegacyRequestMetrics(...)`，同步发出 §6.5.1 的旧 `request_*`
 
-`http.request.in_flight` 则继续由 request begin / finish 路径单独上报，不混在 snapshot 方法内部。
+`http.request.in_flight` 由 `reportInFlightGauge()` 在 begin / finish / finally 三个时点单独上报，不混在 snapshot 方法内部。
 
 ### 6.5.4 caller 提取策略
 
@@ -518,50 +574,83 @@ private CallerInfo extractCaller(HttpHeaders headers) {
 
 ## 6.6 `MetricsFileIO` + `DependencyTracker`
 
-`MetricsFileIO` 需要同时满足两类目标：
+`MetricsFileIO` 已切换到与 catalog 一致的新口径，**不再保留 `hdfs_op_*` 旧固定 metric name**。同时通过 `DependencyTracker` 接入统一 dependency / request stage 体系。
 
-1. 保留现有 HDFS/FileIO 指标 key；
-2. 将 HDFS 调用纳入统一 dependency / request stage 体系。
+新口径编码规则：
+- metric name = opName（如 `open_input` / `open_output` / `get_status` / `list` / `exists` / `delete` / `mkdirs` / `rename`）
+- tags = `op + metric_type`，其中 `metric_type ∈ {hdfs_op_total, hdfs_op_latency, hdfs_op_error, hdfs_op_slow_1s, hdfs_op_slow_5s, hdfs_op_exception}`
+- 异常路径额外补 `exception_class`
+- bytes 指标 `hdfs_read_bytes` / `hdfs_write_bytes` 保留原名，由 stream wrapper 在 close 时上报累计字节，无业务 tags
 
-示意：
+实际实现（与 `MetricsFileIO.java` 一致）：
 
 ```java
+@Override
 public SeekableInputStream newInputStream(Path path) throws IOException {
-    return DependencyTracker.trackCall("hdfs", "open_input", StageType.HDFS, () -> {
-        long start = System.currentTimeMillis();
-        try {
-            SeekableInputStream is = delegate.newInputStream(path);
-            long duration = System.currentTimeMillis() - start;
-            LegacyPerfCompat.count("open_input", "hdfs_op_total");
-            LegacyPerfCompat.value("open_input", "hdfs_op_latency", duration);
-            if (duration >= 1000) {
-                LegacyPerfCompat.count("open_input", "hdfs_op_slow_1s");
-            }
-            if (duration >= 5000) {
-                LegacyPerfCompat.count("open_input", "hdfs_op_slow_5s");
-            }
-            return new MetricsInputStream(is);
-        } catch (IOException e) {
-            long duration = System.currentTimeMillis() - start;
-            LegacyPerfCompat.count("open_input", "hdfs_op_total");
-            LegacyPerfCompat.count("open_input", "hdfs_op_error");
-            LegacyPerfCompat.count("open_input", e.getClass().getSimpleName(), "hdfs_op_exception");
-            LegacyPerfCompat.value("open_input", "hdfs_op_latency", duration);
-            throw e;
-        }
-    });
+    try {
+        return DependencyTracker.trackCall(
+                "hdfs",
+                "open_input",
+                DependencyTracker.StageType.HDFS,
+                () -> {
+                    long start = System.currentTimeMillis();
+                    try {
+                        SeekableInputStream stream = delegate.newInputStream(path);
+                        long duration = System.currentTimeMillis() - start;
+                        reportSuccess("open_input", duration);
+                        return new MetricsInputStream(stream);
+                    } catch (IOException e) {
+                        long duration = System.currentTimeMillis() - start;
+                        reportError("open_input", duration, e);
+                        throw e;
+                    }
+                });
+    } catch (IOException e) {
+        throw e;
+    } catch (Exception e) {
+        throw new IOException("Failed to track HDFS input open", e);
+    }
+}
+
+private void reportSuccess(String opName, long duration) {
+    emitCount(opName, hdfsMetricTags(opName, "hdfs_op_total"));
+    emitValue(opName, duration, hdfsMetricTags(opName, "hdfs_op_latency"));
+    if (duration >= SLOW_THRESHOLD_1S) {
+        emitCount(opName, hdfsMetricTags(opName, "hdfs_op_slow_1s"));
+    }
+    if (duration >= SLOW_THRESHOLD_5S) {
+        emitCount(opName, hdfsMetricTags(opName, "hdfs_op_slow_5s"));
+    }
+}
+
+private void reportError(String opName, long duration, IOException e) {
+    reportSuccess(opName, duration);
+    emitCount(opName, hdfsMetricTags(opName, "hdfs_op_error"));
+    Map<String, String> exceptionTags = hdfsMetricTags(opName, "hdfs_op_exception");
+    exceptionTags.put("exception_class", e.getClass().getSimpleName());
+    emitCount(opName, exceptionTags);
 }
 ```
 
 额外收益：
 
-- 产生 `dependency.request.total` / `dependency.request.latency` / `dependency.request.error_total`；
+- 通过 `DependencyTracker.trackCall("hdfs", opName, StageType.HDFS, ...)` 自动产生 `dependency.request.total` / `dependency.request.latency` / `dependency.request.error_total`；
 - 自动把 HDFS 阶段耗时累加到 `RequestMetricsContext.hdfsTime`；
 - 最终汇总到 `http.request.stage.hdfs.latency`。
 
+bytes 指标：
+
+```java
+// 在 MetricsInputStream / MetricsOutputStream 的 close() 中
+emitValue("hdfs_read_bytes", total, null);
+emitValue("hdfs_write_bytes", total, null);
+```
+
+注意：旧固定 key `hdfs_op_total` / `hdfs_op_latency` / `hdfs_op_error` / `hdfs_op_exception.<ExceptionName>` / `hdfs_op_slow_1s` / `hdfs_op_slow_5s` 已不再作为 metric name 使用。原有依赖这些 key 直接查询的 Dashboard / Alert 必须按新口径迁移到 `metric name = opName + tag metric_type=...` 的查询模式。
+
 ## 6.7 `AuthChannelHandler` / `ConnectionMetricsHandler` / `JdbcMetadataStore`
 
-这三个模块的目标相对简单：保留旧指标 key，仅替换上报入口。
+这三个模块不在本轮 metrics 调整的核心范围内（核心范围是 catalog / request / hdfs 三类），目标仅是上报通道替换为 `MetricsReporter`，旧 metric key 与维度形态保持现状。
 
 示意：
 
@@ -569,17 +658,19 @@ public SeekableInputStream newInputStream(Path path) throws IOException {
 // AuthChannelHandler
 MetricsReporter.count("auth_success");
 MetricsReporter.count("auth_failure");
-LegacyPerfCompat.count(uri, "auth_failure_detail");
+MetricsReporter.count("auth_failure_detail", Collections.singletonMap("uri", uri));
 MetricsReporter.value("auth_latency", duration);
 
 // ConnectionMetricsHandler
 MetricsReporter.count("netty_connection_total");
 
 // JdbcMetadataStore
-LegacyPerfCompat.count(opName, "metadata_op_total");
-LegacyPerfCompat.value(opName, "metadata_op_latency", duration);
-LegacyPerfCompat.count(opName, "metadata_op_error");
+MetricsReporter.count("metadata_op_total", Collections.singletonMap("op", opName));
+MetricsReporter.value("metadata_op_latency", duration, Collections.singletonMap("op", opName));
+MetricsReporter.count("metadata_op_error", Collections.singletonMap("op", opName));
 ```
+
+如果后续这些模块的查询口径需要重新设计，应单独立项，不混入本轮 metrics 文档。
 
 ## 6.8 Access Log 方案
 
@@ -720,14 +811,15 @@ metrics.caller-registry=dataset-catalog,harbor,search-sync,index
    - `RequestMetricsContext.begin(endpointName)`
    - caller 提取与上下文字段填充
    - request 开始时上报一次 `http.request.in_flight`
-3. 在所有返回路径统一走 `finishMetricsContext(...)`：
+3. 在所有返回路径统一走 `finishRequestMetricsContext(...)`：
    - 404 返回
    - handler 正常返回
    - handler 抛异常后构造错误响应返回
 4. `finally` 块只做兜底清理，不重复 finish。
 5. 旧指标与新指标分层：
-   - 旧 request 指标由 `reportRequestMetrics(...)` + legacy bridge 负责
-   - 新 request/caller/stage 指标由 `reportStandardRequestMetrics(snapshot)` 负责
+   - 旧 request 指标由 `reportLegacyRequestMetrics(...)` 负责。除 `request_body_size`（subtag 保留字面）外，subtag 统一为 `routeKey = method:endpoint`，原指标名以 `metric_type` tag 承载，使用本地 `legacyTags(...)` / `legacyTagsWithType(...)` 直接构造 tags map
+   - 新 request/caller/stage 指标由 `reportStandardRequestMetrics(snapshot, requestSize, exceptionType)` 负责
+   - 两者在同一收尾路径同步上报（`reportLegacyRequestMetrics(...)` 在 `reportStandardRequestMetrics(...)` 末尾被显式调用）
 6. `finally` 块的顺序要与 `RequestMetricsContext` 真实语义对齐：
    - 先确保结束态 gauge 基于 `finish()` 之后的 in-flight 值上报
    - 再做 `cleanupIfPresent()`
@@ -740,26 +832,30 @@ metrics.caller-registry=dataset-catalog,harbor,search-sync,index
 
 ### 6.10.5 `MetricsHelper.java`
 
-目标：无行为变化迁移。
+目标：catalog 操作类指标采用新口径，不再恢复旧固定 key。
 
 建议步骤：
 
-1. 保留 `wrapCatalogOp()` / `wrapCatalogOpVoid()` / `reportCount()` 对外接口。
-2. 将内部 `PerfUtil` 调用全部换成 legacy bridge，而不是直接换成 `MetricsReporter.count/value(Map tags)`。
-3. 删除或废弃 `safePerf()`，但如果短期内还有未迁移调用点，可先保留再分步删。
-4. 迁移后重点检查 `SnapshotHandler` 等调用方无需修改签名。
+1. 保留 `wrapCatalogOp(String, Callable)` / `wrapCatalogOp(String, String, Callable)` / `wrapCatalogOp(String, String[], Callable)` / `wrapCatalogOpVoid(...)` / `reportCount(String, String, String)` 对外接口。
+2. 内部直接调用 `MetricsReporter.count/value(name, tags)`，tags 由 `catalogTags(opName, tableId, metricType)` 构造（含 `op` / `metric_type`，可选 `table`）。
+3. 错误路径在 tags 中追加 `error_class`。
+4. 删除 `safePerf()`；fail-safe 由 `MetricsReporter` 在未初始化时 no-op 兜底。
+5. 不引入跨模块 legacy bridge；不再生成 `subtag + table + key` 三段式上报。
+6. 迁移后重点检查 `SnapshotHandler` 等调用方无需修改签名。
 
 ### 6.10.6 `MetricsFileIO.java`
 
-目标：把 HDFS 调用并入 dependency / stage 体系。
+目标：HDFS 操作类指标切换到新口径，并入 dependency / stage 体系。
 
 建议步骤：
 
-1. 保留所有 `hdfs_op_*` 和 byte 指标的旧 key。
-2. 在每个 I/O 操作外围增加 `DependencyTracker.trackCall("hdfs", opName, StageType.HDFS, ...)`。
-3. 旧 `hdfs_op_*` / bytes 指标继续走 legacy bridge，新增 `dependency.request.*` 与 stage latency 走 `MetricsReporter`。
-4. 保持 stream wrapper 逻辑不变，避免影响读写语义。
-5. 若某些操作不适合算作外部依赖，可单独评估是否标为 `StageType.INTERNAL`，但默认按 HDFS 处理。
+1. **不再保留 `hdfs_op_*` 旧固定 metric name**；操作类指标 metric name 改为 opName，差异由 `metric_type` tag 承载。
+2. 在每个 I/O 操作外围使用 `DependencyTracker.trackCall("hdfs", opName, StageType.HDFS, ...)`；非 IO 异常用 `IOException` 包装抛出。
+3. `reportSuccess(opName, duration)` 上报 `hdfs_op_total` / `hdfs_op_latency`，并在 ≥ 1s / 5s 时分别补 `hdfs_op_slow_1s` / `hdfs_op_slow_5s`。
+4. `reportError(opName, duration, e)` 在 `reportSuccess` 之上额外补 `hdfs_op_error` 和 `hdfs_op_exception`（后者带 `exception_class`）。
+5. `hdfs_read_bytes` / `hdfs_write_bytes` 保持原名，由 `MetricsInputStream` / `MetricsOutputStream` 在 close 时上报累计字节，无业务 tags。
+6. 保持 stream wrapper 逻辑不变，避免影响读写语义。
+7. 若某些操作不适合算作外部依赖，可单独评估是否标为 `StageType.INTERNAL`，但默认按 HDFS 处理。
 
 ### 6.10.7 `AuthChannelHandler.java`
 
@@ -782,12 +878,12 @@ metrics.caller-registry=dataset-catalog,harbor,search-sync,index
 
 ### 6.10.9 `JdbcMetadataStore.java`
 
-目标：保留 metadata 层旧指标，同时为后续 SQL 细粒度埋点留口子。
+目标：保留 metadata 层旧指标语义，同时为后续 SQL 细粒度埋点留口子。
 
 建议步骤：
 
 1. 保持 `logOperation()` 和 `cleanupOldEntries()` 当前流程不变。
-2. 将 `metadata_op_total` / `metadata_op_latency` / `metadata_op_error` 改为 legacy bridge，保留旧查询语义。
+2. 将 `metadata_op_total` / `metadata_op_latency` / `metadata_op_error` 改为 `MetricsReporter.count/value(name, tags)`，tags 仅包含 `op` 维度，不再设计跨模块 legacy bridge。
 3. 暂不在这里硬塞 `SqlMetricsInterceptor`。
 4. 若后续要补 SQL latency，应在 `buildSqlSessionFactory()` 附近集中接入，而不是分散到每个方法里。
 
@@ -862,19 +958,19 @@ public RouteResult dispatch(AuthContext authContext, FullHttpRequest request) {
         if (match == null) {
             RouteResult notFound = new RouteResult(404, null);
             reportLegacyRequestMetrics(...);
-            finishMetricsContext(notFound.status(), path, request, body.length(), null);
+            finishRequestMetricsContext(notFound.status(), path, request, body.length(), null);
             return notFound;
         }
 
         RouteResult result = match.handler().handle(authContext, match.pathVariables(), params, body);
         reportLegacyRequestMetrics(...);
-        finishMetricsContext(result.status(), path, request, body.length(), null);
+        finishRequestMetricsContext(result.status(), path, request, body.length(), null);
         return result;
     } catch (Exception e) {
         int statusCode = resolveStatusCode(e);
         reportLegacyRequestMetrics(...);
         reportRequestExceptionMetric(...);
-        finishMetricsContext(statusCode, path, request, body.length(), e);
+        finishRequestMetricsContext(statusCode, path, request, body.length(), e);
         return buildErrorResult(e, statusCode);
     } finally {
         reportInFlightGauge();
@@ -883,10 +979,10 @@ public RouteResult dispatch(AuthContext authContext, FullHttpRequest request) {
 }
 ```
 
-### 6.11.3 `finishMetricsContext(...)` 推荐骨架
+### 6.11.3 `finishRequestMetricsContext(...)` 推荐骨架
 
 ```java
-private void finishMetricsContext(
+private void finishRequestMetricsContext(
         int statusCode,
         String path,
         FullHttpRequest request,
@@ -1006,33 +1102,63 @@ metrics.caller-registry=dataset-catalog,harbor,test-client
 
 ## 7. 指标全景
 
-## 7.1 存量业务指标（保留 key）
+## 7.1 存量业务指标当前状态
+
+存量指标按当前真实落地状态分为三类：
+
+### A. catalog 操作类（新口径，metric name = opName，差异由 metric_type tag 承载）
+
+| metric name | 类型 | metric_type 取值 | 维度 | 来源 |
+|---|---|---|---|---|
+| `<opName>` | count | `catalog_op_total` | `op` + 可选 `table` | `MetricsHelper.wrapCatalogOp` |
+| `<opName>` | value | `catalog_op_latency` | `op` + 可选 `table` | `MetricsHelper.wrapCatalogOp` |
+| `<opName>` | count | `catalog_op_error` | `op` + 可选 `table` + `error_class` | `MetricsHelper.wrapCatalogOp`（异常路径） |
+| `commit_snapshot` | count | `commit_conflict_total` | `op` + `table` | `SnapshotHandler` 经 `MetricsHelper.reportCount` |
+
+`opName` 取值如 `get_table` / `list_databases` / `commit_snapshot` 等。`tableId` 为空时，`table` tag 不进入 tags map。
+
+### B. request 类（新旧并行）
+
+旧 `request_*` 指标（保留，本地 legacy 编码；除 `request_body_size` 外 subtag = `routeKey`，原指标名通过 `metric_type` tag 携带）：
+
+| subtag | metric_type | 类型 | 其他 tag | 来源 |
+|---|---|---|---|---|
+| `routeKey` | `request_latency` | value | `route` + `user` | `RouteDispatcher.reportLegacyRequestMetrics` |
+| `request_body_size`（字面） | （无） | value | `route` + `user` | 同上 |
+| `routeKey` | `request_count` | count | `route` + `user` + `status_code` | 同上（取代原 `request_{statusCode}`） |
+| `routeKey` | `request_by_app` | count | `route` + `app` | 同上 |
+| `routeKey` | `request_error_detail` | count | `route` + `detail` | 同上（status ≥ 400） |
+| `routeKey` | `request_slow_1s` / `request_slow_5s` | count | `route` + `user` | 同上 |
+| `routeKey` | `request_exception` | count | `exception` + `detail` | 同上（异常路径） |
+
+`route` 维度为 `method:endpoint`（如 `GET:GET__v1_test_endpoint`）。
+
+新 `http.request.*` / `caller.request.*` 见 §7.2。
+
+### C. HDFS / FileIO 类（操作类新口径，bytes 类保持原名）
+
+| metric name | 类型 | metric_type 取值 | 维度 | 来源 |
+|---|---|---|---|---|
+| `<opName>` | count | `hdfs_op_total` | `op` + `metric_type` | `MetricsFileIO.reportSuccess` |
+| `<opName>` | value | `hdfs_op_latency` | `op` + `metric_type` | 同上 |
+| `<opName>` | count | `hdfs_op_slow_1s` / `hdfs_op_slow_5s` | `op` + `metric_type` | 同上（≥ 1s / 5s） |
+| `<opName>` | count | `hdfs_op_error` | `op` + `metric_type` | `MetricsFileIO.reportError` |
+| `<opName>` | count | `hdfs_op_exception` | `op` + `metric_type` + `exception_class` | 同上（异常路径） |
+| `hdfs_read_bytes` | value | — | 无业务 tags | `MetricsFileIO` 流 close 时 |
+| `hdfs_write_bytes` | value | — | 无业务 tags | 同上 |
+
+`opName` 取值如 `open_input` / `open_output` / `get_status` / `list` / `exists` / `delete` / `mkdirs` / `rename`。
+
+### D. 其他模块（保持现状）
 
 | 指标 key | 类型 | 维度 | 来源 |
 |---|---|---|---|
-| `catalog_op_total` | count | `op`, `table` | `MetricsHelper` |
-| `catalog_op_latency` | value | `op`, `table` | `MetricsHelper` |
-| `catalog_op_error` | count | `op`, `table` | `MetricsHelper` |
-| `commit_conflict_total` | count | `op`, `table` | `SnapshotHandler` |
-| `request_latency` | value | `route`, `user` | `RouteDispatcher` |
-| `request_body_size` | value | `route`, `user` | `RouteDispatcher` |
-| `request_{statusCode}` | count | `route`, `user` | `RouteDispatcher` |
-| `request_by_app` | count | `route`, `app` | `RouteDispatcher` |
-| `request_error_detail` | count | `route`, `detail` | `RouteDispatcher` |
-| `request_slow_1s` / `request_slow_5s` | count | `route`, `user` | `RouteDispatcher` |
-| `request_exception` | count | `exception`, `detail` | `RouteDispatcher` |
-| `hdfs_op_total` | count | `op` | `MetricsFileIO` |
-| `hdfs_op_latency` | value | `op` | `MetricsFileIO` |
-| `hdfs_op_error` | count | `op` | `MetricsFileIO` |
-| `hdfs_op_exception` | count | `op`, `exception` | `MetricsFileIO` |
-| `hdfs_op_slow_1s` / `hdfs_op_slow_5s` | count | `op` | `MetricsFileIO` |
-| `hdfs_read_bytes` / `hdfs_write_bytes` | value | — | `MetricsFileIO` |
 | `auth_success` / `auth_failure` | count | — | `AuthChannelHandler` |
-| `auth_failure_detail` | count | `uri` | `AuthChannelHandler` |
-| `auth_latency` | value | — | `AuthChannelHandler` |
+| `auth_failure_detail` | count | `uri` | 同上 |
+| `auth_latency` | value | — | 同上 |
 | `metadata_op_total` | count | `op` | `JdbcMetadataStore` |
-| `metadata_op_latency` | value | `op` | `JdbcMetadataStore` |
-| `metadata_op_error` | count | `op` | `JdbcMetadataStore` |
+| `metadata_op_latency` | value | `op` | 同上 |
+| `metadata_op_error` | count | `op` | 同上 |
 | `netty_connection_total` | count | — | `ConnectionMetricsHandler` |
 
 ## 7.2 新增通用指标（对齐 `kling-lakehouse-metrics`）
@@ -1068,8 +1194,12 @@ metrics.caller-registry=dataset-catalog,harbor,test-client
 | 文件/能力 | 处置 |
 |---|---|
 | `PerfUtil.java` | 迁移完成后删除或标记 `@Deprecated` |
-| `MetricsHelper.safePerf()` | 可删除，由 `MetricsReporter` 统一 fail-safe |
-| 动态 request subtag 新设计 | 不再引入，如 `{endpoint}.qps`、`{endpoint}.latency` |
+| `MetricsHelper.safePerf()` | 已删除，由 `MetricsReporter` 统一 fail-safe |
+| 旧固定 `hdfs_op_*` metric name | 已废弃；操作类指标统一用 `metric name = opName + tag metric_type=...` 表达 |
+| 旧固定 `catalog_op_*` metric name | 已废弃；同上以 `op + metric_type` tags 承载 |
+| `LegacyPerfCompat` 等跨模块 legacy bridge 设想 | 不再引入；旧 `request_*` 兼容由 `RouteDispatcher` 内部 `reportLegacyRequestMetrics` + `legacyTags` / `legacyTagsWithType` 局部承担 |
+| 动态 request subtag 作为**新增**标准 | 不再引入，如 `{endpoint}.qps`、`{endpoint}.latency` |
+| `routeKey` 作为 subtag（legacy bridge 例外） | 仅限 `RouteDispatcher.reportLegacyRequestMetrics`；通过 `metric_type` tag 承载原 `request_*` 语义（`request_body_size` 仍保留字面 subtag），仅为旧 dashboard / alert 兼容，不作为新增标准 |
 
 ---
 
@@ -1154,29 +1284,43 @@ metrics.caller-registry=dataset-catalog,harbor,test-client
 
 ## 9.1 自动化验证
 
-建议至少补齐以下测试面：
+`RouteDispatcher` 与 `MetricsFileIO` 的核心行为已通过单测覆盖并通过：
 
-1. `RouteDispatcher`：
-   - 正常请求可同时产生旧 request 指标和新固定 subtag request 指标；
-   - 异常路径保留 `request_exception`；
-   - `APP_ID_HEADER` fallback 仍会经过 `CallerRegistry` 归一化；
-   - `IN_FLIGHT` 在 `finish()` 后上报结束态 gauge 并回落。
+```bash
+mvn -Dtest=RouteDispatcherTest,MetricsFileIOTest -Dcheckstyle.skip -Dspotless.check.skip -Denforcer.skip test
+# Tests run: 37, Failures: 0, Errors: 0, Skipped: 0 — BUILD SUCCESS
+```
 
-2. `MetricsHelper`：
-   - `catalog_op_total` / `catalog_op_latency` / `catalog_op_error` 语义不变。
+已覆盖的场景：
 
-3. `MetricsFileIO`：
-   - `hdfs_op_*`、`hdfs_read_bytes`、`hdfs_write_bytes` 不丢；
-   - `DependencyTracker` 同时回填 request stage latency。
+1. `RouteDispatcher`（34 用例，含基础分发 / appId header / buildRequestSummary / CallerRegistry / 404 cleanup / request metrics）：
+   - 正常请求同时产生新（`http.request.total/latency` / `caller.request.total/latency` / `http.request.app_total`）与旧 legacy 兼容指标（subtag=routeKey 且 `metric_type` 取 `request_latency` / `request_count`（带 `status_code`）/ `request_by_app` 等）；
+   - body_size 路径：`http.request.body_size` / `request_body_size` 同步上报；负数 size 跳过；
+   - 慢请求路径：duration > 1s / 5s 各打一次 `http.request.slow_total`（threshold tag 区分），同时产出 subtag=routeKey 且 `metric_type` 为 `request_slow_1s` / `request_slow_5s` 的兼容指标；
+   - 错误路径：`http.request.error_total` 携带 `error_code` 与 `exception_type`，同时产出 subtag=routeKey 且 `metric_type` 为 `request_error_detail` / `request_exception` 的兼容指标；status=200 不产出 error_total；
+   - app_total 仅含 `caller_app` 维度（避免高基数）；
+   - legacy tags 形态：route = `GET:GET__v1_test_endpoint`，user/app 来自 snapshot 的 callerUser / callerApp；
+   - 200 / 404 / 异常路径的 `RequestMetricsContext.IN_FLIGHT` 都能正确回落；
+   - `APP_ID_HEADER` fallback 仍经过 `CallerRegistry` 归一化，未注册值归到 `unknown`，并触发 `discovery_total` 路径。
 
-4. `JdbcMetadataStore`：
-   - `metadata_op_total` / `metadata_op_latency` / `metadata_op_error` 保持不变；
-   - cleanup 路径同样迁移成功。
+2. `MetricsFileIO`（3 用例）：
+   - 成功路径：`open_input` 携带 `metric_type=hdfs_op_total` 与 `hdfs_op_latency`，含 `op=open_input`；
+   - 异常路径：`exists` 携带 `metric_type=hdfs_op_error`，并额外发出 `metric_type=hdfs_op_exception` + `exception_class=IOException`；
+   - bytes 指标：流 close 后 `hdfs_read_bytes` / `hdfs_write_bytes` 都按累计字节上报。
 
-5. collector：
+仍建议补充的测试面（非阻塞）：
+
+1. `MetricsHelper`：
+   - `catalog_op_total` / `catalog_op_latency` / `catalog_op_error` 在新口径下的 tags 形态；
+   - `wrapCatalogOp(opName, tableIdHolder, callable)` 延迟解析 tableId 路径。
+
+2. `JdbcMetadataStore`：
+   - `metadata_op_total` / `metadata_op_latency` / `metadata_op_error` 当前通道的 tags / value 行为。
+
+3. collector：
    - `JvmMetricsCollector.start()/stop()` 幂等；
    - `ConnectionPoolMetricsCollector` 在 Hikari 路径下可工作；
-   - `KsDataSource` 场景至少验证“不崩溃”。
+   - `KsDataSource` 场景至少验证"不崩溃"。
 
 ## 9.1.1 implementation-ready：测试矩阵
 
@@ -1297,8 +1441,8 @@ metrics.caller-registry=dataset-catalog,harbor,test-client
 
 完成标准：
 
-- 原有 key 保持不变
-- 旧指标通过 legacy bridge 保持旧 `PerfUtils` 参数位语义
+- catalog 操作类指标采用新口径（metric name = opName，tags 含 `op` / 可选 `table` / `metric_type`），不再恢复旧固定 key
+- auth / metadata / netty 模块上报通道替换为 `MetricsReporter`，旧 key 与维度形态保持现状
 - 代码中业务主路径不再直接依赖 `PerfUtil`
 - 旧测试不出现行为回退
 
@@ -1352,15 +1496,14 @@ metrics.caller-registry=dataset-catalog,harbor,test-client
 
 本方案的落地原则可以归纳为一句话：
 
-> **存量业务指标保持兼容，但兼容方式依赖 legacy bridge 保留旧 PerfUtils 参数位语义；新通用观测指标严格对齐固定 subtag + tags 模型，并由 `RouteDispatcher` 在 Netty 场景中显式完成 request lifecycle 与固定 subtag 上报；Hikari pool metrics 可落地，KsDataSource 仍需单独确认。**
+> **catalog 操作类指标直接采用新口径（不再恢复旧固定 key）；request 类新旧并行，旧 `request_*` 由 `RouteDispatcher` 内部 `legacyTags` 局部承担兼容；HDFS 操作类已切到与 catalog 一致的新口径，bytes 指标保持原名；新通用观测指标严格对齐固定 subtag + tags 模型，并由 `RouteDispatcher` 在 Netty 场景中显式完成 request lifecycle 与固定 subtag 上报；Hikari pool metrics 可落地，KsDataSource 仍需单独确认。**
 
-按这个原则推进后，`paimon-rest-server` 可以在不破坏当前业务指标查询的前提下，逐步获得：
+按这个原则推进后，`paimon-rest-server` 已经具备：
 
-- 统一 request lifecycle
-- caller 画像与 access log
+- 统一 request lifecycle（`http.request.in_flight` 在 200 / 404 / 异常路径都能正确回落）
+- caller 画像与结构化 access log
 - request stage latency
-- JVM / 进程 / 实例指标
-- Hikari 连接池指标
-- dependency 调用追踪
+- HDFS 操作级新口径 + bytes 指标 + dependency 调用追踪
+- catalog 操作级新口径（含 table 维度）
 
-并且不会再次引入新的动态 request subtag 体系。
+不再为 `catalog_op_*` / `hdfs_op_*` 引入旧固定 metric name 兼容层，也不会再次引入新的动态 request subtag 体系。`RouteDispatcherTest` / `MetricsFileIOTest` 已锁定上述行为。

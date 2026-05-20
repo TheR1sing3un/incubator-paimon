@@ -30,14 +30,21 @@ import org.apache.paimon.shade.netty4.io.netty.handler.codec.http.FullHttpReques
 import org.apache.paimon.shade.netty4.io.netty.handler.codec.http.HttpMethod;
 import org.apache.paimon.shade.netty4.io.netty.handler.codec.http.HttpVersion;
 
+import com.kuaishou.kling.lakehouse.metrics.RequestMetricsSnapshot;
+import com.kuaishou.kling.lakehouse.metrics.context.RequestMetricsContext;
 import com.kuaishou.kling.lakehouse.metrics.filter.CallerRegistry;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -262,5 +269,211 @@ class RouteDispatcherTest {
         assertThat(result.status()).isEqualTo(404);
         assertThat(result.response()).isNull();
         request.release();
+    }
+
+    // ======================== Request metrics tests ========================
+
+    private final List<String> emittedCounts = new ArrayList<>();
+    private final List<String> emittedValues = new ArrayList<>();
+    private final List<Map<String, String>> emittedCountTags = new ArrayList<>();
+    private final List<Map<String, String>> emittedValueTags = new ArrayList<>();
+
+    @BeforeEach
+    void setUpMetricsListener() {
+        emittedCounts.clear();
+        emittedValues.clear();
+        emittedCountTags.clear();
+        emittedValueTags.clear();
+        RouteDispatcher.setTestMetricsListener(
+                new RouteDispatcher.MetricsEmitListener() {
+                    @Override
+                    public void onCount(String name, Map<String, String> tags) {
+                        emittedCounts.add(name);
+                        emittedCountTags.add(tags);
+                    }
+
+                    @Override
+                    public void onValue(String name, long value, Map<String, String> tags) {
+                        emittedValues.add(name);
+                        emittedValueTags.add(tags);
+                    }
+                });
+    }
+
+    @AfterEach
+    void tearDownMetricsListener() {
+        RouteDispatcher.setTestMetricsListener(null);
+    }
+
+    @Test
+    void testRequestMetricsContextCleanedUpAfterSuccess() throws Exception {
+        long inflight = RequestMetricsContext.getInFlight();
+        FullHttpRequest request =
+                createRequest(HttpMethod.GET, "/v1/config?warehouse=" + tempDir.toString());
+        dispatcher.dispatch(AuthContext.ANONYMOUS, request);
+        request.release();
+        assertThat(RequestMetricsContext.getInFlight()).isEqualTo(inflight);
+    }
+
+    @Test
+    void testRequestMetricsContextCleanedUpAfter404() throws Exception {
+        long inflight = RequestMetricsContext.getInFlight();
+        FullHttpRequest request = createRequest(HttpMethod.GET, "/v1/test/nonexistent");
+        dispatcher.dispatch(AuthContext.ANONYMOUS, request);
+        request.release();
+        assertThat(RequestMetricsContext.getInFlight()).isEqualTo(inflight);
+    }
+
+    @Test
+    void testRequestMetricsContextCleanedUpAfterException() throws Exception {
+        long inflight = RequestMetricsContext.getInFlight();
+        FullHttpRequest request =
+                createRequest(HttpMethod.GET, "/v1/test/databases/nonexistent_metrics_db");
+        RouteResult result = dispatcher.dispatch(AuthContext.ANONYMOUS, request);
+        request.release();
+        assertThat(result.status()).isGreaterThanOrEqualTo(400);
+        assertThat(RequestMetricsContext.getInFlight()).isEqualTo(inflight);
+    }
+
+    @Test
+    void testReportEmitsBodySize() {
+        RequestMetricsSnapshot snapshot = createSnapshot(200, null, 50L);
+        dispatcher.reportStandardRequestMetrics(snapshot, 2048, null);
+        assertThat(emittedValues).contains("http.request.body_size");
+    }
+
+    @Test
+    void testReportSkipsNegativeBodySize() {
+        RequestMetricsSnapshot snapshot = createSnapshot(200, null, 50L);
+        dispatcher.reportStandardRequestMetrics(snapshot, -1, null);
+        assertThat(emittedValues).doesNotContain("http.request.body_size");
+    }
+
+    @Test
+    void testReportEmitsSlowTotal1s() {
+        RequestMetricsSnapshot snapshot = createSnapshot(200, null, 1500L);
+        dispatcher.reportStandardRequestMetrics(snapshot, 10, null);
+        assertThat(emittedCounts).contains("http.request.slow_total");
+        // Find the slow_total tag and verify threshold=1s
+        int idx = emittedCounts.indexOf("http.request.slow_total");
+        assertThat(emittedCountTags.get(idx).get("threshold")).isEqualTo("1s");
+    }
+
+    @Test
+    void testReportEmitsSlowTotal5s() {
+        RequestMetricsSnapshot snapshot = createSnapshot(200, null, 6000L);
+        dispatcher.reportStandardRequestMetrics(snapshot, 10, null);
+        // duration > 5000 triggers BOTH 1s and 5s
+        long slowCount = emittedCounts.stream().filter("http.request.slow_total"::equals).count();
+        assertThat(slowCount).isEqualTo(2);
+        // Verify both thresholds present
+        List<String> thresholds = new ArrayList<>();
+        for (int i = 0; i < emittedCounts.size(); i++) {
+            if ("http.request.slow_total".equals(emittedCounts.get(i))) {
+                thresholds.add(emittedCountTags.get(i).get("threshold"));
+            }
+        }
+        assertThat(thresholds).containsExactly("1s", "5s");
+    }
+
+    @Test
+    void testReportNoSlowForFastRequest() {
+        RequestMetricsSnapshot snapshot = createSnapshot(200, null, 50L);
+        dispatcher.reportStandardRequestMetrics(snapshot, 10, null);
+        assertThat(emittedCounts).doesNotContain("http.request.slow_total");
+    }
+
+    @Test
+    void testReportEmitsErrorTotalWithErrorCodeAndExceptionType() {
+        RequestMetricsSnapshot snapshot = createSnapshot(404, "TABLE", 10L);
+        dispatcher.reportStandardRequestMetrics(snapshot, 32, "TableNotExistException");
+        assertThat(emittedCounts).contains("http.request.error_total");
+        int idx = emittedCounts.indexOf("http.request.error_total");
+        Map<String, String> errorTags = emittedCountTags.get(idx);
+        assertThat(errorTags.get("error_code")).isEqualTo("TABLE");
+        assertThat(errorTags.get("exception_type")).isEqualTo("TableNotExistException");
+    }
+
+    @Test
+    void testReportNoErrorTotalFor200() {
+        RequestMetricsSnapshot snapshot = createSnapshot(200, null, 50L);
+        dispatcher.reportStandardRequestMetrics(snapshot, 10, null);
+        assertThat(emittedCounts).doesNotContain("http.request.error_total");
+    }
+
+    @Test
+    void testReportEmitsAppTotal() {
+        RequestMetricsSnapshot snapshot = createSnapshot(200, null, 50L);
+        dispatcher.reportStandardRequestMetrics(snapshot, 10, null);
+        assertThat(emittedCounts).contains("http.request.app_total");
+        int idx = emittedCounts.indexOf("http.request.app_total");
+        Map<String, String> appTags = emittedCountTags.get(idx);
+        // app_total should only have caller_app dimension (low cardinality)
+        assertThat(appTags).containsKey("caller_app");
+        assertThat(appTags).hasSize(1);
+    }
+
+    @Test
+    void testReportEmitsBaseMetrics() {
+        RequestMetricsSnapshot snapshot = createSnapshot(200, null, 50L);
+        dispatcher.reportStandardRequestMetrics(snapshot, 10, null);
+        assertThat(emittedCounts).contains("http.request.total", "caller.request.total");
+        assertThat(emittedValues).contains("http.request.latency", "caller.request.latency");
+    }
+
+    @Test
+    void testReportEmitsBaseMetricsTags() {
+        RequestMetricsSnapshot snapshot = createSnapshot(200, null, 123L);
+        dispatcher.reportStandardRequestMetrics(snapshot, 456, null);
+
+        int latencyIdx = emittedValues.indexOf("http.request.latency");
+        assertThat(latencyIdx).isGreaterThanOrEqualTo(0);
+        assertThat(emittedValueTags.get(latencyIdx))
+                .containsEntry("status_code", "200")
+                .containsEntry("caller_app", "test-caller");
+
+        int bodyIdx = emittedValues.indexOf("http.request.body_size");
+        assertThat(bodyIdx).isGreaterThanOrEqualTo(0);
+
+        int totalIdx = emittedCounts.indexOf("http.request.total");
+        assertThat(totalIdx).isGreaterThanOrEqualTo(0);
+        assertThat(emittedCountTags.get(totalIdx))
+                .containsEntry("status_code", "200")
+                .containsEntry("caller_app", "test-caller");
+
+        int appIdx = emittedCounts.indexOf("http.request.app_total");
+        assertThat(appIdx).isGreaterThanOrEqualTo(0);
+        assertThat(emittedCountTags.get(appIdx)).containsEntry("caller_app", "test-caller");
+    }
+
+    @Test
+    void testReportErrorMetricTags() {
+        RequestMetricsSnapshot snapshot = createSnapshot(500, "INTERNAL", 88L);
+        dispatcher.reportStandardRequestMetrics(snapshot, 20, "IllegalStateException");
+
+        int errorIdx = emittedCounts.indexOf("http.request.error_total");
+        assertThat(errorIdx).isGreaterThanOrEqualTo(0);
+        assertThat(emittedCountTags.get(errorIdx))
+                .containsEntry("error_code", "INTERNAL")
+                .containsEntry("exception_type", "IllegalStateException");
+    }
+
+    private static RequestMetricsSnapshot createSnapshot(
+            int statusCode, String errorCode, long durationMs) {
+        return new RequestMetricsSnapshot(
+                "GET__v1_test_endpoint",
+                "GET",
+                durationMs,
+                "test-caller",
+                "test-user",
+                statusCode,
+                errorCode,
+                0L,
+                0L,
+                0L,
+                0L,
+                "127.0.0.1",
+                "trace-001",
+                "paimon-java-0.9");
     }
 }

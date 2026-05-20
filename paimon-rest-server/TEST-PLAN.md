@@ -112,7 +112,64 @@
 | 7 | phase7_dropDatabaseAuditLog | 删除 DB 审计 | SUCCESS 条目 |
 | 7 | phase7_fullAuditTrailSummary | 完整审计链路汇总 | >= 5 条审计记录 |
 
-### 3.4 其他测试
+### 3.4 Metrics 测试
+
+涵盖 `RouteDispatcher` request lifecycle 与 `MetricsFileIO` HDFS 操作类指标，用于锁定本服务在 metrics 调整后的"request 新旧并行 + hdfs 切新口径 + catalog 不恢复旧固定 key"行为。
+
+#### RouteDispatcherTest（34 cases）
+
+| Phase | # | 测试方法 | 覆盖点 |
+|---|---|---|---|
+| 基础分发 | 1 | testDispatch404ForUnknownRoute | 未知路由返回 404 |
+| 基础分发 | 2 | testDispatchConfigEndpoint | `/v1/config` 200 |
+| 基础分发 | 3 | testDispatchCreateDatabase | 创建数据库 200 |
+| 基础分发 | 4 | testDispatchGetDatabaseNotFound | 不存在数据库抛 `DatabaseNotExistException` |
+| App-id header | 5 | testDispatchWithAppIdHeader | 携带 `X-Paimon-App-Id` 正常返回 |
+| App-id header | 6 | testDispatch404WithAppIdHeader | 404 路径处理 app-id 无报错 |
+| App-id header | 7 | testDispatchWithoutAppIdHeader | 缺失 app-id 时退化为 `unknown` |
+| Request summary | 8 | testBuildRequestSummaryWithJsonBody | JSON body 拼接 appId |
+| Request summary | 9 | testBuildRequestSummaryWithNullBody | null body |
+| Request summary | 10 | testBuildRequestSummaryWithEmptyBody | 空 body |
+| Request summary | 11 | testBuildRequestSummaryWithNonJsonBody | 非 JSON body |
+| Request summary | 12 | testBuildRequestSummaryEscapesAppIdWithQuotes | appId 含双引号转义 |
+| Request summary | 13 | testBuildRequestSummaryEscapesAppIdWithBackslash | appId 含反斜杠转义 |
+| Request summary | 14 | testBuildRequestSummaryUnknownAppId | unknown appId |
+| CallerRegistry | 15 | testCallerRegistryNormalizesKnownCaller | `X-Caller-App` 命中 registry |
+| CallerRegistry | 16 | testCallerRegistryCollapsesUnknownCallerToUnknown | 未注册 app-id 归一化为 `unknown` |
+| CallerRegistry | 17 | testCallerRegistryPrefersCallerAppOverAppId | `X-Caller-App` 优先于 `APP_ID_HEADER` |
+| CallerRegistry | 18 | testDispatchWithoutCallerRegistryStillWorks | 无 registry 时退回 `MetricsNameNormalizer` |
+| 收尾统一 | 19 | testDispatch200ReturnsResponseWithContent | 200 含响应体 |
+| 收尾统一 | 20 | testDispatch404ReturnsNullResponse | 404 响应体为 null |
+| InFlight 回落 | 21 | testRequestMetricsContextCleanedUpAfterSuccess | 200 后 in-flight 回落 |
+| InFlight 回落 | 22 | testRequestMetricsContextCleanedUpAfter404 | 404 后 in-flight 回落 |
+| InFlight 回落 | 23 | testRequestMetricsContextCleanedUpAfterException | 异常后 in-flight 回落 |
+| BodySize | 24 | testReportEmitsBodySize | `http.request.body_size` + `request_body_size` 同步上报 |
+| BodySize | 25 | testReportSkipsNegativeBodySize | size < 0 跳过 body_size |
+| Slow | 26 | testReportEmitsSlowTotal1s | duration > 1s 触发 `slow_total(threshold=1s)` + 兼容指标 (subtag=routeKey, metric_type=`request_slow_1s`) |
+| Slow | 27 | testReportEmitsSlowTotal5s | duration > 5s 同时触发 1s/5s 两次（threshold tag 区分），同时产 subtag=routeKey 且 metric_type=`request_slow_1s` / `request_slow_5s` 的兼容指标 |
+| Slow | 28 | testReportNoSlowForFastRequest | 短请求不触发 slow |
+| Error | 29 | testReportEmitsErrorTotalWithErrorCodeAndExceptionType | 错误路径附带 `error_code` + `exception_type`，并产 subtag=routeKey 且 metric_type=`request_error_detail` / `request_count`(`status_code=404`) / `request_exception` 的兼容指标 |
+| Error | 30 | testReportNoErrorTotalFor200 | 200 不产 error_total |
+| App total | 31 | testReportEmitsAppTotal | `http.request.app_total` 仅含 `caller_app`，并同步产 subtag=routeKey 且 metric_type=`request_by_app` 的兼容指标 |
+| Base | 32 | testReportEmitsBaseMetrics | `http.request.total/latency` + `caller.request.total/latency` + subtag=routeKey 且 metric_type=`request_count`(`status_code=200`) / `request_by_app` / `request_latency` |
+| Legacy tags | 33 | testLegacyRequestMetricTagsAndValues | 旧 `request_*` 兼容指标的 subtag/metric_type/status_code 与 route/user/app tag 形态与 value 一致（route = `method:endpoint`；`request_body_size` 保留字面 subtag） |
+| Legacy tags | 34 | testLegacyErrorAndExceptionMetricTags | subtag=routeKey, metric_type=`request_error_detail`(`route`+`detail`) / metric_type=`request_exception`(`exception`+`detail`) tag 形态 |
+
+#### MetricsFileIOTest（3 cases）
+
+| # | 测试方法 | 覆盖点 |
+|---|---|---|
+| 1 | testSuccessMetricsUseOpNameAndMetricTypeTags | 成功路径上报 metric name = opName，tags 含 `op` + `metric_type` (`hdfs_op_total` / `hdfs_op_latency`) |
+| 2 | testErrorMetricsIncludeExceptionClass | 异常路径产生 `metric_type=hdfs_op_error`，并额外发出 `metric_type=hdfs_op_exception` + `exception_class=IOException` |
+| 3 | testByteMetricsStillReported | 流 close 后 `hdfs_read_bytes` / `hdfs_write_bytes` 按累计字节上报 |
+
+#### 运行命令
+
+```bash
+mvn -pl paimon-rest-server -Dtest=RouteDispatcherTest,MetricsFileIOTest -Dcheckstyle.skip -Dspotless.check.skip -Denforcer.skip test
+```
+
+### 3.5 其他测试
 
 | 测试类 | 用例数 | 说明 |
 |--------|--------|------|

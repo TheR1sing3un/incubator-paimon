@@ -18,17 +18,31 @@
 
 package org.apache.paimon.rest.server.utils;
 
-import com.kuaishou.framework.util.PerfUtils;
+import com.kuaishou.kling.lakehouse.metrics.MetricsReporter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.Serializable;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
-/** Utility class for performance metric reporting via KuaiShou PerfUtils. */
+/**
+ * Utility class for performance metric reporting via KuaiShou PerfUtils.
+ *
+ * <p>Delegates to {@link MetricsReporter} so all calls share the same namespace and extra1/extra2
+ * globals (service/cluster/deploy_group, instance/pod_name) as {@code MetricsHelper}. The legacy
+ * positional {@code table}/{@code key} args are mapped to extra3/extra4 via the {@code
+ * extra3}/{@code extra4} override keys recognized by {@link MetricsReporter}'s tag encoder.
+ *
+ * <p>Namespace is set once via {@link #setNamespace(String)} after {@code MetricsReporter.init()};
+ * it is used only for the diagnostic log lines below since the actual emit goes through {@link
+ * MetricsReporter}.
+ */
 public class PerfUtil implements Serializable {
     private static final Logger LOG = LoggerFactory.getLogger(PerfUtil.class);
 
-    protected static final String NAME_SPACE = "paimon.rest.catalog";
+    private static volatile String namespace;
 
     private static volatile boolean enabled = true;
 
@@ -42,45 +56,63 @@ public class PerfUtil implements Serializable {
         return enabled;
     }
 
+    /** Set once, immediately after {@code MetricsReporter.init()}. */
+    public static void setNamespace(String ns) {
+        namespace = ns;
+    }
+
+    private static String namespace() {
+        return namespace;
+    }
+
+    /** Build a tag map that pins legacy positional {@code table}/{@code key} into extra3/extra4. */
+    private static Map<String, String> extra34Tags(String table, String key) {
+        Map<String, String> tags = new LinkedHashMap<>();
+        tags.put("extra3", table != null ? table : "");
+        tags.put("extra4", key != null ? key : "");
+        return tags;
+    }
+
     public static void perfCount(String key, long value) {
         if (!enabled) {
             return;
         }
-        PerfUtils.perf(NAME_SPACE, key).count(value).logstash();
+        String ns = namespace();
+        MetricsReporter.count(key, value, Collections.emptyMap());
     }
 
     public static void perfCount(String subtag, String table, String key) {
         if (!enabled) {
             return;
         }
-        PerfUtils.perf(NAME_SPACE, subtag, table, key).logstash();
+        MetricsReporter.count(subtag, extra34Tags(table, key));
     }
 
     public static void perfCount(String key) {
         if (!enabled) {
             return;
         }
-        PerfUtils.perf(NAME_SPACE, key).logstash();
+        MetricsReporter.count(key);
     }
 
     public static void perfValue(String key, long value) {
         if (!enabled) {
             return;
         }
-        PerfUtils.perf(NAME_SPACE, key).value(value).logstash();
+        MetricsReporter.value(key, value);
     }
 
     public static void perfValue(String subtag, String key, long value) {
         if (!enabled) {
             return;
         }
-        PerfUtils.perf(NAME_SPACE, subtag, key).value(value).logstash();
+        MetricsReporter.value(subtag, value, extra34Tags("", key));
     }
 
     public static void perfValue(String subtag, String table, String key, long value) {
         if (!enabled) {
             return;
         }
-        PerfUtils.perf(NAME_SPACE, subtag, table, key).value(value).logstash();
+        MetricsReporter.value(subtag, value, extra34Tags(table, key));
     }
 }

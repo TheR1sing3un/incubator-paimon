@@ -184,9 +184,50 @@
 | 4 | DROP_DATABASE 审计 | SUCCESS | 有 | PASS |
 | 5 | 审计链路汇总 | >= 5 条审计记录 | >= 5 条 | PASS |
 
+## 6. Metrics 测试（RouteDispatcherTest + MetricsFileIOTest）
+
+**运行命令**: `mvn -pl paimon-rest-server -Dtest=RouteDispatcherTest,MetricsFileIOTest -Dcheckstyle.skip -Dspotless.check.skip -Denforcer.skip test`
+**结果**: 37/37 PASS — BUILD SUCCESS
+
+### 6.1 RouteDispatcherTest（34/34 PASS）
+
+锁定 `RouteDispatcher` 在 metrics 调整后的"request 新旧并行 + caller 归一化 + in-flight 正确回落"行为。
+
+| 类别 | 用例 | 关键断言 |
+|---|---|---|
+| 基础分发 | 4 | 404 / 200 / create db / 不存在 db 抛异常 |
+| App-id header | 3 | 携带 / 404 携带 / 缺失（退化为 `unknown`）三种路径无错 |
+| Request summary | 7 | JSON / null / empty / 非 JSON / quote 转义 / 反斜杠转义 / unknown |
+| CallerRegistry | 4 | 命中 registry / 未注册归 `unknown` / `X-Caller-App` 优先 / 无 registry 退回 `MetricsNameNormalizer` |
+| 收尾统一 | 2 | 200 含响应体；404 响应体为 null |
+| InFlight 回落 | 3 | 200 / 404 / 异常路径下 `RequestMetricsContext.IN_FLIGHT` 都能回落 |
+| BodySize | 2 | `http.request.body_size` + `request_body_size` 同步上报；负数 size 跳过 |
+| Slow | 3 | duration > 1s / 5s 触发 `http.request.slow_total`（threshold tag 区分），同时产 subtag=routeKey 且 metric_type=`request_slow_1s` / `request_slow_5s` 的兼容指标；短请求不触发 |
+| Error | 2 | 错误路径携带 `error_code` + `exception_type`，并产 subtag=routeKey 且 metric_type=`request_error_detail` / `request_count`(`status_code`) / `request_exception` 的兼容指标；status=200 不产 error_total |
+| App total | 1 | `http.request.app_total` 仅含 `caller_app` 维度（避免高基数），同时产 subtag=routeKey 且 metric_type=`request_by_app` 的兼容指标 |
+| Base | 1 | `http.request.total/latency` + `caller.request.total/latency` + 兼容三件套（subtag=routeKey, metric_type=`request_count`(`status_code=200`) / `request_by_app` / `request_latency`） 同步出现 |
+| Legacy tags | 2 | route = `GET:GET__v1_test_endpoint`；`request_body_size` 仍保留字面 subtag；非 body_size 兼容指标 subtag=routeKey 且 metric_type 标识原指标名；`request_by_app` 含 `app=test-caller`；`request_error_detail`(`route`+`detail`) / `request_exception`(`exception`+`detail`) tag 形态正确 |
+
+### 6.2 MetricsFileIOTest（3/3 PASS）
+
+锁定 HDFS 操作类指标的新口径：metric name = opName，tags 含 `op` + `metric_type`，异常补 `exception_class`；bytes 指标保留原名。
+
+| # | 测试方法 | 关键断言 |
+|---|---|---|
+| 1 | testSuccessMetricsUseOpNameAndMetricTypeTags | `open_input` 上报含 `metric_type=hdfs_op_total` 与 `hdfs_op_latency` 的 tags |
+| 2 | testErrorMetricsIncludeExceptionClass | `exists` 异常路径产生 `metric_type=hdfs_op_error`，并额外发 `metric_type=hdfs_op_exception` + `exception_class=IOException` |
+| 3 | testByteMetricsStillReported | 流 close 后 `hdfs_read_bytes` / `hdfs_write_bytes` 都按累计字节上报 |
+
+### 6.3 落地结论
+
+- request 类：旧 `request_*` 与新 `http.request.*` / `caller.request.*` 同时上报，本地 `legacyTags(...)` 承载旧维度（route = `method:endpoint`）
+- hdfs 类：操作类指标已切到 `metric name = opName + tag op/metric_type` 新口径，`hdfs_read_bytes` / `hdfs_write_bytes` 保留原名
+- catalog 类：明确不再恢复旧固定 key 兼容语义（设计文档与代码均以新口径为准；仅由 `MetricsHelper` 单元测试覆盖，本测试集合不直接验证）
+- `RequestMetricsContext.IN_FLIGHT` 在 200 / 404 / 异常三种收尾路径都能正确回落
+
 ---
 
-## 6. 测试汇总
+## 7. 测试汇总
 
 | 测试类型 | 总数 | PASS | 新增 | 说明 |
 |---------|------|------|------|------|
@@ -197,11 +238,13 @@
 | ViewHandlerValidationTest (UT) | 1 | 1 | | |
 | RESTCatalogServerIntegrationTest (IT) | 21 | 21 | | |
 | **RESTCatalogServerE2ETest (E2E)** | **37** | **37** | **+37** | **全链路: 生产 DDL + 真实 server + 完整工作流** |
-| **总计** | **107** | **107** | **+45** | |
+| **RouteDispatcherTest (UT)** | **34** | **34** | **+34** | **request 新旧并行 + caller 归一化 + in-flight 回落** |
+| **MetricsFileIOTest (UT)** | **3** | **3** | **+3** | **HDFS 操作类新口径 + bytes 指标保留** |
+| **总计** | **144** | **144** | **+82** | |
 
 ---
 
-## 7. 已知限制与后续事项
+## 8. 已知限制与后续事项
 
 | 事项 | 严重度 | 说明 |
 |------|--------|------|

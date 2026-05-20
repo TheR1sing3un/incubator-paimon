@@ -18,9 +18,12 @@
 
 package org.apache.paimon.rest.server.utils;
 
+import com.kuaishou.kling.lakehouse.metrics.MetricsReporter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.Callable;
 
 /** Helper for wrapping catalog/metadata operations with latency and error metrics. */
@@ -47,24 +50,30 @@ public class MetricsHelper {
     /**
      * Wraps a catalog operation with metrics collection, including a table-level dimension.
      *
-     * <p>Reports: catalog_op_total (count), catalog_op_latency (value), catalog_op_error (count on
-     * failure). The {@code tableId} is passed as the table dimension to PerfUtil for per-table
-     * breakdown (e.g., "mydb.mytable").
+     * <p>Aligned with {@code RouteDispatcher.reportStandardRequestMetrics}: globals
+     * (service/cluster/deploy_group, instance/pod_name) fill PerfUtils extra1/extra2 via
+     * lakehouse-metrics globals; business dimensions ride standard tag keys: {@code op} and {@code
+     * table} land in extra3, {@code metric_type} in extra4.
      *
-     * @param opName operation name used as subtag (e.g., "get_table", "list_databases")
-     * @param tableId table identifier for per-table metrics (e.g., "database.table"), or empty
-     *     string if not applicable
+     * <p>{@code opName} is used as the metric subtag; the variant (total / latency / error_total)
+     * is distinguished by the {@code metric_type} tag rather than by mangling the name. Error paths
+     * additionally tag {@code error_class} with the exception's simple name.
+     *
+     * @param opName operation name (also subtag, e.g. "get_table")
+     * @param tableId table identifier (e.g., "database.table"), or empty string when N/A
      * @param callable the actual catalog call
      * @return the result of the callable
      */
     public static <T> T wrapCatalogOp(String opName, String tableId, Callable<T> callable)
             throws Exception {
         long start = System.currentTimeMillis();
+        Map<String, String> totalTags = catalogTags(opName, tableId, "catalog_op_total");
+        Map<String, String> latencyTags = catalogTags(opName, tableId, "catalog_op_latency");
         try {
             T result = callable.call();
             long duration = System.currentTimeMillis() - start;
-            LegacyPerfCompat.count(opName, tableId, "catalog_op_total");
-            LegacyPerfCompat.value(opName, tableId, "catalog_op_latency", duration);
+            MetricsReporter.count(opName, totalTags);
+            MetricsReporter.value(opName, duration, latencyTags);
             if (LOG.isDebugEnabled()) {
                 LOG.debug(
                         "Catalog op success: op={}, table={}, duration={}ms",
@@ -75,9 +84,11 @@ public class MetricsHelper {
             return result;
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - start;
-            LegacyPerfCompat.count(opName, tableId, "catalog_op_total");
-            LegacyPerfCompat.count(opName, tableId, "catalog_op_error");
-            LegacyPerfCompat.value(opName, tableId, "catalog_op_latency", duration);
+            MetricsReporter.count(opName, totalTags);
+            Map<String, String> errorTags = catalogTags(opName, tableId, "catalog_op_error");
+            errorTags.put("error_class", e.getClass().getSimpleName());
+            MetricsReporter.count(opName, errorTags);
+            MetricsReporter.value(opName, duration, latencyTags);
             if (LOG.isDebugEnabled()) {
                 LOG.debug(
                         "Catalog op error: op={}, table={}, duration={}ms, error={}",
@@ -97,7 +108,7 @@ public class MetricsHelper {
      * get_table_by_id resolves UUID to Identifier). The callable should populate {@code
      * tableIdHolder[0]} during execution. If not populated, defaults to empty string.
      *
-     * @param opName operation name used as subtag
+     * @param opName operation name (also subtag)
      * @param tableIdHolder single-element array; callable populates [0] with the resolved tableId
      * @param callable the actual catalog call
      * @return the result of the callable
@@ -109,15 +120,19 @@ public class MetricsHelper {
             T result = callable.call();
             String tableId = tableIdHolder[0] != null ? tableIdHolder[0] : "";
             long duration = System.currentTimeMillis() - start;
-            LegacyPerfCompat.count(opName, tableId, "catalog_op_total");
-            LegacyPerfCompat.value(opName, tableId, "catalog_op_latency", duration);
+            MetricsReporter.count(opName, catalogTags(opName, tableId, "catalog_op_total"));
+            MetricsReporter.value(
+                    opName, duration, catalogTags(opName, tableId, "catalog_op_latency"));
             return result;
         } catch (Exception e) {
             String tableId = tableIdHolder[0] != null ? tableIdHolder[0] : "";
             long duration = System.currentTimeMillis() - start;
-            LegacyPerfCompat.count(opName, tableId, "catalog_op_total");
-            LegacyPerfCompat.count(opName, tableId, "catalog_op_error");
-            LegacyPerfCompat.value(opName, tableId, "catalog_op_latency", duration);
+            MetricsReporter.count(opName, catalogTags(opName, tableId, "catalog_op_total"));
+            Map<String, String> errorTags = catalogTags(opName, tableId, "catalog_op_error");
+            errorTags.put("error_class", e.getClass().getSimpleName());
+            MetricsReporter.count(opName, errorTags);
+            MetricsReporter.value(
+                    opName, duration, catalogTags(opName, tableId, "catalog_op_latency"));
             throw e;
         }
     }
@@ -158,28 +173,32 @@ public class MetricsHelper {
     }
 
     /**
-     * Report a single counter metric with table dimension. Wraps PerfUtil.perfCount with exception
-     * safety.
+     * Report a single counter metric with op + table dimensions. Aligned with HTTP-style tagging:
+     * globals fill PerfUtils extra1/extra2, op/table land in extra3, metric type lands in extra4.
      *
-     * @param opName operation name used as subtag
-     * @param tableId table identifier for per-table metrics
-     * @param metricKey metric key (e.g., "commit_conflict_total")
+     * @param opName operation name (used as subtag and {@code op} tag)
+     * @param tableId table identifier (carried as the {@code table} tag; omitted when blank)
+     * @param metricKey metric type identifier (e.g., "commit_conflict_total"); carried as the
+     *     {@code metric_type} tag
      */
     public static void reportCount(String opName, String tableId, String metricKey) {
-        LegacyPerfCompat.count(opName, tableId, metricKey);
+        MetricsReporter.count(opName, catalogTags(opName, tableId, metricKey));
     }
 
     /**
-     * Safely execute a perf call, swallowing any exceptions to avoid breaking business logic.
-     *
-     * @deprecated Use {@link LegacyPerfCompat} directly; it already handles exception safety.
+     * Build the standard catalog-op tag map: {@code op=opName}, optional {@code table=tableId},
+     * {@code metric_type=metricType}. Globals (service/cluster/deploy_group, instance/pod_name) are
+     * appended automatically by lakehouse-metrics; op/table fall into PerfUtils extra3 and
+     * metric_type into extra4 (alongside caller_app/error_class/error_code, blank for catalog).
      */
-    @Deprecated
-    public static void safePerf(Runnable perfCall) {
-        try {
-            perfCall.run();
-        } catch (Exception e) {
-            LOG.warn("Metrics reporting failed", e);
+    private static Map<String, String> catalogTags(
+            String opName, String tableId, String metricType) {
+        Map<String, String> tags = new HashMap<>();
+        tags.put("op", opName);
+        if (tableId != null && !tableId.isEmpty()) {
+            tags.put("table", tableId);
         }
+        tags.put("metric_type", metricType);
+        return tags;
     }
 }

@@ -117,10 +117,11 @@ REST error:    POST /v1/prefix/databases/db/tables/t/commit status=500 ... appId
 {"appId":"application_1714000000_0042","name":"my_table","options":{...}}
 ```
 
-**Metrics 上报**：新增 `request_by_app` 指标
-- subtag: `{method}:{routePattern}`（如 `GET:databases`）
-- table: `{appId}`（如 `application_1714000000_0042`）
-- 可用于按应用维度聚合请求量
+**Metrics 上报**：保留 `request_by_app` 旧指标，并由 `RouteDispatcher.reportLegacyRequestMetrics(...)` 在收尾路径中显式发送
+- metric name = `request_by_app`
+- tags = `route + app`，其中 `route = method:endpoint`（如 `GET:GET__v1_test_databases`），`app` 为 `RouteDispatcher.resolveCallerApp(request)` 归一化后的值（`X-Caller-App` 优先，`X-Paimon-App-Id` 降级，再经 `CallerRegistry.normalizeAndValidate(...)` 收敛，未注册值归到 `unknown`）
+- 同时还会产生只含 `caller_app` 维度的 `http.request.app_total`（低基数 RED 指标）
+- 可用于按应用维度聚合请求量，原始 app-id 不进 metrics tags，仅记录在 access log 中
 
 ## 涉及文件
 

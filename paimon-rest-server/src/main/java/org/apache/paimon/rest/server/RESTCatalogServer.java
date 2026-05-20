@@ -31,6 +31,7 @@ import org.apache.paimon.rest.server.auth.TokenAuthenticator;
 import org.apache.paimon.rest.server.metadata.JdbcMetadataStore;
 import org.apache.paimon.rest.server.metadata.MetadataStore;
 import org.apache.paimon.rest.server.utils.MetricsFileIO;
+import org.apache.paimon.rest.server.utils.PerfUtil;
 
 import com.kuaishou.infra.framework.datasource.KsDataSourceFactory;
 import com.kuaishou.kling.lakehouse.metrics.MetricsConfig;
@@ -227,37 +228,80 @@ public class RESTCatalogServer {
 
     private void initMetrics(String localHostname, int port, String projectVersion) {
         try {
-            String cluster =
-                    System.getenv("KWS_SERVICE_NAME") != null
-                            ? System.getenv("KWS_SERVICE_NAME").replace("\\.", "_")
-                            : options.get(RESTCatalogServerOptions.METRICS_CLUSTER);
             MetricsConfig metricsConfig =
-                    MetricsConfig.builder()
-                            .service("paimon-catalog")
-                            .cluster(cluster)
-                            .host(localHostname)
-                            .port(String.valueOf(port))
-                            .deployGroup(
-                                    System.getenv("KCS_IMAGE_VERSION") != null
-                                            ? System.getenv("KCS_IMAGE_VERSION")
-                                            : options.get(
-                                                    RESTCatalogServerOptions.METRICS_DEPLOY_GROUP))
-                            .version(projectVersion)
-                            .podName(
-                                    System.getenv("MY_POD_NAME") != null
-                                            ? System.getenv("MY_POD_NAME")
-                                            : "")
-                            .namespace(cluster + ".kling.paimon.catalog")
-                            .build();
+                    buildMetricsConfig(
+                            options,
+                            localHostname,
+                            port,
+                            projectVersion,
+                            System.getenv("KWS_SERVICE_NAME"),
+                            System.getenv("GRAY_GROUP_NAME"),
+                            System.getenv("KCS_IMAGE_VERSION"),
+                            System.getenv("MY_POD_NAME"));
             MetricsReporter.init(metricsConfig);
+            PerfUtil.setNamespace(metricsConfig.getNamespace());
             LOG.info(
-                    "MetricsReporter initialized: service={}, cluster={}, namespace={}",
+                    "MetricsReporter initialized: service={}, cluster={}, namespace={}, "
+                            + "deployGroup={}, version={}, confVersion={}",
                     metricsConfig.getService(),
                     metricsConfig.getCluster(),
-                    metricsConfig.getNamespace());
+                    metricsConfig.getNamespace(),
+                    metricsConfig.getDeployGroup(),
+                    metricsConfig.getVersion(),
+                    metricsConfig.getConfVersion());
         } catch (Exception e) {
             LOG.warn("Failed to initialize MetricsReporter, metrics will be unavailable", e);
         }
+    }
+
+    /**
+     * Build a {@link MetricsConfig} from config options, with optional environment variable
+     * overrides. Aligned with {@code DatasetCatalogServer}: namespace is {@code
+     * "{cluster}.{METRICS_NAMESPACE}"}, deployGroup prefers {@code GRAY_GROUP_NAME} then {@code
+     * KCS_IMAGE_VERSION} then config, and version prefers {@code KCS_IMAGE_VERSION} then {@code
+     * projectVersion}. This method is pure (no side effects) and package-visible for testing.
+     */
+    static MetricsConfig buildMetricsConfig(
+            Options options,
+            String localHostname,
+            int port,
+            String projectVersion,
+            @Nullable String envCluster,
+            @Nullable String envGrayGroup,
+            @Nullable String envDeployGroup,
+            @Nullable String envPodName) {
+        String cluster =
+                envCluster != null
+                        ? envCluster.replace(".", "_")
+                        : options.get(RESTCatalogServerOptions.METRICS_CLUSTER);
+
+        String service = options.get(RESTCatalogServerOptions.METRICS_SERVICE);
+        String namespace = cluster + ".kling.paimon.catalog";
+
+        String deployGroup;
+        if (envGrayGroup != null) {
+            deployGroup = envGrayGroup;
+        } else if (envDeployGroup != null) {
+            deployGroup = envDeployGroup;
+        } else {
+            deployGroup = options.get(RESTCatalogServerOptions.METRICS_DEPLOY_GROUP);
+        }
+
+        String version = envDeployGroup != null ? envDeployGroup : projectVersion;
+
+        String confVersion = options.get(RESTCatalogServerOptions.METRICS_CONF_VERSION);
+
+        return MetricsConfig.builder()
+                .service(service)
+                .cluster(cluster)
+                .host(localHostname)
+                .port(String.valueOf(port))
+                .deployGroup(deployGroup)
+                .version(version)
+                .podName(envPodName != null ? envPodName : "")
+                .namespace(namespace)
+                .confVersion(confVersion)
+                .build();
     }
 
     private void initCallerRegistry() {

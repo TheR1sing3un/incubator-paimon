@@ -1,5 +1,31 @@
 # `design-lakehouse-metrics-integration.md` Review（校准版）
 
+## Review 落地状态总览
+
+本 review 撰写时所担心的两个严重问题已经在代码中以**不同于原方案**的方式收敛。当前实现并非原 review 设想的"全量 legacy bridge + 改 kling-lakehouse-metrics 源码"路线，而是按以下结论落地：
+
+| 问题 | 原 review 结论 | 当前实际落地 |
+|---|---|---|
+| 问题 1（catalog 部分） | 必须通过 legacy bridge 兼容旧 PerfUtils 参数位 | **不再恢复**旧固定 key 兼容语义；catalog 类指标采用新口径 `metric name = opName + tag op/table/metric_type`，error 路径补 `error_class` |
+| 问题 1（request 部分） | 必须通过 legacy bridge 兼容旧 PerfUtils 参数位 | 通过 `RouteDispatcher.reportLegacyRequestMetrics` + 本地 `legacyTags(...)` 局部承担；新旧 `request_*` / `http.request.*` 并行上报，route = `method:endpoint` |
+| 问题 1（hdfs 部分） | 必须通过 legacy bridge 兼容旧 PerfUtils 参数位 | 操作类指标已切到与 catalog 一致的新口径；`hdfs_read_bytes` / `hdfs_write_bytes` 保留原名 |
+| 问题 2 | A 改 kling 源码 / B Paimon 自己显式上报 | **方案 B 已落地**：`finishRequestMetricsContext(...)` 显式调用 `reportStandardRequestMetrics(snapshot, requestSize, exceptionType)`，不依赖 `MetricsReporter.reportRequestSnapshot()` |
+| 问题 3 | §2.4 MyBatis 描述更准确化 | 设计文档已更正 |
+| 问题 4 | `APP_ID_HEADER` 标为降级来源 | 设计文档与代码均已落地（`X-Caller-App` 优先、`APP_ID_HEADER` fallback、未注册值经 `CallerRegistry` 归到 `unknown`） |
+| 问题 5 | 不依赖 `MetricsConfig.fromProperties()` | 已落地 |
+| 问题 6 | tags 来源分层 | 设计文档已分层说明 |
+| 非阻塞 1 | in-flight gauge 时序说明 | 已在 `RouteDispatcher` 中按 begin / finish / finally 三时点上报，并有测试覆盖 |
+| 非阻塞 2 | 补 fail-safe / 未初始化测试 | `RouteDispatcherTest` / `MetricsFileIOTest` 已锁定主路径，未初始化场景待补 |
+
+测试验证：
+
+```bash
+mvn -Dtest=RouteDispatcherTest,MetricsFileIOTest -Dcheckstyle.skip -Dspotless.check.skip -Denforcer.skip test
+# Tests run: 37, Failures: 0, Errors: 0, Skipped: 0 — BUILD SUCCESS
+```
+
+下面保留原 review 各问题的分析过程，但每个问题都加上"**落地状态**"段，避免与当前真实实现产生分叉。
+
 ## Review 结论
 
 当前设计文档整体方向已经比初版更清晰，但如果要真正进入实现阶段，仍有 **2 个关键设计问题需要先定口径**，以及 **3 个中低优先级问题需要在文档中补充说明**。
@@ -9,11 +35,19 @@
 1. **存量指标兼容不能只靠 `MetricsReporter.count/value(Map tags)` 直接替换 `PerfUtil`**。
 2. **`kling-lakehouse-metrics` 当前 `reportRequestSnapshot()` 仍然输出动态 subtag，与设计文档里的固定 subtag 目标不一致。**
 
-如果这两个问题不先解决，后续实现会出现“文档说的是一种模型，实际代码走的是另一种模型”的分叉。
+如果这两个问题不先解决，后续实现会出现"文档说的是一种模型，实际代码走的是另一种模型"的分叉。
 
 ---
 
 ## 问题 1（严重）：存量指标不能直接按 `Map tags` 方式迁移，否则会破坏旧 PerfUtils 参数位语义
+
+**落地状态（已收敛，但与原方案不同）**：当前实现没有引入跨模块 legacy bridge / `LegacyPerfCompat`，而是按指标类别拆分处置：
+
+- **catalog 类**：明确**不再恢复**旧固定 key 兼容语义。`MetricsHelper.wrapCatalogOp(opName[, tableId | tableIdHolder], callable)` / `MetricsHelper.reportCount(opName, tableId, metricKey)` 直接以 `MetricsReporter.count/value(name, tags)` 上报，metric name = opName，tags = `op + (optional) table + metric_type`，error 路径补 `error_class`。旧 `subtag + table + key` 三段式查询已不可恢复，需要在 Dashboard / Alert 侧改写。
+- **request 类**：通过 `RouteDispatcher.reportLegacyRequestMetrics(...)` + 本地 `legacyTags(k1, v1, k2, v2)` 在收尾路径里直接构造 tags map 后调用 `MetricsReporter.count/value(name, tags)`，与新 `http.request.*` / `caller.request.*` 并行上报；route = `method:endpoint`。
+- **hdfs 类**：操作类指标已切到与 catalog 一致的新口径（metric name = opName + tag `op/metric_type`，异常补 `exception_class`），`hdfs_read_bytes` / `hdfs_write_bytes` 保留原名。
+
+下文保留原分析作为口径选择的背景。
 
 ### 现象
 
@@ -107,6 +141,10 @@ LegacyPerfCompat.value(subtag, table, key, value)
 
 ## 问题 2（严重）：`reportRequestSnapshot()` 当前真实行为仍是动态 subtag，和文档目标不一致
 
+**落地状态（已采用方案 B）**：`paimon-rest-server` 不依赖 `MetricsReporter.reportRequestSnapshot(snapshot)`，而是在 `RouteDispatcher.finishRequestMetricsContext(...)` 中显式调用本地方法 `reportStandardRequestMetrics(snapshot, requestSize, exceptionType)` 输出固定 subtag 新指标（`http.request.total/latency/error_total/body_size/slow_total/app_total/stage.{db|hdfs|rpc|permission|internal}.latency` 与 `caller.request.total/latency`）。`http.request.in_flight` 由 `reportInFlightGauge()` 在 begin / finish / finally 三个时点单独上报。`reportLegacyRequestMetrics(...)` 在 `reportStandardRequestMetrics` 末尾被显式调用，确保新旧指标在同一收尾路径同步上报。`RouteDispatcherTest` 已对上述行为做断言锁定。
+
+下文保留原分析。
+
 ### 现象
 
 设计文档 §2.2、§3.1、§6.5.3 已经明确把新增 request 指标定义为固定 subtag：
@@ -179,7 +217,11 @@ MetricsReporter.reportRequestSnapshot(snapshot)
 
 ---
 
-## 问题 3（中等）：§2.4 关于 MyBatis 的描述需要更准确，不是“没有 MyBatis”而是“只在局部 metadata 链路使用 MyBatis”
+## 问题 3（中等）：§2.4 关于 MyBatis 的描述需要更准确，不是"没有 MyBatis"而是"只在局部 metadata 链路使用 MyBatis"
+
+**落地状态（已修订）**：设计文档 §2.4 已按 review 建议改为"`paimon-rest-server` 当前只在 `JdbcMetadataStore` 这条局部 metadata 链路上使用 MyBatis `SqlSessionFactory` / `Mapper`"。
+
+下文保留原分析。
 
 ### 现象
 
@@ -227,7 +269,11 @@ try (SqlSession session = sqlSessionFactory.openSession(true)) {
 
 ---
 
-## 问题 4（中等）：`APP_ID_HEADER` 作为 `caller_app` fallback 有高基数和语义混淆风险，文档需要写清楚“降级来源”身份
+## 问题 4（中等）：`APP_ID_HEADER` 作为 `caller_app` fallback 有高基数和语义混淆风险，文档需要写清楚"降级来源"身份
+
+**落地状态（已落地）**：`RouteDispatcher.resolveCallerApp(...)` 实现为：`X-Caller-App` 优先、`APP_ID_HEADER` 降级，再经 `CallerRegistry.normalizeAndValidate(rawCallerApp)` 归一化（无 registry 时退回 `MetricsNameNormalizer.normalizeCallerApp`）。`testCallerRegistryCollapsesUnknownCallerToUnknown` / `testCallerRegistryPrefersCallerAppOverAppId` / `testDispatchWithoutCallerRegistryStillWorks` 已锁定该语义；access log 中 `caller_app` 反映归一化后的值，原始 app-id 不进 metrics tags。
+
+下文保留原分析。
 
 ### 现象
 
@@ -294,6 +340,10 @@ callerRegistry.normalizeAndValidate(rawApp)
 
 ## 问题 5（中等）：`MetricsConfig.fromProperties()` 的 key 名与设计文档当前配置口径不一致，容易误导实现者
 
+**落地状态（已落地）**：设计文档要求使用 `RESTCatalogServerOptions` + `MetricsConfig.builder()` 显式装配；不依赖 `MetricsConfig.fromProperties()`。已在 §6.3 中明确该约束。
+
+下文保留原分析。
+
 ### 现象
 
 设计文档当前推荐配置是：
@@ -347,6 +397,10 @@ MetricsConfig.fromProperties(props)
 ---
 
 ## 问题 6（中低）：`RequestMetricsSnapshot.toTags()` 当前能力边界需要在文档中说明，避免过度承诺 tags 语义
+
+**落地状态（已落地）**：设计文档 §3.2.1 已按 review 建议把 tags 来源分层为 global / request snapshot 基础 / error-specific / dependency / 高基数日志字段。`RouteDispatcher.reportStandardRequestMetrics(...)` 中的 error tags 分支会按需补 `error_code` / `exception_type`，不假设 `toTags()` 自带这些字段。
+
+下文保留原分析。
 
 ### 现象
 
@@ -435,36 +489,32 @@ tags.put("caller_app", callerApp);
 
 ## 建议对 `design-lakehouse-metrics-integration.md` 的修订动作
 
-基于以上问题，建议对设计文档做以下修订：
+基于以上问题，建议对设计文档做以下修订（落地状态已附在每条之后）：
 
 ### 必须修
 
-1. **重写存量指标迁移方案**
-   - 不再把旧 `PerfUtil` 调用直接替换为 `MetricsReporter.count/value(Map tags)`
-   - 改为“通过 legacy bridge 兼容旧 PerfUtils 参数位”
+1. **重写存量指标迁移方案** — 已落地，但与原方案不同
+   - 当前实现**未引入** `LegacyPerfCompat` / 跨模块 legacy bridge
+   - 改为按指标类别拆分：catalog 直接采用新口径不再恢复旧固定 key；request 类通过 `reportLegacyRequestMetrics` + `legacyTags` 局部承担兼容；hdfs 操作类切到与 catalog 一致的新口径
 
-2. **明确 `reportRequestSnapshot()` 的使用策略**
-   - 要么先改 `kling-lakehouse-metrics`
-   - 要么 Paimon 自己显式上报固定 subtag 新指标
+2. **明确 `reportRequestSnapshot()` 的使用策略** — 已落地（方案 B）
+   - Paimon 在 `finishRequestMetricsContext(...)` 中显式调用 `reportStandardRequestMetrics(snapshot, requestSize, exceptionType)` 输出固定 subtag 新指标
+   - 不依赖 `MetricsReporter.reportRequestSnapshot()`
 
 ### 应该修
 
-3. **修正 §2.4 的 MyBatis 描述**
-   - 改成“局部 metadata 链路使用 MyBatis，而不是全面 MyBatis stack”
+3. **修正 §2.4 的 MyBatis 描述** — 已落地（设计文档已按 "局部 metadata 链路使用 MyBatis" 表述）
 
-4. **把 `APP_ID_HEADER` 明确标为降级来源**
-   - 防止与 `caller_app` 正式来源混淆
+4. **把 `APP_ID_HEADER` 明确标为降级来源** — 已落地（`X-Caller-App` 优先、`APP_ID_HEADER` 降级、未注册值经 `CallerRegistry` 归到 `unknown`）
 
-5. **明确不用 `MetricsConfig.fromProperties()` 自动装配**
-   - 避免 key 命名不一致踩坑
+5. **明确不用 `MetricsConfig.fromProperties()` 自动装配** — 已落地（设计文档与代码均使用 `MetricsConfig.builder()` 显式装配）
 
-6. **明确各类 tags 的来源边界**
-   - snapshot / dependency / global / access log 分层说明
+6. **明确各类 tags 的来源边界** — 已落地（snapshot / dependency / global / error-specific / access log 已分层说明）
 
 ### 可以顺手补
 
 7. **补一条测试用例**
-   - `MetricsReporter` 未初始化时 graceful no-op
+   - `MetricsReporter` 未初始化时 graceful no-op — 待补（主路径行为已通过 `RouteDispatcherTest` / `MetricsFileIOTest` 锁定）
 
 ---
 
@@ -472,4 +522,4 @@ tags.put("caller_app", callerApp);
 
 当前这份校准后的 review 结论可以概括为：
 
-> **设计文档的大方向已经比初版正确很多，但还存在两个真正阻塞实现的问题：一是存量指标迁移不能直接复用当前 `MetricsReporter` 的 tags 语义，二是 `reportRequestSnapshot()` 当前实现仍是动态 subtag。除此之外，还需要修正文档中对 MyBatis、APP_ID fallback、配置装配和 tags 来源的若干表述，使 implementation-ready 内容与真实源码完全对齐。**
+> **review 中提出的 6 个问题已收敛到代码与文档中，但路径与原方案不同：原 review 推荐"全量 legacy bridge + 改 kling-lakehouse-metrics 源码"，实际落地为"catalog 不恢复旧固定 key、request 通过本地 `legacyTags` 局部承担兼容、hdfs 操作类切新口径、Paimon 显式上报固定 subtag 不依赖 `reportRequestSnapshot()`"。`RouteDispatcherTest` / `MetricsFileIOTest` 已锁定上述行为，BUILD SUCCESS。**

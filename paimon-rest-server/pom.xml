@@ -89,7 +89,7 @@ under the License.
         <dependency>
             <groupId>com.kuaishou.kling</groupId>
             <artifactId>kling-lakehouse-metrics</artifactId>
-            <version>1.0.8</version>
+            <version>1.0.11</version>
         </dependency>
 
         <dependency>

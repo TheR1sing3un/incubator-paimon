@@ -21,6 +21,8 @@ package org.apache.paimon.rest.server.utils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 /**
  * Compatibility bridge for legacy PerfUtils positional semantics.
  *
@@ -31,12 +33,31 @@ public class LegacyPerfCompat {
 
     private static final Logger LOG = LoggerFactory.getLogger(LegacyPerfCompat.class);
 
+    /**
+     * Optional listener for testing. When non-null, every count/value call notifies this listener
+     * with the metric key before delegating to PerfUtil. Null in production (zero overhead).
+     */
+    @Nullable private static volatile MetricListener testListener;
+
+    /** Listener interface for capturing legacy metric calls in tests. */
+    public interface MetricListener {
+        void onCount(String key);
+
+        void onValue(String key, long value);
+    }
+
+    /** Install a test listener. Pass null to remove. */
+    public static void setTestListener(@Nullable MetricListener listener) {
+        testListener = listener;
+    }
+
     private LegacyPerfCompat() {}
 
     public static void count(String key) {
         if (LOG.isDebugEnabled()) {
             LOG.debug("Legacy count: key={}", key);
         }
+        notifyCount(key);
         safeCall(() -> PerfUtil.perfCount(key));
     }
 
@@ -44,6 +65,7 @@ public class LegacyPerfCompat {
         if (LOG.isDebugEnabled()) {
             LOG.debug("Legacy count: key={}, value={}", key, value);
         }
+        notifyCount(key);
         safeCall(() -> PerfUtil.perfCount(key, value));
     }
 
@@ -51,6 +73,7 @@ public class LegacyPerfCompat {
         if (LOG.isDebugEnabled()) {
             LOG.debug("Legacy count: subtag={}, key={}", subtag, key);
         }
+        notifyCount(key);
         safeCall(() -> PerfUtil.perfCount(subtag, "", key));
     }
 
@@ -58,6 +81,7 @@ public class LegacyPerfCompat {
         if (LOG.isDebugEnabled()) {
             LOG.debug("Legacy count: subtag={}, table={}, key={}", subtag, table, key);
         }
+        notifyCount(key);
         safeCall(() -> PerfUtil.perfCount(subtag, table, key));
     }
 
@@ -65,6 +89,7 @@ public class LegacyPerfCompat {
         if (LOG.isDebugEnabled()) {
             LOG.debug("Legacy value: key={}, value={}", key, value);
         }
+        notifyValue(key, value);
         safeCall(() -> PerfUtil.perfValue(key, value));
     }
 
@@ -72,6 +97,7 @@ public class LegacyPerfCompat {
         if (LOG.isDebugEnabled()) {
             LOG.debug("Legacy value: subtag={}, key={}, value={}", subtag, key, value);
         }
+        notifyValue(key, value);
         safeCall(() -> PerfUtil.perfValue(subtag, key, value));
     }
 
@@ -84,6 +110,7 @@ public class LegacyPerfCompat {
                     key,
                     value);
         }
+        notifyValue(key, value);
         safeCall(() -> PerfUtil.perfValue(subtag, table, key, value));
     }
 
@@ -92,6 +119,20 @@ public class LegacyPerfCompat {
             runnable.run();
         } catch (Throwable t) {
             LOG.warn("Legacy perf reporting failed", t);
+        }
+    }
+
+    private static void notifyCount(String key) {
+        MetricListener l = testListener;
+        if (l != null) {
+            l.onCount(key);
+        }
+    }
+
+    private static void notifyValue(String key, long value) {
+        MetricListener l = testListener;
+        if (l != null) {
+            l.onValue(key, value);
         }
     }
 }

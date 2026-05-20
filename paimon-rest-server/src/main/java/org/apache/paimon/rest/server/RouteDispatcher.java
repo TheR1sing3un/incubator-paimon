@@ -83,6 +83,24 @@ public class RouteDispatcher {
     /** Maps (HTTP method, pattern suffix) to operation type for audit logging. */
     private static final Map<String, String> OPERATION_TYPE_MAP = buildOperationTypeMap();
 
+    /**
+     * Optional listener for testing. When non-null, every MetricsReporter call in
+     * reportStandardRequestMetrics notifies this listener. Null in production (zero overhead).
+     */
+    @Nullable static volatile MetricsEmitListener testMetricsListener;
+
+    /** Listener interface for capturing emitted metrics in tests. */
+    interface MetricsEmitListener {
+        void onCount(String name, Map<String, String> tags);
+
+        void onValue(String name, long value, Map<String, String> tags);
+    }
+
+    /** Install a test listener. Pass null to remove. */
+    static void setTestMetricsListener(@Nullable MetricsEmitListener listener) {
+        testMetricsListener = listener;
+    }
+
     public RouteDispatcher(Catalog catalog, @Nullable String prefix, String warehouse) {
         this(catalog, prefix, warehouse, null, null);
     }
@@ -147,6 +165,13 @@ public class RouteDispatcher {
 
         Router.RouteMatch match = router.findMatch(method, path);
         String endpointName = resolveEndpointName(method, match);
+
+        LOG.info(
+                "Route resolved: method={}, path={}, matched={}, endpointName={}",
+                method,
+                path,
+                match != null ? match.matchedPattern() : "null",
+                endpointName);
 
         RequestMetricsContext.begin(endpointName);
         RequestMetricsContext.setMethod(method);
@@ -269,6 +294,128 @@ public class RouteDispatcher {
         }
     }
 
+    private void finishRequestMetricsContext(
+            int statusCode,
+            @Nullable Exception error,
+            String path,
+            @Nullable String userAgent,
+            int requestSize,
+            int responseSize) {
+        RequestMetricsContext.setStatusCode(statusCode);
+        if (error != null) {
+            RequestMetricsContext.setErrorCode(resolveErrorCode(error, statusCode));
+        } else if (statusCode >= 400) {
+            RequestMetricsContext.setErrorCode("HTTP_" + statusCode);
+        }
+
+        RequestMetricsSnapshot snapshot = RequestMetricsContext.finish();
+        if (snapshot != null) {
+            String exceptionType =
+                    error != null ? unwrapException(error).getClass().getSimpleName() : null;
+            reportStandardRequestMetrics(snapshot, requestSize, exceptionType);
+            AccessLogFormatter.log(snapshot, path, userAgent, requestSize, responseSize);
+        }
+    }
+
+    void reportStandardRequestMetrics(
+            RequestMetricsSnapshot snapshot, int requestSize, @Nullable String exceptionType) {
+        Map<String, String> tags = snapshot.toTags();
+        emitCount("http.request.total", tags);
+        emitValue("http.request.latency", snapshot.getDurationMs(), tags);
+        emitCount("caller.request.total", tags);
+        emitValue("caller.request.latency", snapshot.getDurationMs(), tags);
+
+        // per-app request count (low-cardinality: only caller_app dimension)
+        String callerApp = tags.get("caller_app");
+        if (callerApp != null && !callerApp.isEmpty()) {
+            emitCount("http.request.app_total", Collections.singletonMap("caller_app", callerApp));
+        }
+
+        // body size
+        if (requestSize >= 0) {
+            emitValue("http.request.body_size", requestSize, tags);
+        }
+
+        // slow request counters
+        if (snapshot.getDurationMs() > 1000) {
+            Map<String, String> slowTags = new HashMap<>(tags);
+            slowTags.put("threshold", "1s");
+            emitCount("http.request.slow_total", slowTags);
+        }
+        if (snapshot.getDurationMs() > 5000) {
+            Map<String, String> slowTags = new HashMap<>(tags);
+            slowTags.put("threshold", "5s");
+            emitCount("http.request.slow_total", slowTags);
+        }
+
+        // error metrics
+        if (snapshot.getStatusCode() >= 400) {
+            Map<String, String> errorTags = new HashMap<>(tags);
+            if (snapshot.getErrorCode() != null && !snapshot.getErrorCode().isEmpty()) {
+                errorTags.put("error_code", snapshot.getErrorCode());
+            }
+            if (exceptionType != null && !exceptionType.isEmpty()) {
+                errorTags.put("exception_type", exceptionType);
+            }
+            emitCount("http.request.error_total", errorTags);
+        }
+
+        // stage breakdown
+        if (snapshot.getDbTimeMs() > 0) {
+            emitValue("http.request.stage.db.latency", snapshot.getDbTimeMs(), tags);
+        }
+        if (snapshot.getHdfsTimeMs() > 0) {
+            emitValue("http.request.stage.hdfs.latency", snapshot.getHdfsTimeMs(), tags);
+        }
+        if (snapshot.getRpcTimeMs() > 0) {
+            emitValue("http.request.stage.rpc.latency", snapshot.getRpcTimeMs(), tags);
+        }
+        if (snapshot.getPermissionTimeMs() > 0) {
+            emitValue(
+                    "http.request.stage.permission.latency", snapshot.getPermissionTimeMs(), tags);
+        }
+        if (snapshot.getInternalTimeMs() > 0) {
+            emitValue("http.request.stage.internal.latency", snapshot.getInternalTimeMs(), tags);
+        }
+
+        if (LOG.isDebugEnabled()) {
+            LOG.debug(
+                    "Metrics sent: endpoint={}, method={}, status={}, duration={}ms, "
+                            + "caller_app={}, tags={}, errorCount={}",
+                    snapshot.getEndpointName(),
+                    snapshot.getMethod(),
+                    snapshot.getStatusCode(),
+                    snapshot.getDurationMs(),
+                    tags,
+                    snapshot.getCallerApp(),
+                    MetricsReporter.getReportErrorCount());
+        }
+    }
+
+    private static void emitCount(String name, Map<String, String> tags) {
+        MetricsReporter.count(name, tags);
+        MetricsEmitListener l = testMetricsListener;
+        if (l != null) {
+            l.onCount(name, tags);
+        }
+    }
+
+    private static void emitValue(String name, long value, Map<String, String> tags) {
+        MetricsReporter.value(name, value, tags);
+        MetricsEmitListener l = testMetricsListener;
+        if (l != null) {
+            l.onValue(name, value, tags);
+        }
+    }
+
+    private void reportInFlightGauge() {
+        try {
+            MetricsReporter.gauge("http.request.in_flight", RequestMetricsContext.getInFlight());
+        } catch (Throwable t) {
+            LOG.debug("Failed to report in-flight gauge", t);
+        }
+    }
+
     private static void reportRequestMetrics(
             String routePattern,
             String method,
@@ -280,6 +427,14 @@ public class RouteDispatcher {
             String targetId,
             String appId) {
         String subtag = method + ":" + routePattern;
+        LOG.info(
+                "Legacy metrics subtag: subtag={}, routePattern={}, method={}, path={}, userId={}, appId={}",
+                subtag,
+                routePattern,
+                method,
+                path,
+                userId,
+                appId);
         LegacyPerfCompat.value(subtag, userId, "request_latency", durationMs);
         LegacyPerfCompat.value(subtag, userId, "request_body_size", bodyLength);
         String statusKey = "request_" + statusCode;
@@ -297,75 +452,6 @@ public class RouteDispatcher {
         }
     }
 
-    private void finishRequestMetricsContext(
-            int statusCode,
-            @Nullable Exception error,
-            String path,
-            @Nullable String userAgent,
-            int requestSize,
-            int responseSize) {
-        RequestMetricsContext.setStatusCode(statusCode);
-        if (error != null) {
-            RequestMetricsContext.setErrorCode(resolveErrorCode(error, statusCode));
-        } else if (statusCode >= 400) {
-            RequestMetricsContext.setErrorCode("HTTP_" + statusCode);
-        }
-
-        RequestMetricsSnapshot snapshot = RequestMetricsContext.finish();
-        if (snapshot != null) {
-            reportStandardRequestMetrics(snapshot);
-            AccessLogFormatter.log(snapshot, path, userAgent, requestSize, responseSize);
-        }
-    }
-
-    private void reportStandardRequestMetrics(RequestMetricsSnapshot snapshot) {
-        Map<String, String> tags = snapshot.toTags();
-        MetricsReporter.count("http.request.total", tags);
-        MetricsReporter.value("http.request.latency", snapshot.getDurationMs(), tags);
-        MetricsReporter.count("caller.request.total", tags);
-        MetricsReporter.value("caller.request.latency", snapshot.getDurationMs(), tags);
-
-        if (snapshot.getStatusCode() >= 400) {
-            Map<String, String> errorTags = new HashMap<>(tags);
-            if (snapshot.getErrorCode() != null && !snapshot.getErrorCode().isEmpty()) {
-                errorTags.put("error_code", snapshot.getErrorCode());
-            }
-            MetricsReporter.count("http.request.error_total", errorTags);
-        }
-
-        if (snapshot.getDbTimeMs() > 0) {
-            MetricsReporter.value("http.request.stage.db.latency", snapshot.getDbTimeMs(), tags);
-        }
-        if (snapshot.getHdfsTimeMs() > 0) {
-            MetricsReporter.value(
-                    "http.request.stage.hdfs.latency", snapshot.getHdfsTimeMs(), tags);
-        }
-        if (snapshot.getRpcTimeMs() > 0) {
-            MetricsReporter.value("http.request.stage.rpc.latency", snapshot.getRpcTimeMs(), tags);
-        }
-        if (snapshot.getPermissionTimeMs() > 0) {
-            MetricsReporter.value(
-                    "http.request.stage.permission.latency", snapshot.getPermissionTimeMs(), tags);
-        }
-        if (snapshot.getInternalTimeMs() > 0) {
-            MetricsReporter.value(
-                    "http.request.stage.internal.latency", snapshot.getInternalTimeMs(), tags);
-        }
-
-        if (LOG.isDebugEnabled()) {
-            LOG.debug(
-                    "Metrics sent: endpoint={}, method={}, status={}, duration={}ms, "
-                            + "caller_app={}, tags={}, errorCount={}",
-                    snapshot.getEndpointName(),
-                    snapshot.getMethod(),
-                    snapshot.getStatusCode(),
-                    snapshot.getDurationMs(),
-                    snapshot.getCallerApp(),
-                    tags,
-                    MetricsReporter.getReportErrorCount());
-        }
-    }
-
     private void reportRequestExceptionMetric(
             String routePattern, String method, String userId, Exception exception) {
         String exceptionName = unwrapException(exception).getClass().getSimpleName();
@@ -374,12 +460,25 @@ public class RouteDispatcher {
         LegacyPerfCompat.count(exceptionName, exceptionExtra, "request_exception");
     }
 
-    private void reportInFlightGauge() {
-        try {
-            MetricsReporter.gauge("http.request.in_flight", RequestMetricsContext.getInFlight());
-        } catch (Throwable t) {
-            LOG.debug("Failed to report in-flight gauge", t);
-        }
+    private static Map<String, String> legacyTags(
+            String key1, String value1, String key2, String value2) {
+        Map<String, String> tags = new HashMap<>();
+        tags.put(key1, value1);
+        tags.put(key2, value2);
+        return tags;
+    }
+
+    private static Map<String, String> legacyTagsWithType(
+            String key1, String value1, String key2, String value2, String metricType) {
+        Map<String, String> tags = legacyTags(key1, value1, key2, value2);
+        tags.put("metric_type", metricType);
+        return tags;
+    }
+
+    private static String buildLegacyRouteKey(RequestMetricsSnapshot snapshot) {
+        return firstNonEmpty(snapshot.getMethod(), "UNKNOWN")
+                + ":"
+                + firstNonEmpty(snapshot.getEndpointName(), "unknown");
     }
 
     private static int computeResponseSize(RouteResult result) {
