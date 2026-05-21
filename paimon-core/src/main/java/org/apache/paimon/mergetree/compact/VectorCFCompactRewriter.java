@@ -137,6 +137,24 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         return delegate.upgrade(outputLevel, file);
     }
 
+    @Override
+    public boolean needsIndependentCompaction() {
+        if (!options.vectorCFCompactEnabled() || bucketVectorFiles.isEmpty()) {
+            return false;
+        }
+        long targetRows = options.vectorColumnFamilyTargetFileRows();
+        if (targetRows <= 0) {
+            return false;
+        }
+        int unfilledCount = 0;
+        for (DataFileMeta f : bucketVectorFiles) {
+            if (f.rowCount() < targetRows) {
+                unfilledCount++;
+            }
+        }
+        return unfilledCount >= options.vectorCFCompactMinFiles();
+    }
+
     /**
      * Normal compaction: merge small vector files into larger ones and generate a {@link
      * VectorFileMapping} stored as an {@link IndexFileMeta}. Scalar files are NOT rewritten.
@@ -329,7 +347,8 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         }
 
         if (allExternalBefore.isEmpty()) {
-            return delegate.rewrite(outputLevel, dropDelete, sections);
+            // No low-ratio merges happened. Check if unfilled small files need merging.
+            return mergeUnfilledAndReturn(outputLevel, dropDelete, sections, vectorColumns);
         }
 
         // --- Phase 4: Compact rewrite with descriptor remapping ---
@@ -358,6 +377,112 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                 scalarResult.changelog(),
                 scalarResult.newIndexFiles(),
                 scalarResult.deletedIndexFiles());
+    }
+
+    /**
+     * Merge unfilled vector files (rowCount < targetFileRows) independently of valid-ratio. Called
+     * when full compact has no low-ratio files to merge but small files exist.
+     */
+    private CompactResult mergeUnfilledAndReturn(
+            int outputLevel,
+            boolean dropDelete,
+            List<List<SortedRun>> sections,
+            List<VectorColumnInfo> vectorColumns)
+            throws Exception {
+
+        long targetRows = options.vectorColumnFamilyTargetFileRows();
+        if (targetRows <= 0) {
+            return delegate.rewrite(outputLevel, dropDelete, sections);
+        }
+
+        DataFilePathFactory dataFilePathFactory = writerFactory.pathFactory(outputLevel);
+        Path bucketPath = dataFilePathFactory.parent();
+
+        List<DataFileMeta> vectorBefore = new ArrayList<>();
+        List<DataFileMeta> vectorAfter = new ArrayList<>();
+        VectorFileMapping.Builder mappingBuilder = VectorFileMapping.builder();
+        boolean anyMerged = false;
+
+        for (VectorColumnInfo colInfo : vectorColumns) {
+            List<DataFileMeta> smallFiles = new ArrayList<>();
+            for (DataFileMeta f : bucketVectorFiles) {
+                if (f.writeCols() != null
+                        && f.writeCols().contains(colInfo.fieldName)
+                        && f.rowCount() < targetRows) {
+                    smallFiles.add(f);
+                }
+            }
+
+            if (smallFiles.size() < options.vectorCFCompactMinFiles()) {
+                continue;
+            }
+
+            long schemaId = smallFiles.get(0).schemaId();
+            VectorFileMerger merger =
+                    new VectorFileMerger(
+                            fileIO,
+                            bucketPath,
+                            colInfo.bytesPerVector,
+                            schemaId,
+                            colInfo.fieldName,
+                            dataFilePathFactory);
+
+            List<VectorFileMerger.MergeAllResult> mergeResults =
+                    merger.mergeAllWithTargetRows(smallFiles, targetRows);
+
+            if (!mergeResults.isEmpty()) {
+                anyMerged = true;
+                vectorBefore.addAll(smallFiles);
+                for (VectorFileMerger.MergeAllResult mr : mergeResults) {
+                    vectorAfter.add(mr.newFileMeta());
+                    String mergedFilePath = dataFilePathFactory.toPath(mr.newFileMeta()).toString();
+                    for (VectorFileMerger.MergeAllResult.SourceMapping sm : mr.sourceMappings()) {
+                        mappingBuilder.addMerged(
+                                sm.sourceFileName(), mergedFilePath, sm.baseOffset());
+                    }
+
+                    // Merge pkmaps for this output file's sources
+                    List<DataFileMeta> batchSources = new ArrayList<>();
+                    for (VectorFileMerger.MergeAllResult.SourceMapping sm : mr.sourceMappings()) {
+                        for (DataFileMeta f : smallFiles) {
+                            if (f.fileName().equals(sm.sourceFileName())) {
+                                batchSources.add(f);
+                                break;
+                            }
+                        }
+                    }
+                    mergePkMaps(bucketPath, mr.newFileMeta().fileName(), batchSources);
+                }
+                LOG.info(
+                        "Vector unfilled merge: column {} merged {} small files -> {} output files",
+                        colInfo.fieldName,
+                        smallFiles.size(),
+                        mergeResults.size());
+            }
+        }
+
+        if (!anyMerged) {
+            return delegate.rewrite(outputLevel, dropDelete, sections);
+        }
+
+        CompactResult scalarResult = delegate.rewrite(outputLevel, dropDelete, sections);
+
+        VectorFileMapping mapping = mappingBuilder.build();
+        Path mappingPath = VectorFileMappingIO.write(fileIO, bucketPath, mapping);
+        IndexFileMeta mappingIndexMeta =
+                new IndexFileMeta(
+                        VECTOR_FILE_MAPPING_TYPE,
+                        mappingPath.getName(),
+                        fileIO.getFileSize(mappingPath),
+                        mapping.size(),
+                        null,
+                        null,
+                        null);
+
+        scalarResult.before().addAll(vectorBefore);
+        scalarResult.after().addAll(vectorAfter);
+        scalarResult.newIndexFiles().add(mappingIndexMeta);
+        return scalarResult;
     }
 
     private List<VectorColumnInfo> detectVectorColumns() {

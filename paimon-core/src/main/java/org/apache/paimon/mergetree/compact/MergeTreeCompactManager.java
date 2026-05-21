@@ -198,6 +198,23 @@ public class MergeTreeCompactManager extends CompactFutureManager {
                     }
                     submitCompaction(unit, dropDelete);
                 });
+
+        // If scalar doesn't need compaction but vector files need independent merge,
+        // submit a minimal compact unit to give the rewriter a chance to merge vector files.
+        if (!optionalUnit.isPresent() && rewriter.needsIndependentCompaction()) {
+            List<LevelSortedRun> allRuns = levels.levelSortedRuns();
+            if (!allRuns.isEmpty()) {
+                // Use the highest-level run as a pass-through (rewriter will handle vector merge)
+                LevelSortedRun highestRun = allRuns.get(allRuns.size() - 1);
+                CompactUnit vectorUnit =
+                        CompactUnit.fromLevelRuns(
+                                highestRun.level(), Collections.singletonList(highestRun));
+                LOG.info(
+                        "Triggering vector-only compaction (scalar up-to-date, {} vector files need merge)",
+                        allRuns.size());
+                submitCompaction(vectorUnit, false);
+            }
+        }
     }
 
     @VisibleForTesting

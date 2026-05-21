@@ -53,4 +53,12 @@ public interface CompactRewriter extends Closeable {
      * @throws Exception exception
      */
     CompactResult upgrade(int outputLevel, DataFileMeta file) throws Exception;
+
+    /**
+     * Whether this rewriter needs an independent compaction pass (e.g., to merge vector files) even
+     * when scalar files don't need compaction.
+     */
+    default boolean needsIndependentCompaction() {
+        return false;
+    }
 }
