@@ -166,7 +166,8 @@ public class DefaultVectorFileWriter implements VectorColumnFamilyFlushHelper.Ve
 
         if (currentOutput != null && !currentFileReported) {
             result.add(
-                    createFileMeta(currentPath, currentRowCount * bytesPerVector, currentRowCount));
+                    createFileMeta(
+                            currentPath, currentRowCount * bytesPerVector, currentRowCount, null));
             currentFileReported = true;
         }
 
@@ -191,9 +192,10 @@ public class DefaultVectorFileWriter implements VectorColumnFamilyFlushHelper.Ve
             long fileSize = currentOutput.getPos();
             currentOutput.close();
 
-            flushPkMap(currentPath);
+            String pkmapFileName = flushPkMap(currentPath);
 
-            completedFileMetas.add(createFileMeta(currentPath, fileSize, currentRowCount));
+            completedFileMetas.add(
+                    createFileMeta(currentPath, fileSize, currentRowCount, pkmapFileName));
 
             currentOutput = null;
             currentPath = null;
@@ -201,7 +203,12 @@ public class DefaultVectorFileWriter implements VectorColumnFamilyFlushHelper.Ve
         }
     }
 
-    private DataFileMeta createFileMeta(Path path, long fileSize, long rowCount) {
+    private DataFileMeta createFileMeta(
+            Path path, long fileSize, long rowCount, @Nullable String pkmapFileName) {
+        List<String> extraFiles =
+                pkmapFileName != null
+                        ? Collections.singletonList(pkmapFileName)
+                        : Collections.emptyList();
         return DataFileMeta.forAppend(
                 path.getName(),
                 fileSize,
@@ -210,7 +217,7 @@ public class DefaultVectorFileWriter implements VectorColumnFamilyFlushHelper.Ve
                 0L,
                 0L,
                 schemaId,
-                Collections.emptyList(),
+                extraFiles,
                 null,
                 FileSource.APPEND,
                 null,
@@ -219,10 +226,11 @@ public class DefaultVectorFileWriter implements VectorColumnFamilyFlushHelper.Ve
                 Collections.singletonList(vectorColumnName));
     }
 
-    private void flushPkMap(Path vectorFilePath) {
+    @Nullable
+    private String flushPkMap(Path vectorFilePath) {
         if (pkArity <= 0 || pkBuffer.isEmpty()) {
             pkBuffer.clear();
-            return;
+            return null;
         }
         String pkmapFileName = AccelerateIndexConstants.pkmapSidecarName(vectorFilePath.getName());
         Path bucketPath = vectorFilePath.getParent();
@@ -238,6 +246,8 @@ public class DefaultVectorFileWriter implements VectorColumnFamilyFlushHelper.Ve
                 }
                 writer.finish();
             }
+            pkBuffer.clear();
+            return pkmapFileName;
         } catch (IOException e) {
             org.slf4j.LoggerFactory.getLogger(DefaultVectorFileWriter.class)
                     .warn(
@@ -246,6 +256,7 @@ public class DefaultVectorFileWriter implements VectorColumnFamilyFlushHelper.Ve
                             e);
         }
         pkBuffer.clear();
+        return null;
     }
 
     @Override

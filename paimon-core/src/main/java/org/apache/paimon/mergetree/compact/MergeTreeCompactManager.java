@@ -72,6 +72,9 @@ public class MergeTreeCompactManager extends CompactFutureManager {
 
     @Nullable private final RecordLevelExpire recordLevelExpire;
 
+    @Nullable private CompactResult pendingVectorResult;
+    private boolean vectorCompactDone = false;
+
     public MergeTreeCompactManager(
             ExecutorService executor,
             Levels levels,
@@ -201,19 +204,35 @@ public class MergeTreeCompactManager extends CompactFutureManager {
 
         // If scalar doesn't need compaction but vector files need independent merge,
         // submit a minimal compact unit to give the rewriter a chance to merge vector files.
-        if (!optionalUnit.isPresent() && rewriter.needsIndependentCompaction()) {
-            List<LevelSortedRun> allRuns = levels.levelSortedRuns();
-            if (!allRuns.isEmpty()) {
-                // Use the highest-level run as a pass-through (rewriter will handle vector merge)
-                LevelSortedRun highestRun = allRuns.get(allRuns.size() - 1);
-                CompactUnit vectorUnit =
-                        CompactUnit.fromLevelRuns(
-                                highestRun.level(), Collections.singletonList(highestRun));
-                LOG.info(
-                        "Triggering vector-only compaction (scalar up-to-date, {} vector files need merge)",
-                        allRuns.size());
-                submitCompaction(vectorUnit, false);
+        // Use outputLevel = 0 (not maxLevel) so rewrite() takes the normal merge path
+        // (rewriteWithVectorMergeOnly) which merges unfilled files by target-row count,
+        // rather than the full compact path which only merges low-ratio files.
+        if (!optionalUnit.isPresent()
+                && !vectorCompactDone
+                && rewriter.needsIndependentCompaction()) {
+            // Vector-only compact: execute synchronously (no async task needed since
+            // scalar has nothing to merge). This avoids the FileRewriteCompactTask/
+            // MergeTreeCompactTask logic which may upgrade files instead of rewriting.
+            try {
+                List<List<org.apache.paimon.mergetree.SortedRun>> emptySections =
+                        Collections.singletonList(Collections.emptyList());
+                CompactResult vectorResult = rewriter.rewrite(0, false, emptySections);
+                if (!vectorResult.before().isEmpty() || !vectorResult.after().isEmpty()) {
+                    levels.update(vectorResult.before(), vectorResult.after());
+                    pendingVectorResult = vectorResult;
+                    vectorCompactDone = true;
+                    LOG.info(
+                            "Vector-only compaction completed: before={}, after={}",
+                            vectorResult.before().size(),
+                            vectorResult.after().size());
+                }
+            } catch (Exception e) {
+                LOG.warn("Vector-only compaction failed", e);
             }
+        } else if (!optionalUnit.isPresent()) {
+            LOG.debug(
+                    "No compaction needed: optionalUnit empty, needsIndependentCompaction={}",
+                    rewriter.needsIndependentCompaction());
         }
     }
 
@@ -289,6 +308,11 @@ public class MergeTreeCompactManager extends CompactFutureManager {
                                 levels.levelSortedRuns());
                     }
                 });
+        // Also check for synchronous vector-only compact result
+        if (!result.isPresent() && pendingVectorResult != null) {
+            result = Optional.of(pendingVectorResult);
+            pendingVectorResult = null;
+        }
         return result;
     }
 

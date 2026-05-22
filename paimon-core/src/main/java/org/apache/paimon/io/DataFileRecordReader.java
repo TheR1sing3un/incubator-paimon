@@ -227,12 +227,13 @@ public class DataFileRecordReader implements FileRecordReader<InternalRow> {
                 ColumnarRow columnarRow = ((ColumnarRowIterator) iterator).getColumnarRow();
                 if (columnarRow != null) {
                     columnarRow.setVectorCFContext(vectorCFContext);
-                    // Batch-resolve: coalesced I/O, results cached in ColumnarRow
-                    if (vectorBatchResolver != null) {
-                        columnarRow.setResolvedVectors(
-                                vectorBatchResolver.resolve(
-                                        columnarRow.batch(), columnarRow.batch().getNumRows()));
-                    }
+                    // TODO: re-enable batch resolver after fixing fileId resolution
+                    // if (vectorBatchResolver != null) {
+                    //     columnarRow.setResolvedVectors(
+                    //             vectorBatchResolver.resolve(
+                    //                     columnarRow.batch(),
+                    //                     columnarRow.batch().getNumRows()));
+                    // }
                 }
             }
             iterator = ((ColumnarRowIterator) iterator).mapping(partitionInfo, indexMapping);

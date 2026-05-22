@@ -262,7 +262,9 @@ public final class ColumnarRow implements InternalRow, DataSetters, Serializable
             throw new IllegalStateException(
                     "Cannot resolve vector fileId "
                             + descriptor.fileId()
-                            + ". No matching vector file found in the split.");
+                            + ". Context has "
+                            + vectorCFContext.size()
+                            + " entries. No matching vector file found in the split.");
         }
         long actualRowIndex =
                 vectorCFContext.resolveActualRowIndex(descriptor.fileId(), descriptor.rowIndex());

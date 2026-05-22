@@ -955,7 +955,11 @@ public class SnapshotReaderImpl implements SnapshotReader {
             VectorFileMapping.Builder builder = VectorFileMapping.builder();
             FileIO fileIO = snapshotManager.fileIO();
             for (org.apache.paimon.manifest.IndexManifestEntry entry : entries) {
-                Path mappingPath = indexFileHandler.filePath(entry);
+                // Vector file mapping is stored in bucket directory (alongside vector files)
+                Path mappingPath =
+                        new Path(
+                                pathFactory.bucketPath(entry.partition(), entry.bucket()),
+                                entry.indexFile().fileName());
                 try {
                     VectorFileMapping partial = VectorFileMappingIO.read(fileIO, mappingPath);
                     builder.addAll(partial);

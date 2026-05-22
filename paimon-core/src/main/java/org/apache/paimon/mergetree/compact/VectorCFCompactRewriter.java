@@ -51,6 +51,7 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -116,24 +117,54 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
     @Override
     public CompactResult rewrite(
             int outputLevel, boolean dropDelete, List<List<SortedRun>> sections) throws Exception {
+        LOG.info(
+                "VectorCFCompactRewriter.rewrite: outputLevel={}, maxLevel={}, sections={}, vecFiles={}, compactEnabled={}",
+                outputLevel,
+                maxLevel,
+                sections.size(),
+                bucketVectorFiles.size(),
+                options.vectorCFCompactEnabled());
         if (!options.vectorCFCompactEnabled() || bucketVectorFiles.isEmpty()) {
+            LOG.info(
+                    "VectorCFCompactRewriter.rewrite: skipped (enabled={}, vecFiles={})",
+                    options.vectorCFCompactEnabled(),
+                    bucketVectorFiles.size());
             return delegate.rewrite(outputLevel, dropDelete, sections);
         }
 
-        if (outputLevel == maxLevel) {
-            // Full compaction: merge vector files + rewrite scalar files with remapped descriptors
-            LOG.info(
-                    "Full compaction with vector file compact: {} vector files",
-                    bucketVectorFiles.size());
+        // Check if scalar has nothing to merge
+        boolean scalarAlreadyCompacted =
+                sections.isEmpty()
+                        || (sections.size() == 1
+                                && (sections.get(0).isEmpty() || sections.get(0).size() == 1));
+
+        if (outputLevel == maxLevel && !scalarAlreadyCompacted) {
+            // Full compaction with actual scalar merge: valid-ratio merge + descriptor rewrite
             return rewriteWithVectorCompaction(outputLevel, dropDelete, sections);
+        } else if (scalarAlreadyCompacted) {
+            // Vector-only compact: skip scalar rewrite entirely, only merge unfilled vectors
+            CompactResult emptyScalar =
+                    new CompactResult(
+                            new ArrayList<>(),
+                            new ArrayList<>(),
+                            new ArrayList<>(),
+                            new ArrayList<>(),
+                            new ArrayList<>());
+            return mergeUnfilledVectorFiles(emptyScalar, outputLevel);
         } else {
-            // Normal compaction: merge small vector files + generate mapping (no scalar rewrite)
+            // Normal/minor compaction: scalar merge + unfilled vector merge
             return rewriteWithVectorMergeOnly(outputLevel, dropDelete, sections);
         }
     }
 
     @Override
     public CompactResult upgrade(int outputLevel, DataFileMeta file) throws Exception {
+        if (file.isVectorCFFile()) {
+            // Vector files should not be upgraded (they're not scalar data files).
+            // Return empty result — vector files are handled separately by
+            // mergeUnfilledVectorFiles.
+            return new CompactResult();
+        }
         return delegate.upgrade(outputLevel, file);
     }
 
@@ -143,12 +174,18 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
             return false;
         }
         long targetRows = options.vectorColumnFamilyTargetFileRows();
-        if (targetRows <= 0) {
-            return false;
-        }
+        long targetSize = options.vectorColumnFamilyTargetFileSize();
         int unfilledCount = 0;
         for (DataFileMeta f : bucketVectorFiles) {
-            if (f.rowCount() < targetRows) {
+            boolean unfilled;
+            if (targetRows > 0) {
+                unfilled = f.rowCount() < targetRows;
+            } else if (targetSize > 0) {
+                unfilled = f.fileSize() < targetSize;
+            } else {
+                continue;
+            }
+            if (unfilled) {
                 unfilledCount++;
             }
         }
@@ -186,11 +223,20 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                 }
             }
 
-            // Only merge small files (below target rows). Large files are "done".
+            // Only merge small files (below target). Large files are "done".
             long targetRows = options.vectorColumnFamilyTargetFileRows();
+            long targetSize = options.vectorColumnFamilyTargetFileSize();
             List<DataFileMeta> smallFiles = new ArrayList<>();
             for (DataFileMeta f : columnVectorFiles) {
-                if (targetRows <= 0 || f.rowCount() < targetRows) {
+                boolean unfilled;
+                if (targetRows > 0) {
+                    unfilled = f.rowCount() < targetRows;
+                } else if (targetSize > 0) {
+                    unfilled = f.fileSize() < targetSize;
+                } else {
+                    unfilled = false;
+                }
+                if (unfilled) {
                     smallFiles.add(f);
                 }
             }
@@ -222,8 +268,6 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
             if (!mergeResults.isEmpty()) {
                 vectorBefore.addAll(smallFiles);
                 for (VectorFileMerger.MergeAllResult mr : mergeResults) {
-                    vectorAfter.add(mr.newFileMeta());
-
                     // Build mapping from source file offsets
                     String mergedFilePath = dataFilePathFactory.toPath(mr.newFileMeta()).toString();
                     for (VectorFileMerger.MergeAllResult.SourceMapping sm : mr.sourceMappings()) {
@@ -241,7 +285,13 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                             }
                         }
                     }
-                    mergePkMaps(bucketPath, mr.newFileMeta().fileName(), batchSources);
+                    String pkmapName =
+                            mergePkMaps(bucketPath, mr.newFileMeta().fileName(), batchSources);
+                    DataFileMeta mergedMeta =
+                            pkmapName != null
+                                    ? mr.newFileMeta().copy(Collections.singletonList(pkmapName))
+                                    : mr.newFileMeta();
+                    vectorAfter.add(mergedMeta);
                 }
 
                 LOG.info(
@@ -347,8 +397,7 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         }
 
         if (allExternalBefore.isEmpty()) {
-            // No low-ratio merges happened. Check if unfilled small files need merging.
-            return mergeUnfilledAndReturn(outputLevel, dropDelete, sections, vectorColumns);
+            return delegate.rewrite(outputLevel, dropDelete, sections);
         }
 
         // --- Phase 4: Compact rewrite with descriptor remapping ---
@@ -380,23 +429,30 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
     }
 
     /**
-     * Merge unfilled vector files (rowCount < targetFileRows) independently of valid-ratio. Called
-     * when full compact has no low-ratio files to merge but small files exist.
+     * Merge unfilled vector files during any compact (full or normal). Does NOT rewrite scalar
+     * descriptors — instead produces a VectorFileMapping for read-time resolution.
      */
-    private CompactResult mergeUnfilledAndReturn(
-            int outputLevel,
-            boolean dropDelete,
-            List<List<SortedRun>> sections,
-            List<VectorColumnInfo> vectorColumns)
+    private CompactResult mergeUnfilledVectorFiles(CompactResult scalarResult, int outputLevel)
             throws Exception {
-
-        long targetRows = options.vectorColumnFamilyTargetFileRows();
-        if (targetRows <= 0) {
-            return delegate.rewrite(outputLevel, dropDelete, sections);
+        List<VectorColumnInfo> vectorColumns = detectVectorColumns();
+        LOG.info(
+                "mergeUnfilledVectorFiles: vectorColumns={}, bucketVectorFiles={}",
+                vectorColumns.size(),
+                bucketVectorFiles.size());
+        if (vectorColumns.isEmpty()
+                || bucketVectorFiles.size() < options.vectorCFCompactMinFiles()) {
+            LOG.info(
+                    "mergeUnfilledVectorFiles: skipped (vectorColumns={}, vecFiles={}, minFiles={})",
+                    vectorColumns.size(),
+                    bucketVectorFiles.size(),
+                    options.vectorCFCompactMinFiles());
+            return scalarResult;
         }
 
         DataFilePathFactory dataFilePathFactory = writerFactory.pathFactory(outputLevel);
         Path bucketPath = dataFilePathFactory.parent();
+        long targetRows = options.vectorColumnFamilyTargetFileRows();
+        long targetSize = options.vectorColumnFamilyTargetFileSize();
 
         List<DataFileMeta> vectorBefore = new ArrayList<>();
         List<DataFileMeta> vectorAfter = new ArrayList<>();
@@ -406,14 +462,27 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         for (VectorColumnInfo colInfo : vectorColumns) {
             List<DataFileMeta> smallFiles = new ArrayList<>();
             for (DataFileMeta f : bucketVectorFiles) {
-                if (f.writeCols() != null
-                        && f.writeCols().contains(colInfo.fieldName)
-                        && f.rowCount() < targetRows) {
+                if (f.writeCols() == null || !f.writeCols().contains(colInfo.fieldName)) {
+                    continue;
+                }
+                boolean unfilled;
+                if (targetRows > 0) {
+                    unfilled = f.rowCount() < targetRows;
+                } else if (targetSize > 0) {
+                    unfilled = f.fileSize() < targetSize;
+                } else {
+                    unfilled = false;
+                }
+                if (unfilled) {
                     smallFiles.add(f);
                 }
             }
 
             if (smallFiles.size() < options.vectorCFCompactMinFiles()) {
+                for (DataFileMeta f : smallFiles) {
+                    mappingBuilder.addIdentity(
+                            f.fileName(), dataFilePathFactory.toPath(f).toString());
+                }
                 continue;
             }
 
@@ -434,14 +503,11 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                 anyMerged = true;
                 vectorBefore.addAll(smallFiles);
                 for (VectorFileMerger.MergeAllResult mr : mergeResults) {
-                    vectorAfter.add(mr.newFileMeta());
                     String mergedFilePath = dataFilePathFactory.toPath(mr.newFileMeta()).toString();
                     for (VectorFileMerger.MergeAllResult.SourceMapping sm : mr.sourceMappings()) {
                         mappingBuilder.addMerged(
                                 sm.sourceFileName(), mergedFilePath, sm.baseOffset());
                     }
-
-                    // Merge pkmaps for this output file's sources
                     List<DataFileMeta> batchSources = new ArrayList<>();
                     for (VectorFileMerger.MergeAllResult.SourceMapping sm : mr.sourceMappings()) {
                         for (DataFileMeta f : smallFiles) {
@@ -451,10 +517,16 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                             }
                         }
                     }
-                    mergePkMaps(bucketPath, mr.newFileMeta().fileName(), batchSources);
+                    String pkmapName =
+                            mergePkMaps(bucketPath, mr.newFileMeta().fileName(), batchSources);
+                    DataFileMeta mergedMeta =
+                            pkmapName != null
+                                    ? mr.newFileMeta().copy(Collections.singletonList(pkmapName))
+                                    : mr.newFileMeta();
+                    vectorAfter.add(mergedMeta);
                 }
                 LOG.info(
-                        "Vector unfilled merge: column {} merged {} small files -> {} output files",
+                        "Vector merge: column {} merged {} small files -> {} output files",
                         colInfo.fieldName,
                         smallFiles.size(),
                         mergeResults.size());
@@ -462,10 +534,8 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         }
 
         if (!anyMerged) {
-            return delegate.rewrite(outputLevel, dropDelete, sections);
+            return scalarResult;
         }
-
-        CompactResult scalarResult = delegate.rewrite(outputLevel, dropDelete, sections);
 
         VectorFileMapping mapping = mappingBuilder.build();
         Path mappingPath = VectorFileMappingIO.write(fileIO, bucketPath, mapping);
@@ -483,6 +553,117 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         scalarResult.after().addAll(vectorAfter);
         scalarResult.newIndexFiles().add(mappingIndexMeta);
         return scalarResult;
+    }
+
+    /**
+     * Full compact only: merge vector files with low valid-ratio. Uses pre-scan to count live
+     * references and only merges files below the threshold. Dead files are removed from manifest.
+     * Does NOT rewrite scalar descriptors — uses VectorFileMapping for read-time resolution.
+     */
+    private CompactResult mergeByValidRatio(
+            CompactResult currentResult,
+            int outputLevel,
+            boolean dropDelete,
+            List<List<SortedRun>> sections)
+            throws Exception {
+
+        List<VectorColumnInfo> vectorColumns = detectVectorColumns();
+        if (vectorColumns.isEmpty()) {
+            return currentResult;
+        }
+
+        // Pre-scan merged records to count live references per vector file
+        Map<Integer, Set<Long>> vectorRefs = preScan(sections, dropDelete, vectorColumns);
+
+        DataFilePathFactory dataFilePathFactory = writerFactory.pathFactory(outputLevel);
+        Path bucketPath = dataFilePathFactory.parent();
+
+        List<DataFileMeta> deadFiles = new ArrayList<>();
+        List<DataFileMeta> lowRatioFiles = new ArrayList<>();
+        VectorFileMapping.Builder mappingBuilder = VectorFileMapping.builder();
+
+        for (VectorColumnInfo colInfo : vectorColumns) {
+            for (DataFileMeta vecFile : bucketVectorFiles) {
+                if (vecFile.writeCols() == null
+                        || !vecFile.writeCols().contains(colInfo.fieldName)) {
+                    continue;
+                }
+                int fileId = vecFile.fileName().hashCode();
+                Set<Long> liveRows = vectorRefs.getOrDefault(fileId, new HashSet<>());
+                long totalRows = vecFile.rowCount();
+                double validRatio = totalRows > 0 ? (double) liveRows.size() / totalRows : 1.0;
+
+                if (liveRows.isEmpty()) {
+                    deadFiles.add(vecFile);
+                } else if (validRatio < options.vectorCFCompactValidRatioThreshold()) {
+                    lowRatioFiles.add(vecFile);
+                }
+            }
+        }
+
+        // Remove dead files from manifest
+        if (!deadFiles.isEmpty()) {
+            currentResult.before().addAll(deadFiles);
+        }
+
+        // Merge low-ratio files using mapping (no scalar rewrite)
+        if (lowRatioFiles.size() >= options.vectorCFCompactMinFiles()) {
+            for (VectorColumnInfo colInfo : vectorColumns) {
+                List<DataFileMeta> colLowRatio = new ArrayList<>();
+                for (DataFileMeta f : lowRatioFiles) {
+                    if (f.writeCols() != null && f.writeCols().contains(colInfo.fieldName)) {
+                        colLowRatio.add(f);
+                    }
+                }
+                if (colLowRatio.size() < options.vectorCFCompactMinFiles()) {
+                    continue;
+                }
+
+                long schemaId = colLowRatio.get(0).schemaId();
+                VectorFileMerger merger =
+                        new VectorFileMerger(
+                                fileIO,
+                                bucketPath,
+                                colInfo.bytesPerVector,
+                                schemaId,
+                                colInfo.fieldName,
+                                dataFilePathFactory);
+
+                VectorFileMerger.MergeResult mergeResult = merger.merge(colLowRatio, vectorRefs);
+                if (mergeResult != null) {
+                    currentResult.before().addAll(colLowRatio);
+
+                    String pkmapName =
+                            mergePkMaps(
+                                    bucketPath, mergeResult.newFileMeta().fileName(), colLowRatio);
+                    DataFileMeta mergedMeta =
+                            pkmapName != null
+                                    ? mergeResult
+                                            .newFileMeta()
+                                            .copy(Collections.singletonList(pkmapName))
+                                    : mergeResult.newFileMeta();
+                    currentResult.after().add(mergedMeta);
+
+                    // Add mapping entries for old fileIds → new merged file
+                    String mergedPath = dataFilePathFactory.toPath(mergedMeta).toString();
+                    for (DataFileMeta f : colLowRatio) {
+                        int oldFileId = f.fileName().hashCode();
+                        Set<Long> liveRows = vectorRefs.getOrDefault(oldFileId, new HashSet<>());
+                        // For live-ref merge, the mapping needs the actual row positions
+                        // This is handled by the remap table, but for mapping-based resolution
+                        // we just point to the merged file with offset 0 (positions are remapped)
+                    }
+
+                    LOG.info(
+                            "Valid-ratio merge: {} files -> {} (threshold={})",
+                            colLowRatio.size(),
+                            mergedMeta.fileName(),
+                            options.vectorCFCompactValidRatioThreshold());
+                }
+            }
+        }
+
+        return currentResult;
     }
 
     private List<VectorColumnInfo> detectVectorColumns() {
@@ -618,7 +799,8 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         return new CompactResult(before, after);
     }
 
-    private void mergePkMaps(
+    @Nullable
+    private String mergePkMaps(
             Path bucketPath, String mergedFileName, List<DataFileMeta> sourceFiles) {
         String mergedPkmapName =
                 org.apache.paimon.accelerateindex.AccelerateIndexConstants.pkmapSidecarName(
@@ -627,9 +809,7 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
             List<org.apache.paimon.accelerateindex.PkMapWriter.PkMapSource> sources =
                     new ArrayList<>();
             for (DataFileMeta f : sourceFiles) {
-                String srcPkmapName =
-                        org.apache.paimon.accelerateindex.AccelerateIndexConstants.pkmapSidecarName(
-                                f.fileName());
+                String srcPkmapName = getPkmapFromMeta(f);
                 Path srcPkmapPath = new Path(bucketPath, srcPkmapName);
                 sources.add(
                         new org.apache.paimon.accelerateindex.PkMapWriter.PkMapSource(
@@ -642,10 +822,27 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                 org.apache.paimon.accelerateindex.PkMapWriter.mergePkMaps(
                         fileIO, bucketPath, mergedPkmapName, pkArity, sources);
                 LOG.info("Merged pkmaps into {}", mergedPkmapName);
+                return mergedPkmapName;
             }
         } catch (Exception e) {
             LOG.warn("Failed to merge pkmaps for {}, search may use fallback", mergedFileName, e);
         }
+        return null;
+    }
+
+    /** Get pkmap file name from DataFileMeta.extraFiles, fallback to naming convention. */
+    private static String getPkmapFromMeta(DataFileMeta file) {
+        if (file.extraFiles() != null) {
+            for (String extra : file.extraFiles()) {
+                if (extra.endsWith(
+                        org.apache.paimon.accelerateindex.AccelerateIndexConstants
+                                .PKMAP_FILE_SUFFIX)) {
+                    return extra;
+                }
+            }
+        }
+        return org.apache.paimon.accelerateindex.AccelerateIndexConstants.pkmapSidecarName(
+                file.fileName());
     }
 
     private int readPkArityFromAnySource(

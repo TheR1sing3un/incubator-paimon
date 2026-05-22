@@ -88,6 +88,10 @@ public class VectorCFReaderContext implements Serializable {
         return columnPos >= 0 && columnPos < dimension.length ? dimension[columnPos] : 0;
     }
 
+    public int size() {
+        return fileIdToPath.size();
+    }
+
     public boolean hasVectorFiles() {
         return !fileIdToPath.isEmpty();
     }

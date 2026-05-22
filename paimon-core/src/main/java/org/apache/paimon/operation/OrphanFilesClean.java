@@ -472,11 +472,12 @@ public abstract class OrphanFilesClean implements Serializable {
         }
     }
 
-    /** Check if a file name belongs to accelerate index sidecar files. */
+    /** Check if a file name belongs to accelerate index sidecar files (not tracked in manifest). */
     public static boolean isAccelerateIndexFile(String fileName) {
         return AccelerateIndexConstants.META_FILE_NAME.equals(fileName)
                 || fileName.endsWith(AccelerateIndexConstants.INDEX_FILE_SUFFIX)
-                || fileName.contains(AccelerateIndexConstants.INDEX_TEMP_SUFFIX);
+                || fileName.contains(AccelerateIndexConstants.INDEX_TEMP_SUFFIX)
+                || fileName.contains(AccelerateIndexConstants.PKMAP_TEMP_SUFFIX);
     }
 
     /** Try to clean empty data directories. */

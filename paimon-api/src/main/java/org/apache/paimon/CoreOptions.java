@@ -2469,12 +2469,11 @@ public class CoreOptions implements Serializable {
     public static final ConfigOption<Boolean> VECTOR_COLUMN_FAMILY_COMPACT_ENABLED =
             key("vector-column-family.compact.enabled")
                     .booleanType()
-                    .defaultValue(false)
+                    .defaultValue(true)
                     .withDescription(
-                            "Whether to compact vector CF files during full compaction. "
-                                    + "When enabled, vector files with low valid-data ratio "
-                                    + "are merged into new files and VectorDescriptor references "
-                                    + "in scalar files are updated.");
+                            "Whether to compact vector CF files during compaction. "
+                                    + "When enabled, unfilled small vector files "
+                                    + "are merged during compaction.");
 
     public static final ConfigOption<Double> VECTOR_COLUMN_FAMILY_COMPACT_VALID_RATIO =
             key("vector-column-family.compact.valid-ratio-threshold")
