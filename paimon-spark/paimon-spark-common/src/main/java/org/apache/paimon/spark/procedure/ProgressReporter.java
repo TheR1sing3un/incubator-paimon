@@ -136,13 +136,9 @@ public class ProgressReporter implements Serializable {
     /**
      * Synchronous check: calls GET /api/v1/ingestion/tasks/{taskId}. Returns a result with
      * isFinished=true if status=="SEND_FINISH", plus the expected_count. On any HTTP or parse
-     * error, returns isFinished=false (fail-open: keep consuming).
-     *
-     * @deprecated Completion detection is now driven by Kafka finish messages and the
-     *     consecutive-empty-batch confirmation window. This method should not be called from the
-     *     main processing path.
+     * error, returns isFinished=false (fail-open: keep consuming). The actual finish barrier is
+     * determined by the procedure freezing Kafka partition endOffsets.
      */
-    @Deprecated
     @SuppressWarnings("unchecked")
     public TaskStatusResult checkTaskFinished() {
         try {
