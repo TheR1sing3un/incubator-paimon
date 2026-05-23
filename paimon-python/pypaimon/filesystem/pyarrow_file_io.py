@@ -322,6 +322,26 @@ class PyArrowFileIO(FileIO):
         # (GOOGLE_APPLICATION_CREDENTIALS or GCP metadata server / Workload Identity)
         return pafs.GcsFileSystem(**kwargs)
 
+    def _initialize_gcs_fs(self) -> FileSystem:
+        access_token = self._get_property("gcs.access-token")
+        token_expiry = self._get_property("gcs.access-token.expiration")
+        project_id = self._get_property("gcs.project-id")
+
+        kwargs = {}
+        if access_token:
+            from datetime import datetime
+            kwargs["access_token"] = access_token
+            kwargs["credential_token_expiration"] = (
+                datetime.fromisoformat(token_expiry) if token_expiry
+                else datetime(9999, 12, 31)
+            )
+        if project_id:
+            kwargs["project_id"] = project_id
+
+        # With no kwargs, GcsFileSystem uses ADC automatically
+        # (GOOGLE_APPLICATION_CREDENTIALS or GCP metadata server / Workload Identity)
+        return pafs.GcsFileSystem(**kwargs)
+
     @staticmethod
     def _kerberos_login_from_keytab(principal: str, keytab: str):
         from pypaimon.filesystem import _kerberos
