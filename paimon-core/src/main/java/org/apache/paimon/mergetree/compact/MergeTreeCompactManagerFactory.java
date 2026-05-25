@@ -345,10 +345,7 @@ public class MergeTreeCompactManagerFactory implements KvCompactionManagerFactor
 
     private MergeTreeCompactRewriter wrapWithVectorCompact(
             MergeTreeCompactRewriter base, int maxLevel, List<DataFileMeta> bucketVectorFiles) {
-        if (options.vectorCFCompactEnabled()) {
-            LOG.info(
-                    "Creating VectorCFCompactRewriter with {} vector files",
-                    bucketVectorFiles.size());
+        if (options.vectorCFCompactEnabled() && !bucketVectorFiles.isEmpty()) {
             return new VectorCFCompactRewriter(
                     base, options, fileIO, valueType, maxLevel, bucketVectorFiles);
         }

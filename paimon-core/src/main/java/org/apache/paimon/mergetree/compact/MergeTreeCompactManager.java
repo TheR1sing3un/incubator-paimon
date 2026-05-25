@@ -308,7 +308,8 @@ public class MergeTreeCompactManager extends CompactFutureManager {
                                 levels.levelSortedRuns());
                     }
                 });
-        // Also check for synchronous vector-only compact result
+        // Also check for synchronous vector-only compact result.
+        // Note: don't call levels.update() for vector result — vector files are not in Levels.
         if (!result.isPresent() && pendingVectorResult != null) {
             result = Optional.of(pendingVectorResult);
             pendingVectorResult = null;
