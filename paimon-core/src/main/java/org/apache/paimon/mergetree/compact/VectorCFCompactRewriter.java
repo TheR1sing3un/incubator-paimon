@@ -117,32 +117,19 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
     @Override
     public CompactResult rewrite(
             int outputLevel, boolean dropDelete, List<List<SortedRun>> sections) throws Exception {
-        LOG.info(
-                "VectorCFCompactRewriter.rewrite: outputLevel={}, maxLevel={}, sections={}, vecFiles={}, compactEnabled={}",
-                outputLevel,
-                maxLevel,
-                sections.size(),
-                bucketVectorFiles.size(),
-                options.vectorCFCompactEnabled());
         if (!options.vectorCFCompactEnabled() || bucketVectorFiles.isEmpty()) {
-            LOG.info(
-                    "VectorCFCompactRewriter.rewrite: skipped (enabled={}, vecFiles={})",
-                    options.vectorCFCompactEnabled(),
-                    bucketVectorFiles.size());
             return delegate.rewrite(outputLevel, dropDelete, sections);
         }
 
-        // Check if scalar has nothing to merge
+        // Check if scalar has nothing to merge (vector-only compact from
+        // needsIndependentCompaction)
         boolean scalarAlreadyCompacted =
                 sections.isEmpty()
                         || (sections.size() == 1
                                 && (sections.get(0).isEmpty() || sections.get(0).size() == 1));
 
-        if (outputLevel == maxLevel && !scalarAlreadyCompacted) {
-            // Full compaction with actual scalar merge: valid-ratio merge + descriptor rewrite
-            return rewriteWithVectorCompaction(outputLevel, dropDelete, sections);
-        } else if (scalarAlreadyCompacted) {
-            // Vector-only compact: skip scalar rewrite entirely, only merge unfilled vectors
+        if (scalarAlreadyCompacted) {
+            // Vector-only compact (explicit CALL compact): skip scalar, only merge unfilled vectors
             CompactResult emptyScalar =
                     new CompactResult(
                             new ArrayList<>(),
@@ -152,8 +139,11 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                             new ArrayList<>());
             return mergeUnfilledVectorFiles(emptyScalar, outputLevel);
         } else {
-            // Normal/minor compaction: scalar merge + unfilled vector merge
-            return rewriteWithVectorMergeOnly(outputLevel, dropDelete, sections);
+            // Normal auto-compact with scalar merge: delegate scalar only, skip vector merge.
+            // Vector merge during auto-compact causes issues because the mapping is not yet
+            // committed and subsequent reads in the same session can't resolve old fileIds.
+            // Vector files will be merged in the next explicit compact or independent trigger.
+            return delegate.rewrite(outputLevel, dropDelete, sections);
         }
     }
 
