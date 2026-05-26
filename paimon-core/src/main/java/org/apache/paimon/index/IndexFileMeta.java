@@ -54,7 +54,8 @@ public class IndexFileMeta {
                                     "_DELETIONS_VECTORS_RANGES",
                                     new ArrayType(true, DeletionVectorMeta.SCHEMA)),
                             new DataField(5, "_EXTERNAL_PATH", newStringType(true)),
-                            new DataField(6, "_GLOBAL_INDEX", GlobalIndexMeta.SCHEMA)));
+                            new DataField(6, "_GLOBAL_INDEX", GlobalIndexMeta.SCHEMA),
+                            new DataField(7, "_INLINE_MAPPING", newStringType(true))));
 
     private final String indexType;
     private final String fileName;
@@ -71,6 +72,8 @@ public class IndexFileMeta {
 
     private final @Nullable String externalPath;
 
+    @Nullable private final String inlineMappingJson;
+
     public IndexFileMeta(
             String indexType,
             String fileName,
@@ -78,7 +81,7 @@ public class IndexFileMeta {
             long rowCount,
             @Nullable LinkedHashMap<String, DeletionVectorMeta> dvRanges,
             @Nullable String externalPath) {
-        this(indexType, fileName, fileSize, rowCount, dvRanges, externalPath, null);
+        this(indexType, fileName, fileSize, rowCount, dvRanges, externalPath, null, null);
     }
 
     public IndexFileMeta(
@@ -89,6 +92,26 @@ public class IndexFileMeta {
             @Nullable LinkedHashMap<String, DeletionVectorMeta> dvRanges,
             @Nullable String externalPath,
             @Nullable GlobalIndexMeta globalIndexMeta) {
+        this(
+                indexType,
+                fileName,
+                fileSize,
+                rowCount,
+                dvRanges,
+                externalPath,
+                globalIndexMeta,
+                null);
+    }
+
+    public IndexFileMeta(
+            String indexType,
+            String fileName,
+            long fileSize,
+            long rowCount,
+            @Nullable LinkedHashMap<String, DeletionVectorMeta> dvRanges,
+            @Nullable String externalPath,
+            @Nullable GlobalIndexMeta globalIndexMeta,
+            @Nullable String inlineMappingJson) {
         this.indexType = indexType;
         this.fileName = fileName;
         this.fileSize = fileSize;
@@ -96,6 +119,7 @@ public class IndexFileMeta {
         this.dvRanges = dvRanges;
         this.externalPath = externalPath;
         this.globalIndexMeta = globalIndexMeta;
+        this.inlineMappingJson = inlineMappingJson;
     }
 
     public IndexFileMeta(
@@ -136,6 +160,11 @@ public class IndexFileMeta {
     @Nullable
     public String externalPath() {
         return externalPath;
+    }
+
+    @Nullable
+    public String inlineMappingJson() {
+        return inlineMappingJson;
     }
 
     @Override

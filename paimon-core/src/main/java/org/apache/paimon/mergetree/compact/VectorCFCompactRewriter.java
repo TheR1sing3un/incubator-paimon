@@ -301,18 +301,20 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
             return scalarResult;
         }
 
-        // Write the mapping file as an IndexFileMeta
+        // Embed the mapping inline in IndexFileMeta (no separate file)
         VectorFileMapping mapping = mappingBuilder.build();
-        Path mappingPath = VectorFileMappingIO.write(fileIO, bucketPath, mapping);
+        String mappingJson = org.apache.paimon.utils.JsonSerdeUtil.toFlatJson(mapping);
+        String virtualName = "inline-" + java.util.UUID.randomUUID() + ".vector-mapping";
         IndexFileMeta mappingIndexMeta =
                 new IndexFileMeta(
                         VECTOR_FILE_MAPPING_TYPE,
-                        mappingPath.getName(),
-                        fileIO.getFileSize(mappingPath),
+                        virtualName,
+                        mappingJson.length(),
                         mapping.size(),
                         null,
                         null,
-                        null);
+                        null,
+                        mappingJson);
 
         // Combine scalar + vector results
         scalarResult.before().addAll(vectorBefore);
@@ -539,16 +541,18 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
         }
 
         VectorFileMapping mapping = mappingBuilder.build();
-        Path mappingPath = VectorFileMappingIO.write(fileIO, bucketPath, mapping);
+        String mappingJson2 = org.apache.paimon.utils.JsonSerdeUtil.toFlatJson(mapping);
+        String virtualName2 = "inline-" + java.util.UUID.randomUUID() + ".vector-mapping";
         IndexFileMeta mappingIndexMeta =
                 new IndexFileMeta(
                         VECTOR_FILE_MAPPING_TYPE,
-                        mappingPath.getName(),
-                        fileIO.getFileSize(mappingPath),
+                        virtualName2,
+                        mappingJson2.length(),
                         mapping.size(),
                         null,
                         null,
-                        null);
+                        null,
+                        mappingJson2);
 
         scalarResult.before().addAll(vectorBefore);
         scalarResult.after().addAll(vectorAfter);

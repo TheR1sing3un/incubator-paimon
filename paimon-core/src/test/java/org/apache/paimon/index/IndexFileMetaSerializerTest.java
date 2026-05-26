@@ -78,4 +78,32 @@ public class IndexFileMetaSerializerTest extends ObjectSerializerTestBase<IndexF
                 dvRanges,
                 null);
     }
+
+    @org.junit.jupiter.api.Test
+    public void testInlineMappingJsonRoundTrip() throws Exception {
+        String mappingJson =
+                "{\"mappings\":[{\"file_id\":12345,\"target_file_path\":\"/bucket-0/merged.vector.bin\",\"base_offset\":100}]}";
+        IndexFileMeta original =
+                new IndexFileMeta(
+                        "VECTOR_FILE_MAPPING",
+                        "inline-test.vector-mapping",
+                        mappingJson.length(),
+                        1,
+                        null,
+                        null,
+                        null,
+                        mappingJson);
+
+        IndexFileMetaSerializer ser = new IndexFileMetaSerializer();
+        org.apache.paimon.data.InternalRow row = ser.toRow(original);
+        IndexFileMeta restored = ser.fromRow(row);
+
+        // equals() intentionally excludes inlineMappingJson, so check explicitly
+        org.assertj.core.api.Assertions.assertThat(restored.indexType())
+                .isEqualTo(original.indexType());
+        org.assertj.core.api.Assertions.assertThat(restored.fileName())
+                .isEqualTo(original.fileName());
+        org.assertj.core.api.Assertions.assertThat(restored.inlineMappingJson())
+                .isEqualTo(mappingJson);
+    }
 }

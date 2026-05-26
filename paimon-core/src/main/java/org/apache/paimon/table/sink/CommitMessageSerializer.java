@@ -25,6 +25,7 @@ import org.apache.paimon.index.IndexFileMetaSerializer;
 import org.apache.paimon.index.IndexFileMetaV1Deserializer;
 import org.apache.paimon.index.IndexFileMetaV2Deserializer;
 import org.apache.paimon.index.IndexFileMetaV3Deserializer;
+import org.apache.paimon.index.IndexFileMetaV4Deserializer;
 import org.apache.paimon.io.CompactIncrement;
 import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.io.DataFileMeta08Serializer;
@@ -52,7 +53,7 @@ import static org.apache.paimon.utils.SerializationUtils.serializeBinaryRow;
 /** {@link VersionedSerializer} for {@link CommitMessage}. */
 public class CommitMessageSerializer implements VersionedSerializer<CommitMessage> {
 
-    public static final int CURRENT_VERSION = 12;
+    public static final int CURRENT_VERSION = 13;
 
     private final DataFileMetaSerializer dataFileSerializer;
     private final IndexFileMetaSerializer indexEntrySerializer;
@@ -65,6 +66,7 @@ public class CommitMessageSerializer implements VersionedSerializer<CommitMessag
     private IndexFileMetaV1Deserializer indexEntryV1Deserializer;
     private IndexFileMetaV2Deserializer indexEntryV2Deserializer;
     private IndexFileMetaV3Deserializer indexEntryV3Deserializer;
+    private IndexFileMetaV4Deserializer indexEntryV4Deserializer;
     private DataFileMetaV11LegacySerializer dataFileMetaV11LegacySerializer;
 
     public CommitMessageSerializer() {
@@ -227,8 +229,13 @@ public class CommitMessageSerializer implements VersionedSerializer<CommitMessag
 
     private IOExceptionSupplier<List<IndexFileMeta>> indexEntryDeserializer(
             int version, DataInputView view) {
-        if (version >= 11) {
+        if (version >= 13) {
             return () -> indexEntrySerializer.deserializeList(view);
+        } else if (version >= 11) {
+            if (indexEntryV4Deserializer == null) {
+                indexEntryV4Deserializer = new IndexFileMetaV4Deserializer();
+            }
+            return () -> indexEntryV4Deserializer.deserializeList(view);
         } else if (version >= 9) {
             if (indexEntryV3Deserializer == null) {
                 indexEntryV3Deserializer = new IndexFileMetaV3Deserializer();

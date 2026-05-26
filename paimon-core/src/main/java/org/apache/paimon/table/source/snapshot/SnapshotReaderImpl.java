@@ -985,13 +985,21 @@ public class SnapshotReaderImpl implements SnapshotReader {
                 return null;
             }
             Map<String, VectorFileMapping.Builder> builders = new HashMap<>();
-            FileIO fileIO = snapshotManager.fileIO();
             for (org.apache.paimon.manifest.IndexManifestEntry entry : entries) {
                 String bucketPath =
                         pathFactory.bucketPath(entry.partition(), entry.bucket()).toString();
-                Path mappingPath = new Path(bucketPath, entry.indexFile().fileName());
                 try {
-                    VectorFileMapping partial = VectorFileMappingIO.read(fileIO, mappingPath);
+                    String inlineJson = entry.indexFile().inlineMappingJson();
+                    VectorFileMapping partial;
+                    if (inlineJson != null) {
+                        partial =
+                                org.apache.paimon.utils.JsonSerdeUtil.fromJson(
+                                        inlineJson, VectorFileMapping.class);
+                    } else {
+                        FileIO fileIO = snapshotManager.fileIO();
+                        Path mappingPath = new Path(bucketPath, entry.indexFile().fileName());
+                        partial = VectorFileMappingIO.read(fileIO, mappingPath);
+                    }
                     builders.computeIfAbsent(bucketPath, k -> VectorFileMapping.builder())
                             .addAll(partial);
                 } catch (Exception e) {
