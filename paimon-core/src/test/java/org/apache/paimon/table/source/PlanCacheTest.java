@@ -29,6 +29,7 @@ import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.predicate.PredicateBuilder;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.table.FileStoreTable;
+import org.apache.paimon.table.sink.BatchTableCommit;
 import org.apache.paimon.table.sink.BatchTableWrite;
 import org.apache.paimon.table.sink.BatchWriteBuilder;
 import org.apache.paimon.types.DataTypes;
@@ -496,5 +497,217 @@ public class PlanCacheTest {
                             return vals;
                         })
                 .collect(Collectors.toSet());
+    }
+
+    // ---- VCF PlanCache Tests ----
+
+    private static final int DIM = 4;
+
+    private FileStoreTable createVcfTable(String name, boolean compactEnabled) throws Exception {
+        CatalogContext context = CatalogContext.create(new Path("file://" + tempPath.toString()));
+        Catalog catalog = CatalogFactory.createCatalog(context);
+        Schema schema =
+                Schema.newBuilder()
+                        .column("pk", DataTypes.INT())
+                        .column("vec", DataTypes.VECTOR(DIM, DataTypes.FLOAT()))
+                        .primaryKey("pk")
+                        .option("bucket", "1")
+                        .option("file.format", "parquet")
+                        .option("merge-engine", "partial-update")
+                        .option("deletion-vectors.enabled", "true")
+                        .option("vector-column-family.enabled", "true")
+                        .option("vector-column-family.target-file-rows", "10")
+                        .option(
+                                "vector-column-family.compact.enabled",
+                                String.valueOf(compactEnabled))
+                        .option("vector-column-family.compact.min-files-to-merge", "2")
+                        .option("num-sorted-runs.compaction-trigger", "999")
+                        .option("compaction.min.file-num", "999")
+                        .option("compaction.max.file-num", "999")
+                        .build();
+        catalog.createTable(Identifier.create("default", name), schema, true);
+        return (FileStoreTable) catalog.getTable(Identifier.create("default", name));
+    }
+
+    private void writeVcfRows(FileStoreTable t, int startPk, int count) throws Exception {
+        BatchWriteBuilder wb = t.newBatchWriteBuilder();
+        org.apache.paimon.disk.IOManager ioManager =
+                new org.apache.paimon.disk.IOManagerImpl(tempPath.toString());
+        try (BatchTableWrite write = wb.newWrite().withIOManager(ioManager);
+                BatchTableCommit commit = wb.newCommit()) {
+            for (int pk = startPk; pk < startPk + count; pk++) {
+                int bpv = ((DIM * 4 + 7) / 8) * 8;
+                byte[] bytes = new byte[bpv];
+                java.nio.ByteBuffer bb =
+                        java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.nativeOrder());
+                for (int d = 0; d < DIM; d++) {
+                    bb.putFloat(pk * 10.0f + d);
+                }
+                org.apache.paimon.data.BinaryVector bv =
+                        new org.apache.paimon.data.BinaryVector(DIM);
+                bv.pointTo(org.apache.paimon.memory.MemorySegment.wrap(bytes), 0, bpv);
+                write.write(GenericRow.of(pk, bv));
+            }
+            commit.commit(write.prepareCommit());
+        }
+    }
+
+    @Test
+    public void testVcfPlanCacheWithoutMapping() throws Exception {
+        FileStoreTable vcf = createVcfTable("vcf_no_mapping", false);
+
+        writeVcfRows(vcf, 0, 4);
+        writeVcfRows(vcf, 4, 4);
+
+        vcf =
+                (FileStoreTable)
+                        CatalogFactory.createCatalog(
+                                        CatalogContext.create(
+                                                new Path("file://" + tempPath.toString())))
+                                .getTable(Identifier.create("default", "vcf_no_mapping"));
+
+        ReadBuilder rb = vcf.newReadBuilder();
+        PlanCache cache = rb.buildPlanCache();
+
+        List<Split> normalSplits = rb.newScan().plan().splits();
+        List<Split> cachedSplits = rb.planWithCache(cache);
+
+        assertThat(cachedSplits).hasSameSizeAs(normalSplits);
+        assertThat(extractFileNames(cachedSplits)).isEqualTo(extractFileNames(normalSplits));
+
+        // Verify vector files are in both splits
+        long normalVcf =
+                normalSplits.stream()
+                        .filter(s -> s instanceof DataSplit)
+                        .flatMap(s -> ((DataSplit) s).dataFiles().stream())
+                        .filter(f -> f.isVectorCFFile())
+                        .count();
+        long cachedVcf =
+                cachedSplits.stream()
+                        .filter(s -> s instanceof DataSplit)
+                        .flatMap(s -> ((DataSplit) s).dataFiles().stream())
+                        .filter(f -> f.isVectorCFFile())
+                        .count();
+        assertThat(cachedVcf).isEqualTo(normalVcf).isGreaterThan(0);
+
+        // Verify data readability via cached path
+        TableRead read = rb.newRead();
+        int rowCount = 0;
+        for (Split split : cachedSplits) {
+            try (org.apache.paimon.reader.RecordReader<org.apache.paimon.data.InternalRow> reader =
+                    read.createReader(split)) {
+                org.apache.paimon.reader.RecordReader.RecordIterator<
+                                org.apache.paimon.data.InternalRow>
+                        batch;
+                while ((batch = reader.readBatch()) != null) {
+                    org.apache.paimon.data.InternalRow row;
+                    while ((row = batch.next()) != null) {
+                        assertThat(row.getVector(1)).isNotNull();
+                        rowCount++;
+                    }
+                    batch.releaseBatch();
+                }
+            }
+        }
+        assertThat(rowCount).isGreaterThan(0);
+
+        // Verify serialize/deserialize round-trip
+        byte[] bytes = cache.serialize();
+        PlanCache restored = PlanCache.deserialize(bytes);
+        List<Split> restoredSplits = vcf.newReadBuilder().planWithCache(restored);
+        assertThat(extractFileNames(restoredSplits)).isEqualTo(extractFileNames(cachedSplits));
+    }
+
+    @Test
+    public void testVcfPlanCacheWithMapping() throws Exception {
+        FileStoreTable vcf = createVcfTable("vcf_with_mapping", true);
+
+        writeVcfRows(vcf, 0, 4);
+        writeVcfRows(vcf, 4, 4);
+
+        // Trigger vector compact to produce mapping
+        vcf =
+                (FileStoreTable)
+                        CatalogFactory.createCatalog(
+                                        CatalogContext.create(
+                                                new Path("file://" + tempPath.toString())))
+                                .getTable(Identifier.create("default", "vcf_with_mapping"));
+        BatchWriteBuilder wb = vcf.newBatchWriteBuilder();
+        org.apache.paimon.disk.IOManager compactIo =
+                new org.apache.paimon.disk.IOManagerImpl(tempPath.toString());
+        BatchTableWrite write = wb.newWrite().withIOManager(compactIo);
+        write.compact(org.apache.paimon.data.BinaryRow.EMPTY_ROW, 0, false);
+        List<org.apache.paimon.table.sink.CommitMessage> msgs = write.prepareCommit();
+        write.close();
+        wb.newCommit().commit(msgs);
+
+        // Reload table after compact
+        vcf =
+                (FileStoreTable)
+                        CatalogFactory.createCatalog(
+                                        CatalogContext.create(
+                                                new Path("file://" + tempPath.toString())))
+                                .getTable(Identifier.create("default", "vcf_with_mapping"));
+
+        ReadBuilder rb = vcf.newReadBuilder();
+        PlanCache cache = rb.buildPlanCache();
+
+        // Verify mapping is in cache
+        assertThat(cache.vectorFileMappingByBucket()).isNotNull();
+        assertThat(cache.vectorFileMappingByBucket()).isNotEmpty();
+
+        List<Split> normalSplits = rb.newScan().plan().splits();
+        List<Split> cachedSplits = rb.planWithCache(cache);
+
+        assertThat(cachedSplits).hasSameSizeAs(normalSplits);
+
+        // Verify mapping is attached to splits from cached path
+        for (Split s : cachedSplits) {
+            if (s instanceof DataSplit) {
+                DataSplit ds = (DataSplit) s;
+                long vcfCount = ds.dataFiles().stream().filter(f -> f.isVectorCFFile()).count();
+                if (vcfCount > 0) {
+                    assertThat(ds.vectorFileMapping())
+                            .as("Cached split should have mapping")
+                            .isNotNull();
+                }
+            }
+        }
+
+        // Verify data readability via cached path (through mapping resolution)
+        TableRead read = rb.newRead();
+        int rowCount = 0;
+        for (Split split : cachedSplits) {
+            try (org.apache.paimon.reader.RecordReader<org.apache.paimon.data.InternalRow> reader =
+                    read.createReader(split)) {
+                org.apache.paimon.reader.RecordReader.RecordIterator<
+                                org.apache.paimon.data.InternalRow>
+                        batch;
+                while ((batch = reader.readBatch()) != null) {
+                    org.apache.paimon.data.InternalRow row;
+                    while ((row = batch.next()) != null) {
+                        int pk = row.getInt(0);
+                        org.apache.paimon.data.InternalVector vec = row.getVector(1);
+                        assertThat(vec).as("Vector should not be null for pk=" + pk).isNotNull();
+                        float[] floats = vec.toFloatArray();
+                        assertThat(floats.length).isEqualTo(DIM);
+                        for (int d = 0; d < DIM; d++) {
+                            assertThat(floats[d]).isEqualTo(pk * 10.0f + d);
+                        }
+                        rowCount++;
+                    }
+                    batch.releaseBatch();
+                }
+            }
+        }
+        assertThat(rowCount).as("Should read rows via mapping").isGreaterThan(0);
+
+        // Verify serialize/deserialize round-trip preserves mapping
+        byte[] bytes = cache.serialize();
+        PlanCache restored = PlanCache.deserialize(bytes);
+        assertThat(restored.vectorFileMappingByBucket()).isNotNull();
+        assertThat(restored.vectorFileMappingByBucket()).isNotEmpty();
+        List<Split> restoredSplits = vcf.newReadBuilder().planWithCache(restored);
+        assertThat(extractFileNames(restoredSplits)).isEqualTo(extractFileNames(cachedSplits));
     }
 }

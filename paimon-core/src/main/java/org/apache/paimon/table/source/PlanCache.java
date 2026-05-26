@@ -175,8 +175,8 @@ public class PlanCache implements Serializable {
     public byte[] serialize() throws IOException {
         DataOutputSerializer out = new DataOutputSerializer(1024 * 64);
 
-        // Version header for future compatibility
-        out.writeByte(1);
+        // Version 2: VectorFileMapping changed from single global to per-bucket map
+        out.writeByte(2);
 
         // 1. Snapshot (nullable, as compact JSON)
         if (snapshot != null) {
@@ -260,7 +260,7 @@ public class PlanCache implements Serializable {
 
         // Version check
         int version = in.readByte();
-        if (version != 1) {
+        if (version != 1 && version != 2) {
             throw new IOException("Unsupported PlanCache serialization version: " + version);
         }
 
@@ -336,7 +336,7 @@ public class PlanCache implements Serializable {
             pkmapPaths.put(key, val);
         }
 
-        // 8. VectorFileMappingByBucket (nullable, added later — check available)
+        // 8. VectorFileMapping (per-bucket map)
         Map<String, org.apache.paimon.mergetree.compact.VectorFileMapping> vecMappingByBucket =
                 null;
         if (in.available() > 0 && in.readBoolean()) {
