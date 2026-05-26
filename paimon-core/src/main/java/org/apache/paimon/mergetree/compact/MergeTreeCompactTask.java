@@ -69,7 +69,16 @@ public class MergeTreeCompactTask extends CompactTask {
         this.rewriter = rewriter;
         this.outputLevel = unit.outputLevel();
         this.compactDfSupplier = compactDfSupplier;
-        this.partitioned = new IntervalPartition(unit.files(), keyComparator).partition();
+        // Filter out vector CF files — they should not be in compact task's file list,
+        // but may appear when VectorCFCompactRewriter wraps the base rewriter and
+        // the compact unit includes files from all sorted runs.
+        List<DataFileMeta> scalarFiles = new ArrayList<>();
+        for (DataFileMeta f : unit.files()) {
+            if (!f.isVectorCFFile()) {
+                scalarFiles.add(f);
+            }
+        }
+        this.partitioned = new IntervalPartition(scalarFiles, keyComparator).partition();
         this.dropDelete = dropDelete;
         this.maxLevel = maxLevel;
         this.recordLevelExpire = recordLevelExpire;

@@ -512,8 +512,8 @@ public class SnapshotReaderImpl implements SnapshotReader {
                                     : Collections.emptyMap());
         }
 
-        // Load vector file mapping from index manifest (if any)
-        VectorFileMapping vectorFileMapping = loadVectorFileMapping(snapshot);
+        // Load vector file mapping from index manifest (if any), grouped by bucket path
+        Map<String, VectorFileMapping> mappingByBucket = loadVectorFileMappingByBucket(snapshot);
         for (Map.Entry<BinaryRow, Map<Integer, List<ManifestEntry>>> entry : entries.entrySet()) {
             BinaryRow partition = entry.getKey();
             Map<Integer, List<ManifestEntry>> buckets = entry.getValue();
@@ -559,7 +559,8 @@ public class SnapshotReaderImpl implements SnapshotReader {
                     builder.withDataFiles(dataFiles)
                             .rawConvertible(splitGroup.rawConvertible)
                             .withBucketPath(bucketPath)
-                            .withVectorFileMapping(vectorFileMapping);
+                            .withVectorFileMapping(
+                                    filterMappingForBucket(mappingByBucket, bucketPath));
                     if (deletionVectors && deletionFilesMap != null) {
                         builder.withDataDeletionFiles(
                                 getDeletionFiles(
@@ -941,7 +942,17 @@ public class SnapshotReaderImpl implements SnapshotReader {
     }
 
     @Nullable
-    private VectorFileMapping loadVectorFileMapping(@Nullable Snapshot snapshot) {
+    private VectorFileMapping filterMappingForBucket(
+            @Nullable Map<String, VectorFileMapping> mappingByBucket, String bucketPath) {
+        if (mappingByBucket == null) {
+            return null;
+        }
+        return mappingByBucket.get(bucketPath);
+    }
+
+    @Nullable
+    private Map<String, VectorFileMapping> loadVectorFileMappingByBucket(
+            @Nullable Snapshot snapshot) {
         if (snapshot == null || snapshot.indexManifest() == null) {
             return null;
         }
@@ -952,17 +963,16 @@ public class SnapshotReaderImpl implements SnapshotReader {
             if (entries.isEmpty()) {
                 return null;
             }
-            VectorFileMapping.Builder builder = VectorFileMapping.builder();
+            Map<String, VectorFileMapping.Builder> builders = new HashMap<>();
             FileIO fileIO = snapshotManager.fileIO();
             for (org.apache.paimon.manifest.IndexManifestEntry entry : entries) {
-                // Vector file mapping is stored in bucket directory (alongside vector files)
-                Path mappingPath =
-                        new Path(
-                                pathFactory.bucketPath(entry.partition(), entry.bucket()),
-                                entry.indexFile().fileName());
+                String bucketPath =
+                        pathFactory.bucketPath(entry.partition(), entry.bucket()).toString();
+                Path mappingPath = new Path(bucketPath, entry.indexFile().fileName());
                 try {
                     VectorFileMapping partial = VectorFileMappingIO.read(fileIO, mappingPath);
-                    builder.addAll(partial);
+                    builders.computeIfAbsent(bucketPath, k -> VectorFileMapping.builder())
+                            .addAll(partial);
                 } catch (Exception e) {
                     LOG.warn(
                             "Failed to read vector file mapping {}",
@@ -970,12 +980,36 @@ public class SnapshotReaderImpl implements SnapshotReader {
                             e);
                 }
             }
-            VectorFileMapping result = builder.build();
-            return result.size() > 0 ? result : null;
+            if (builders.isEmpty()) {
+                return null;
+            }
+            Map<String, VectorFileMapping> result = new HashMap<>();
+            for (Map.Entry<String, VectorFileMapping.Builder> e : builders.entrySet()) {
+                VectorFileMapping m = e.getValue().build();
+                if (m.size() > 0) {
+                    result.put(e.getKey(), m);
+                }
+            }
+            return result.isEmpty() ? null : result;
         } catch (Exception e) {
             LOG.warn("Failed to load vector file mapping from index manifest", e);
             return null;
         }
+    }
+
+    /** Load the global (merged) vector file mapping — used by PlanCache and search path. */
+    @Nullable
+    private VectorFileMapping loadVectorFileMapping(@Nullable Snapshot snapshot) {
+        Map<String, VectorFileMapping> byBucket = loadVectorFileMappingByBucket(snapshot);
+        if (byBucket == null) {
+            return null;
+        }
+        VectorFileMapping.Builder builder = VectorFileMapping.builder();
+        for (VectorFileMapping m : byBucket.values()) {
+            builder.addAll(m);
+        }
+        VectorFileMapping result = builder.build();
+        return result.size() > 0 ? result : null;
     }
 
     private void enrichSplitsWithMapping(
@@ -1058,7 +1092,7 @@ public class SnapshotReaderImpl implements SnapshotReader {
     private Map<Pair<BinaryRow, Integer>, Map<String, DeletionFile>> scanDvIndex(
             @Nullable Snapshot snapshot, Set<Pair<BinaryRow, Integer>> buckets) {
         if (snapshot == null || snapshot.indexManifest() == null) {
-            return Collections.emptyMap();
+            return null;
         }
         Map<Pair<BinaryRow, Integer>, Map<String, DeletionFile>> result = new HashMap<>();
         Path indexManifestPath = indexFileHandler.indexManifestFilePath(snapshot.indexManifest());

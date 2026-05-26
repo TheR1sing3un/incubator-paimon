@@ -312,7 +312,13 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
             // Add vector file metas to newFiles for manifest tracking,
             // but do NOT add to compactManager (vector files don't participate in LSM compaction)
             if (vectorHelper != null) {
-                newFiles.addAll(vectorHelper.collectVectorFileMetas());
+                List<DataFileMeta> vectorMetas = vectorHelper.collectVectorFileMetas();
+                newFiles.addAll(vectorMetas);
+                if (!vectorMetas.isEmpty()) {
+                    // This flush produced new vector files — mark that vector-only compact
+                    // should NOT be triggered in this session (mapping would be uncommitted)
+                    compactManager.setSkipVectorCompact(true);
+                }
             }
         }
 

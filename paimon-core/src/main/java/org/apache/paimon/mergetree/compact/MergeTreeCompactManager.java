@@ -74,6 +74,12 @@ public class MergeTreeCompactManager extends CompactFutureManager {
 
     @Nullable private CompactResult pendingVectorResult;
     private boolean vectorCompactDone = false;
+    private boolean skipVectorCompact = false;
+    private boolean fullCompactRequested = false;
+
+    public void setSkipVectorCompact(boolean skip) {
+        this.skipVectorCompact = skip;
+    }
 
     public MergeTreeCompactManager(
             ExecutorService executor,
@@ -137,6 +143,7 @@ public class MergeTreeCompactManager extends CompactFutureManager {
         Optional<CompactUnit> optionalUnit;
         List<LevelSortedRun> runs = levels.levelSortedRuns();
         if (fullCompaction) {
+            fullCompactRequested = true;
             Preconditions.checkState(
                     taskFuture == null,
                     "A compaction task is still running while the user "
@@ -203,22 +210,21 @@ public class MergeTreeCompactManager extends CompactFutureManager {
                 });
 
         // If scalar doesn't need compaction but vector files need independent merge,
-        // submit a minimal compact unit to give the rewriter a chance to merge vector files.
-        // Use outputLevel = 0 (not maxLevel) so rewrite() takes the normal merge path
-        // (rewriteWithVectorMergeOnly) which merges unfilled files by target-row count,
-        // rather than the full compact path which only merges low-ratio files.
-        if (!optionalUnit.isPresent()
-                && !vectorCompactDone
-                && rewriter.needsIndependentCompaction()) {
-            // Vector-only compact: execute synchronously (no async task needed since
-            // scalar has nothing to merge). This avoids the FileRewriteCompactTask/
-            // MergeTreeCompactTask logic which may upgrade files instead of rewriting.
+        // trigger synchronous vector-only compact. This happens in two cases:
+        // 1. Normal minor compact: unfilled vector files need merging
+        // 2. After full compact (CALL compact(full)): vector files need merge regardless of size
+        boolean needsVectorCompact =
+                !optionalUnit.isPresent()
+                        && !vectorCompactDone
+                        && !skipVectorCompact
+                        && (rewriter.needsIndependentCompaction() || fullCompactRequested);
+        if (needsVectorCompact) {
             try {
+                rewriter.setFullCompactMode(fullCompactRequested);
                 List<List<org.apache.paimon.mergetree.SortedRun>> emptySections =
                         Collections.singletonList(Collections.emptyList());
                 CompactResult vectorResult = rewriter.rewrite(0, false, emptySections);
                 if (!vectorResult.before().isEmpty() || !vectorResult.after().isEmpty()) {
-                    levels.update(vectorResult.before(), vectorResult.after());
                     pendingVectorResult = vectorResult;
                     vectorCompactDone = true;
                     LOG.info(

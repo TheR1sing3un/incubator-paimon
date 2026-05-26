@@ -85,6 +85,7 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
     private final RowType valueType;
     private final int maxLevel;
     private final List<DataFileMeta> bucketVectorFiles;
+    private boolean fullCompactMode = false;
 
     public VectorCFCompactRewriter(
             MergeTreeCompactRewriter delegate,
@@ -110,6 +111,11 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
     }
 
     @Override
+    public void setFullCompactMode(boolean fullCompact) {
+        this.fullCompactMode = fullCompact;
+    }
+
+    @Override
     public void setMetricsReporter(@Nullable CompactionMetrics.Reporter metricsReporter) {
         delegate.setMetricsReporter(metricsReporter);
     }
@@ -129,7 +135,7 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                                 && (sections.get(0).isEmpty() || sections.get(0).size() == 1));
 
         if (scalarAlreadyCompacted) {
-            // Vector-only compact (explicit CALL compact): skip scalar, only merge unfilled vectors
+            // Vector-only compact (from needsIndependentCompaction): skip scalar, merge vectors
             CompactResult emptyScalar =
                     new CompactResult(
                             new ArrayList<>(),
@@ -139,10 +145,9 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                             new ArrayList<>());
             return mergeUnfilledVectorFiles(emptyScalar, outputLevel);
         } else {
-            // Normal auto-compact with scalar merge: delegate scalar only, skip vector merge.
-            // Vector merge during auto-compact causes issues because the mapping is not yet
-            // committed and subsequent reads in the same session can't resolve old fileIds.
-            // Vector files will be merged in the next explicit compact or independent trigger.
+            // Scalar compact (auto or full): delegate scalar to base rewriter.
+            // Vector merge happens separately via needsIndependentCompaction() in
+            // MergeTreeCompactManager, which triggers after scalar compact finishes.
             return delegate.rewrite(outputLevel, dropDelete, sections);
         }
     }
@@ -455,20 +460,26 @@ public class VectorCFCompactRewriter extends MergeTreeCompactRewriter {
                 if (f.writeCols() == null || !f.writeCols().contains(colInfo.fieldName)) {
                     continue;
                 }
-                boolean unfilled;
-                if (targetRows > 0) {
-                    unfilled = f.rowCount() < targetRows;
-                } else if (targetSize > 0) {
-                    unfilled = f.fileSize() < targetSize;
-                } else {
-                    unfilled = false;
-                }
-                if (unfilled) {
+                if (fullCompactMode) {
+                    // Full compact: merge ALL vector files, not just unfilled
                     smallFiles.add(f);
+                } else {
+                    boolean unfilled;
+                    if (targetRows > 0) {
+                        unfilled = f.rowCount() < targetRows;
+                    } else if (targetSize > 0) {
+                        unfilled = f.fileSize() < targetSize;
+                    } else {
+                        unfilled = false;
+                    }
+                    if (unfilled) {
+                        smallFiles.add(f);
+                    }
                 }
             }
 
-            if (smallFiles.size() < options.vectorCFCompactMinFiles()) {
+            int minFiles = fullCompactMode ? 2 : options.vectorCFCompactMinFiles();
+            if (smallFiles.size() < minFiles) {
                 for (DataFileMeta f : smallFiles) {
                     mappingBuilder.addIdentity(
                             f.fileName(), dataFilePathFactory.toPath(f).toString());

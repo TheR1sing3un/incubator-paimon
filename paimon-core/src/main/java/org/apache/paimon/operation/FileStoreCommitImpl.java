@@ -952,7 +952,8 @@ public class FileStoreCommitImpl implements FileStoreCommit {
 
             // write new delta files into manifest files
             deltaStatistics = new ArrayList<>(PartitionEntry.merge(deltaFiles));
-            deltaManifestList = manifestList.write(manifestFile.write(deltaFiles));
+            List<ManifestFileMeta> writtenManifests = manifestFile.write(deltaFiles);
+            deltaManifestList = manifestList.write(writtenManifests);
 
             // write changelog into manifest files
             if (!changelogFiles.isEmpty()) {

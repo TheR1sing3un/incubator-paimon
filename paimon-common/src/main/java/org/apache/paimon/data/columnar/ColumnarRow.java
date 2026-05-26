@@ -347,6 +347,7 @@ public final class ColumnarRow implements InternalRow, DataSetters, Serializable
         ColumnarRow columnarRow = new ColumnarRow(vectorizedColumnBatchCopy, rowId);
         columnarRow.setFileIO(fileIO);
         columnarRow.setVectorCFContext(vectorCFContext);
+        columnarRow.setResolvedVectors(resolvedVectors);
         columnarRow.setRowKind(rowKind);
         return columnarRow;
     }

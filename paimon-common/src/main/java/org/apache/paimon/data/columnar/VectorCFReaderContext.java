@@ -92,6 +92,10 @@ public class VectorCFReaderContext implements Serializable {
         return fileIdToPath.size();
     }
 
+    public int arrayLength() {
+        return bytesPerVector.length;
+    }
+
     public boolean hasVectorFiles() {
         return !fileIdToPath.isEmpty();
     }

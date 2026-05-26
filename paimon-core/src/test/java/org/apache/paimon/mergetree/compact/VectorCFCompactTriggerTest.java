@@ -170,6 +170,200 @@ public class VectorCFCompactTriggerTest {
         assertThat(unfilledAfter).as("Unfilled files should be merged").isLessThan(unfilledCount);
     }
 
+    @Test
+    public void testVectorFilesInManifestWithDV() throws Exception {
+        Identifier id = Identifier.create("default", "t_dv");
+        Schema schema =
+                Schema.newBuilder()
+                        .column("pk", DataTypes.INT())
+                        .column("vec", DataTypes.VECTOR(DIM, DataTypes.FLOAT()))
+                        .primaryKey("pk")
+                        .option(CoreOptions.BUCKET.key(), "1")
+                        .option(CoreOptions.FILE_FORMAT.key(), "parquet")
+                        .option("merge-engine", "partial-update")
+                        .option("deletion-vectors.enabled", "true")
+                        .option("vector-field", "vec")
+                        .option("field.vec.vector-dim", "4")
+                        .option(CoreOptions.VECTOR_COLUMN_FAMILY_ENABLED.key(), "true")
+                        .option(CoreOptions.VECTOR_COLUMN_FAMILY_TARGET_FILE_SIZE.key(), "32b")
+                        .build();
+        catalog.createTable(id, schema, false);
+        FileStoreTable table = (FileStoreTable) catalog.getTable(id);
+
+        // Write 1 row
+        writeBatch(table, 0, 1);
+
+        // Check manifest
+        table = (FileStoreTable) catalog.getTable(id);
+        List<DataSplit> splits = table.newSnapshotReader().read().dataSplits();
+        System.out.println("=== After INSERT 1 ===");
+        for (DataSplit split : splits) {
+            System.out.println("  Split bucket=" + split.bucket() + " files:");
+            for (DataFileMeta f : split.dataFiles()) {
+                System.out.println(
+                        "    "
+                                + f.fileName()
+                                + " wc="
+                                + f.writeCols()
+                                + " isVCF="
+                                + f.isVectorCFFile()
+                                + " level="
+                                + f.level());
+            }
+        }
+
+        long vcfCount =
+                splits.stream()
+                        .flatMap(s -> s.dataFiles().stream())
+                        .filter(DataFileMeta::isVectorCFFile)
+                        .count();
+        assertThat(vcfCount).as("Vector files must be in manifest").isGreaterThan(0);
+
+        // Write 1 more row to trigger restore scan
+        System.out.println("=== Writing batch 2 (will trigger restore) ===");
+        writeBatch(table, 1, 2);
+
+        table = (FileStoreTable) catalog.getTable(id);
+        splits = table.newSnapshotReader().read().dataSplits();
+        System.out.println("=== After INSERT 2 ===");
+        for (DataSplit split : splits) {
+            System.out.println("  Split bucket=" + split.bucket() + " files:");
+            for (DataFileMeta f : split.dataFiles()) {
+                System.out.println(
+                        "    "
+                                + f.fileName()
+                                + " wc="
+                                + f.writeCols()
+                                + " isVCF="
+                                + f.isVectorCFFile()
+                                + " level="
+                                + f.level());
+            }
+        }
+        vcfCount =
+                splits.stream()
+                        .flatMap(s -> s.dataFiles().stream())
+                        .filter(DataFileMeta::isVectorCFFile)
+                        .count();
+        assertThat(vcfCount)
+                .as("Vector files must be in manifest after 2 inserts")
+                .isGreaterThan(0);
+
+        // Test: verify CommitMessage serialization preserves vector files
+        table = (FileStoreTable) catalog.getTable(id);
+        BatchWriteBuilder wb3 = table.newBatchWriteBuilder();
+        BatchTableWrite write3 = wb3.newWrite().withIOManager(ioManager);
+        int pk = 10;
+        float[] vec3 = new float[DIM];
+        for (int d = 0; d < DIM; d++) {
+            vec3[d] = pk * 10.0f + d;
+        }
+        int bpv3 = ((DIM * 4 + 7) / 8) * 8;
+        byte[] bytes3 = new byte[bpv3];
+        ByteBuffer bb3 = ByteBuffer.wrap(bytes3).order(ByteOrder.nativeOrder());
+        for (float f : vec3) {
+            bb3.putFloat(f);
+        }
+        BinaryVector bv3 = new BinaryVector(DIM);
+        bv3.pointTo(MemorySegment.wrap(bytes3), 0, bpv3);
+        write3.write(GenericRow.of(pk, bv3));
+        List<CommitMessage> msgs = write3.prepareCommit();
+        write3.close();
+
+        org.apache.paimon.table.sink.CommitMessageSerializer serializer =
+                new org.apache.paimon.table.sink.CommitMessageSerializer();
+        for (CommitMessage m : msgs) {
+            byte[] bytes = serializer.serialize(m);
+            CommitMessage deserialized = serializer.deserialize(serializer.getVersion(), bytes);
+            org.apache.paimon.table.sink.CommitMessageImpl original =
+                    (org.apache.paimon.table.sink.CommitMessageImpl) m;
+            org.apache.paimon.table.sink.CommitMessageImpl deser =
+                    (org.apache.paimon.table.sink.CommitMessageImpl) deserialized;
+            System.out.println(
+                    "=== Serialization: original newFiles="
+                            + original.newFilesIncrement().newFiles().size()
+                            + ", deser newFiles="
+                            + deser.newFilesIncrement().newFiles().size());
+            for (DataFileMeta f : original.newFilesIncrement().newFiles()) {
+                System.out.println(
+                        "  original: "
+                                + f.fileName()
+                                + " wc="
+                                + f.writeCols()
+                                + " isVCF="
+                                + f.isVectorCFFile());
+            }
+            for (DataFileMeta f : deser.newFilesIncrement().newFiles()) {
+                System.out.println(
+                        "  deser: "
+                                + f.fileName()
+                                + " wc="
+                                + f.writeCols()
+                                + " isVCF="
+                                + f.isVectorCFFile());
+            }
+            assertThat(deser.newFilesIncrement().newFiles().size())
+                    .isEqualTo(original.newFilesIncrement().newFiles().size());
+        }
+
+        // Test: verify FileSystemWriteRestore finds vector files (simulating Spark's restore path)
+        table = (FileStoreTable) catalog.getTable(id);
+        System.out.println("=== Testing FileSystemWriteRestore (simulating Spark path) ===");
+        BatchWriteBuilder wb4 = table.newBatchWriteBuilder();
+        BatchTableWrite write4 = wb4.newWrite().withIOManager(ioManager);
+        // compact() triggers createWriterContainer → restoreFiles → should find vector files
+        write4.compact(BinaryRow.EMPTY_ROW, 0, true);
+        List<CommitMessage> compactMsgs = write4.prepareCommit();
+        write4.close();
+
+        // Verify serialization preserves newIndexFiles
+        org.apache.paimon.table.sink.CommitMessageSerializer ser =
+                new org.apache.paimon.table.sink.CommitMessageSerializer();
+        for (CommitMessage cm : compactMsgs) {
+            byte[] bytes = ser.serialize(cm);
+            CommitMessage deser = ser.deserialize(ser.getVersion(), bytes);
+            org.apache.paimon.table.sink.CommitMessageImpl orig =
+                    (org.apache.paimon.table.sink.CommitMessageImpl) cm;
+            org.apache.paimon.table.sink.CommitMessageImpl des =
+                    (org.apache.paimon.table.sink.CommitMessageImpl) deser;
+            System.out.println(
+                    "  Serialization: compactBefore="
+                            + orig.compactIncrement().compactBefore().size()
+                            + " newIndexFiles="
+                            + orig.compactIncrement().newIndexFiles().size()
+                            + " → deser: compactBefore="
+                            + des.compactIncrement().compactBefore().size()
+                            + " newIndexFiles="
+                            + des.compactIncrement().newIndexFiles().size());
+        }
+        System.out.println("  Compact produced " + compactMsgs.size() + " messages");
+        for (CommitMessage cm : compactMsgs) {
+            org.apache.paimon.table.sink.CommitMessageImpl cmi =
+                    (org.apache.paimon.table.sink.CommitMessageImpl) cm;
+            System.out.println(
+                    "  compactBefore="
+                            + cmi.compactIncrement().compactBefore().size()
+                            + " compactAfter="
+                            + cmi.compactIncrement().compactAfter().size()
+                            + " newIndexFiles="
+                            + cmi.compactIncrement().newIndexFiles().size());
+        }
+        // With 3 vector files (from 2 batch writes + 1 serialization test write),
+        // vector-only compact should trigger since min-files=2
+        boolean hasVectorCompact =
+                compactMsgs.stream()
+                        .map(m -> (org.apache.paimon.table.sink.CommitMessageImpl) m)
+                        .anyMatch(
+                                m ->
+                                        !m.compactIncrement().compactBefore().isEmpty()
+                                                || !m.compactIncrement().newIndexFiles().isEmpty());
+        assertThat(hasVectorCompact)
+                .as(
+                        "Vector-only compact should trigger via FileSystemWriteRestore path"
+                                + " (vector files visible in restore scan)")
+                .isTrue();
+    }
+
     private void writeBatch(FileStoreTable table, int startPk, int endPk) throws Exception {
         BatchWriteBuilder wb = table.newBatchWriteBuilder();
         try (BatchTableWrite write = wb.newWrite().withIOManager(ioManager);

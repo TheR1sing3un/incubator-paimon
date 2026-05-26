@@ -45,6 +45,9 @@ public interface CompactManager extends Closeable {
      */
     void triggerCompaction(boolean fullCompaction);
 
+    /** Skip vector-only compact in this session (e.g., write sessions with new vector files). */
+    default void setSkipVectorCompact(boolean skip) {}
+
     /** Get compaction result. Wait finish if {@code blocking} is true. */
     Optional<CompactResult> getCompactionResult(boolean blocking)
             throws ExecutionException, InterruptedException;

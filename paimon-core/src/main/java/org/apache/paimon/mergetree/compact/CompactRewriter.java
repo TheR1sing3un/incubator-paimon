@@ -61,4 +61,7 @@ public interface CompactRewriter extends Closeable {
     default boolean needsIndependentCompaction() {
         return false;
     }
+
+    /** Signal the rewriter to merge all vector files, not just unfilled ones. */
+    default void setFullCompactMode(boolean fullCompact) {}
 }

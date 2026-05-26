@@ -27,6 +27,8 @@ import org.apache.paimon.fs.Path;
 import org.apache.paimon.fs.SeekableInputStream;
 import org.apache.paimon.utils.IOUtils;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -63,32 +65,50 @@ public class VectorBatchResolver {
     }
 
     /**
-     * Batch-resolve all vector columns. Returns a map of colPos → resolved ArrayColumnVector. Does
-     * NOT modify the batch — the original BytesColumnVector remains intact for getBinary().
+     * Batch-resolve all vector columns. Returns a map of readPos → resolved ArrayColumnVector. Uses
+     * indexMapping to translate from readRowType positions to batch column positions.
      */
-    public Map<Integer, ArrayColumnVector> resolve(VectorizedColumnBatch batch, int numRows) {
+    public Map<Integer, ArrayColumnVector> resolve(
+            VectorizedColumnBatch batch, int numRows, @Nullable int[] indexMapping) {
         Map<Integer, ArrayColumnVector> resolved = new HashMap<>();
-        for (int colPos = 0; colPos < batch.columns.length; colPos++) {
-            int bpv = context.bytesPerVector(colPos);
+        int numReadPositions = context.arrayLength();
+        for (int readPos = 0; readPos < numReadPositions; readPos++) {
+            int bpv = context.bytesPerVector(readPos);
             if (bpv <= 0) {
                 continue;
             }
-            ColumnVector column = batch.columns[colPos];
+            int batchPos =
+                    (indexMapping != null && readPos < indexMapping.length)
+                            ? indexMapping[readPos]
+                            : readPos;
+            if (batchPos < 0 || batchPos >= batch.columns.length) {
+                continue;
+            }
+            ColumnVector column = batch.columns[batchPos];
             if (!(column instanceof BytesColumnVector)) {
                 continue;
             }
             try {
                 ArrayColumnVector resolvedCol =
-                        resolveColumn(batch, numRows, colPos, bpv, context.dimension(colPos));
+                        resolveColumn(batch, numRows, batchPos, bpv, context.dimension(readPos));
                 if (resolvedCol != null) {
-                    resolved.put(colPos, resolvedCol);
+                    resolved.put(readPos, resolvedCol);
                 }
             } catch (IOException e) {
                 throw new RuntimeException(
-                        "Failed to batch-resolve vector column at pos " + colPos, e);
+                        "Failed to batch-resolve vector column at readPos " + readPos, e);
             }
         }
         return resolved.isEmpty() ? null : resolved;
+    }
+
+    /**
+     * Batch-resolve all vector columns without indexMapping (identity mapping assumed).
+     *
+     * @deprecated Use {@link #resolve(VectorizedColumnBatch, int, int[])} instead.
+     */
+    public Map<Integer, ArrayColumnVector> resolve(VectorizedColumnBatch batch, int numRows) {
+        return resolve(batch, numRows, null);
     }
 
     private ArrayColumnVector resolveColumn(
