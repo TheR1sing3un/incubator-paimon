@@ -1,4 +1,8 @@
+<<<<<<< HEAD:docs/layouts/shortcodes/generated/core_configuration.html
 {{/*
+=======
+<!--
+>>>>>>> bff63fccb ([python] Support Vector dedicated file write/read and row-level access (#7961)):docs/generated/core_configuration.html
 Licensed to the Apache Software Foundation (ASF) under one
 or more contributor license agreements.  See the NOTICE file
 distributed with this work for additional information
@@ -15,7 +19,11 @@ software distributed under the License is distributed on an
 KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License.
+<<<<<<< HEAD:docs/layouts/shortcodes/generated/core_configuration.html
 */}}
+=======
+-->
+>>>>>>> bff63fccb ([python] Support Vector dedicated file write/read and row-level access (#7961)):docs/generated/core_configuration.html
 <table class="configuration table table-bordered">
     <thead>
         <tr>
@@ -61,6 +69,12 @@ under the License.
             <td style="word-wrap: break-word;">false</td>
             <td>Boolean</td>
             <td>Write blob field using blob descriptor rather than blob bytes.</td>
+        </tr>
+        <tr>
+            <td><h5>blob-compaction.enabled</h5></td>
+            <td style="word-wrap: break-word;">false</td>
+            <td>Boolean</td>
+            <td>Whether to compact blob files when compacting a data evolution table.</td>
         </tr>
         <tr>
             <td><h5>blob-descriptor-field</h5></td>
@@ -1516,7 +1530,7 @@ If the data size allocated for the sorting task is uneven,which may lead to perf
             <td><h5>vector.target-file-size</h5></td>
             <td style="word-wrap: break-word;">(none)</td>
             <td>MemorySize</td>
-            <td>Target size of a vector-store file. Default is 10 * TARGET_FILE_SIZE.</td>
+            <td>Target size of a vector-store file. Default is the same as TARGET_FILE_SIZE.</td>
         </tr>
         <tr>
             <td><h5>visibility-callback.check-interval</h5></td>

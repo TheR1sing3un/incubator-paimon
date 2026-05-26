@@ -78,6 +78,12 @@ jobs:
             build-essential \
             git \
             curl \
+<<<<<<< HEAD
+=======
+            pkg-config \
+            libssl-dev \
+            libclang-dev \
+>>>>>>> bff63fccb ([python] Support Vector dedicated file write/read and row-level access (#7961))
             && apt-get clean \
             && rm -rf /var/lib/apt/lists/*
 
@@ -86,6 +92,37 @@ jobs:
           java -version
           mvn -version
 
+<<<<<<< HEAD
+=======
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Build Tantivy native library
+        run: |
+          cd paimon-tantivy/paimon-tantivy-jni/rust
+          cargo build --release
+
+      - name: Copy Tantivy native library to resources
+        run: |
+          RESOURCE_DIR=paimon-tantivy/paimon-tantivy-jni/src/main/resources/native/linux-amd64
+          mkdir -p ${RESOURCE_DIR}
+          cp paimon-tantivy/paimon-tantivy-jni/rust/target/release/libtantivy_jni.so ${RESOURCE_DIR}/
+
+      - name: Clone and build Vortex native library
+        run: |
+          git clone --depth 1 -b 0.69.0 https://github.com/spiraldb/vortex.git ${RUNNER_TEMP}/vortex
+          cd ${RUNNER_TEMP}/vortex
+          cargo build --package vortex-jni --release
+
+      - name: Copy Vortex native library to resources
+        run: |
+          RESOURCE_DIR=paimon-vortex/paimon-vortex-jni/src/main/resources/native/linux-amd64
+          mkdir -p ${RESOURCE_DIR}
+          cp ${RUNNER_TEMP}/vortex/target/release/libvortex_jni.so ${RESOURCE_DIR}/
+
+>>>>>>> bff63fccb ([python] Support Vector dedicated file write/read and row-level access (#7961))
       - name: Verify Python version
         run: python --version
 

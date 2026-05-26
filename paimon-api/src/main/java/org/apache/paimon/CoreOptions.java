@@ -2430,7 +2430,7 @@ public class CoreOptions implements Serializable {
                             Description.builder()
                                     .text(
                                             "Target size of a vector-store file."
-                                                    + " Default is 10 * TARGET_FILE_SIZE.")
+                                                    + " Default is the same as TARGET_FILE_SIZE.")
                                     .build());
 
     public static final ConfigOption<Boolean> VECTOR_COLUMN_FAMILY_ENABLED =
@@ -3862,10 +3862,9 @@ public class CoreOptions implements Serializable {
     }
 
     public long vectorTargetFileSize() {
-        // Since vectors are large, it would be better to set a larger target size for vectors.
         return options.getOptional(VECTOR_TARGET_FILE_SIZE)
                 .map(MemorySize::getBytes)
-                .orElse(10 * targetFileSize(false));
+                .orElse(targetFileSize(false));
     }
 
     public boolean vectorColumnFamilyEnabled() {

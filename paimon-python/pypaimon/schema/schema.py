@@ -103,15 +103,19 @@ class Schema:
                     .format(col_name, vf.type))
 
         # Check if Blob type exists in the schema
-        has_blob_type = any(
-            'blob' in str(field.type).lower()
-            for field in fields
-        )
+        blob_names = [
+            field.name for field in fields
+            if 'blob' in str(field.type).lower()
+        ]
 
-        # If Blob type exists, validate required options
-        if has_blob_type:
+        if blob_names:
             if options is None:
                 options = {}
+
+            if len(fields) <= len(blob_names):
+                raise ValueError(
+                    "Table with BLOB type column must have other normal columns."
+                )
 
             required_options = {
                 CoreOptions.ROW_TRACKING_ENABLED.key(): 'true',
@@ -131,5 +135,41 @@ class Schema:
 
             if primary_keys is not None:
                 raise ValueError("Blob type is not supported with primary key.")
+
+        # Check if Vector type with dedicated file format
+        vector_names = [
+            field.name for field in fields
+            if isinstance(field.type, VectorType)
+        ]
+        vector_file_format = options.get(CoreOptions.VECTOR_FILE_FORMAT.key(), '') if options else ''
+
+        if vector_names and vector_file_format:
+            if options is None:
+                options = {}
+
+            if len(fields) <= len(vector_names):
+                raise ValueError(
+                    "Table with VECTOR type column must have other normal columns."
+                )
+
+            partition_key_set = set(partition_keys) if partition_keys else set()
+            vector_partitions = [n for n in vector_names if n in partition_key_set]
+            if vector_partitions:
+                raise ValueError(
+                    "The vector-store columns can not be part of partition keys."
+                )
+
+            required_options = {
+                CoreOptions.ROW_TRACKING_ENABLED.key(): 'true',
+                CoreOptions.DATA_EVOLUTION_ENABLED.key(): 'true',
+            }
+            missing = [
+                f"{k}='{v}'" for k, v in required_options.items()
+                if options.get(k) != v
+            ]
+            if missing:
+                raise ValueError(
+                    f"Table with vector-store file format requires: {', '.join(missing)}."
+                )
 
         return Schema(fields, partition_keys, primary_keys, options, comment)
