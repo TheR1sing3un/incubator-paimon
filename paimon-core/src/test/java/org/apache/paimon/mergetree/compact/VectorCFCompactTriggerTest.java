@@ -362,6 +362,47 @@ public class VectorCFCompactTriggerTest {
                         "Vector-only compact should trigger via FileSystemWriteRestore path"
                                 + " (vector files visible in restore scan)")
                 .isTrue();
+
+        // Commit the compact result
+        BatchTableCommit commit4 = wb4.newCommit();
+        commit4.commit(compactMsgs);
+        commit4.close();
+
+        // E2E verification: read data AFTER compact — must resolve via VectorFileMapping
+        table = (FileStoreTable) catalog.getTable(id);
+        splits = table.newSnapshotReader().read().dataSplits();
+        System.out.println("=== After compact commit, reading data ===");
+        org.apache.paimon.table.source.TableRead read = table.newReadBuilder().newRead();
+        int rowCount = 0;
+        for (DataSplit split : splits) {
+            System.out.println(
+                    "  Split: mapping=" + (split.vectorFileMapping() != null ? "yes" : "null"));
+            try (org.apache.paimon.reader.RecordReader<org.apache.paimon.data.InternalRow> reader =
+                    read.createReader(split)) {
+                org.apache.paimon.reader.RecordReader.RecordIterator<
+                                org.apache.paimon.data.InternalRow>
+                        batch;
+                while ((batch = reader.readBatch()) != null) {
+                    org.apache.paimon.data.InternalRow row;
+                    while ((row = batch.next()) != null) {
+                        int pkVal = row.getInt(0);
+                        org.apache.paimon.data.InternalVector vec = row.getVector(1);
+                        assertThat(vec).as("Vector should not be null for pk=" + pkVal).isNotNull();
+                        float[] floats = vec.toFloatArray();
+                        assertThat(floats.length).isEqualTo(DIM);
+                        // Verify values match what was written
+                        for (int d = 0; d < DIM; d++) {
+                            assertThat(floats[d]).isEqualTo(pkVal * 10.0f + d);
+                        }
+                        rowCount++;
+                    }
+                    batch.releaseBatch();
+                }
+            }
+        }
+        System.out.println("  Total rows read: " + rowCount);
+        // We wrote pk 0-1, 1-2, 10 = at least 3 distinct pks (with DV some may merge)
+        assertThat(rowCount).as("Should read rows after compact").isGreaterThan(0);
     }
 
     private void writeBatch(FileStoreTable table, int startPk, int endPk) throws Exception {

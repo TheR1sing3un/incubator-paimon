@@ -512,8 +512,17 @@ public class SnapshotReaderImpl implements SnapshotReader {
                                     : Collections.emptyMap());
         }
 
-        // Load vector file mapping from index manifest (if any), grouped by bucket path
-        Map<String, VectorFileMapping> mappingByBucket = loadVectorFileMappingByBucket(snapshot);
+        // Load vector file mapping from index manifest. Use latest snapshot as fallback
+        // in case the scan snapshot is stale (e.g., from CachingCatalog after compact).
+        Snapshot mappingSnapshot = snapshot;
+        if (mappingSnapshot == null || mappingSnapshot.indexManifest() == null) {
+            Snapshot latest = snapshotManager.latestSnapshot();
+            if (latest != null && latest.indexManifest() != null) {
+                mappingSnapshot = latest;
+            }
+        }
+        Map<String, VectorFileMapping> mappingByBucket =
+                loadVectorFileMappingByBucket(mappingSnapshot);
         for (Map.Entry<BinaryRow, Map<Integer, List<ManifestEntry>>> entry : entries.entrySet()) {
             BinaryRow partition = entry.getKey();
             Map<Integer, List<ManifestEntry>> buckets = entry.getValue();
@@ -1092,7 +1101,7 @@ public class SnapshotReaderImpl implements SnapshotReader {
     private Map<Pair<BinaryRow, Integer>, Map<String, DeletionFile>> scanDvIndex(
             @Nullable Snapshot snapshot, Set<Pair<BinaryRow, Integer>> buckets) {
         if (snapshot == null || snapshot.indexManifest() == null) {
-            return null;
+            return Collections.emptyMap();
         }
         Map<Pair<BinaryRow, Integer>, Map<String, DeletionFile>> result = new HashMap<>();
         Path indexManifestPath = indexFileHandler.indexManifestFilePath(snapshot.indexManifest());
