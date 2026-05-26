@@ -964,6 +964,7 @@ public class VectorCFAccelerateIndexE2ETest {
                         .option(
                                 CoreOptions.VECTOR_COLUMN_FAMILY_TARGET_FILE_ROWS.key(),
                                 "20") // 20 rows per vector file
+                        .option(CoreOptions.VECTOR_COLUMN_FAMILY_COMPACT_ENABLED.key(), "false")
                         .build();
         catalog.createTable(id, schema, false);
         return (FileStoreTable) catalog.getTable(id);

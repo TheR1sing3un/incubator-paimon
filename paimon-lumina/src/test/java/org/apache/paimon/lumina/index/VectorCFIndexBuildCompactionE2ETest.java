@@ -612,7 +612,7 @@ public class VectorCFIndexBuildCompactionE2ETest {
                         .option(CoreOptions.VECTOR_COLUMN_FAMILY_TARGET_FILE_ROWS.key(), "15")
                         .option(CoreOptions.VECTOR_COLUMN_FAMILY_COMPACT_ENABLED.key(), "true")
                         .option("vector-column-family.compact.valid-ratio-threshold", "0.3")
-                        .option("vector-column-family.compact.min-files-to-merge", "1")
+                        .option("vector-column-family.compact.min-files-to-merge", "999")
                         .option("compaction.min.file-num", "999")
                         .option("compaction.max.file-num", "999")
                         .option("num-sorted-runs.compaction-trigger", "999");
