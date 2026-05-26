@@ -487,6 +487,11 @@ public abstract class AbstractFileStoreScan implements FileStoreScan {
         LOG.info(
                 "Plan from cache completed in {} ms. Files size : {}", scanDuration, result.size());
 
+        if (scanMetrics != null) {
+            long snapshotId = cachedSnapshot != null ? cachedSnapshot.id() : 0;
+            scanMetrics.reportScan(new ScanStats(scanDuration, snapshotId, 0, 0, result.size()));
+        }
+
         Snapshot snapshot = cachedSnapshot;
         return new Plan() {
             @Nullable

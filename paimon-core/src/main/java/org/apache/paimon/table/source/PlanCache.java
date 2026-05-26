@@ -67,7 +67,9 @@ public class PlanCache implements Serializable {
 
     private final Map<String, String> vectorPkmapPaths;
 
-    @Nullable private final org.apache.paimon.mergetree.compact.VectorFileMapping vectorFileMapping;
+    @Nullable
+    private final Map<String, org.apache.paimon.mergetree.compact.VectorFileMapping>
+            vectorFileMappingByBucket;
 
     public PlanCache(
             @Nullable Snapshot snapshot,
@@ -96,7 +98,9 @@ public class PlanCache implements Serializable {
             Map<String, AccelerateIndexMeta> indexMetas,
             Map<Pair<BinaryRow, Integer>, String> bucketPaths,
             Map<String, String> vectorPkmapPaths,
-            @Nullable org.apache.paimon.mergetree.compact.VectorFileMapping vectorFileMapping) {
+            @Nullable
+                    Map<String, org.apache.paimon.mergetree.compact.VectorFileMapping>
+                            vectorFileMappingByBucket) {
         this.snapshot = snapshot;
         this.schemaId = schemaId;
         this.resolvedEntries = Collections.unmodifiableList(resolvedEntries);
@@ -107,7 +111,7 @@ public class PlanCache implements Serializable {
         this.indexMetas = Collections.unmodifiableMap(indexMetas);
         this.bucketPaths = Collections.unmodifiableMap(bucketPaths);
         this.vectorPkmapPaths = Collections.unmodifiableMap(vectorPkmapPaths);
-        this.vectorFileMapping = vectorFileMapping;
+        this.vectorFileMappingByBucket = vectorFileMappingByBucket;
     }
 
     public static PlanCache empty() {
@@ -155,8 +159,9 @@ public class PlanCache implements Serializable {
     }
 
     @Nullable
-    public org.apache.paimon.mergetree.compact.VectorFileMapping vectorFileMapping() {
-        return vectorFileMapping;
+    public Map<String, org.apache.paimon.mergetree.compact.VectorFileMapping>
+            vectorFileMappingByBucket() {
+        return vectorFileMappingByBucket;
     }
 
     public boolean isEmpty() {
@@ -233,11 +238,15 @@ public class PlanCache implements Serializable {
             out.writeUTF(e.getValue());
         }
 
-        // 8. VectorFileMapping (nullable)
-        if (vectorFileMapping != null && vectorFileMapping.size() > 0) {
+        // 8. VectorFileMappingByBucket (nullable map)
+        if (vectorFileMappingByBucket != null && !vectorFileMappingByBucket.isEmpty()) {
             out.writeBoolean(true);
-            String mappingJson = JsonSerdeUtil.toFlatJson(vectorFileMapping);
-            out.writeUTF(mappingJson);
+            out.writeInt(vectorFileMappingByBucket.size());
+            for (Map.Entry<String, org.apache.paimon.mergetree.compact.VectorFileMapping> e :
+                    vectorFileMappingByBucket.entrySet()) {
+                out.writeUTF(e.getKey());
+                out.writeUTF(JsonSerdeUtil.toFlatJson(e.getValue()));
+            }
         } else {
             out.writeBoolean(false);
         }
@@ -327,17 +336,31 @@ public class PlanCache implements Serializable {
             pkmapPaths.put(key, val);
         }
 
-        // 8. VectorFileMapping (nullable, added later — check available)
-        org.apache.paimon.mergetree.compact.VectorFileMapping vecMapping = null;
+        // 8. VectorFileMappingByBucket (nullable, added later — check available)
+        Map<String, org.apache.paimon.mergetree.compact.VectorFileMapping> vecMappingByBucket =
+                null;
         if (in.available() > 0 && in.readBoolean()) {
-            String mappingJson = in.readUTF();
-            vecMapping =
-                    JsonSerdeUtil.fromJson(
-                            mappingJson,
-                            org.apache.paimon.mergetree.compact.VectorFileMapping.class);
+            int mapSize = in.readInt();
+            vecMappingByBucket = new HashMap<>(mapSize);
+            for (int i = 0; i < mapSize; i++) {
+                String bucketPath = in.readUTF();
+                String mappingJson = in.readUTF();
+                vecMappingByBucket.put(
+                        bucketPath,
+                        JsonSerdeUtil.fromJson(
+                                mappingJson,
+                                org.apache.paimon.mergetree.compact.VectorFileMapping.class));
+            }
         }
 
         return new PlanCache(
-                snapshot, schemaId, entries, dvIdx, idxMetas, bucketPaths, pkmapPaths, vecMapping);
+                snapshot,
+                schemaId,
+                entries,
+                dvIdx,
+                idxMetas,
+                bucketPaths,
+                pkmapPaths,
+                vecMappingByBucket);
     }
 }

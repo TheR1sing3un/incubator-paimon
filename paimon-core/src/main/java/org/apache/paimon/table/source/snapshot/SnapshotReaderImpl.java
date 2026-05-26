@@ -133,7 +133,7 @@ public class SnapshotReaderImpl implements SnapshotReader {
 
     @Nullable private Map<String, String> cachedPkmapPaths;
 
-    @Nullable private VectorFileMapping cachedVectorFileMapping;
+    @Nullable private Map<String, VectorFileMapping> cachedVectorFileMappingByBucket;
 
     public SnapshotReaderImpl(
             FileStoreScan scan,
@@ -385,7 +385,7 @@ public class SnapshotReaderImpl implements SnapshotReader {
         this.cachedDvIndex = cache.dvIndex();
         this.cachedIndexMetas = cache.indexMetas();
         this.cachedPkmapPaths = cache.vectorPkmapPaths();
-        this.cachedVectorFileMapping = cache.vectorFileMapping();
+        this.cachedVectorFileMappingByBucket = cache.vectorFileMappingByBucket();
         return this;
     }
 
@@ -447,8 +447,8 @@ public class SnapshotReaderImpl implements SnapshotReader {
             }
         }
 
-        // Load vector file mapping for VCF search
-        VectorFileMapping vecMapping = loadVectorFileMapping(snapshot);
+        // Load vector file mapping for VCF, grouped by bucket
+        Map<String, VectorFileMapping> vecMappingByBucket = loadVectorFileMappingByBucket(snapshot);
 
         return new PlanCache(
                 snapshot,
@@ -458,7 +458,7 @@ public class SnapshotReaderImpl implements SnapshotReader {
                 idxMetas,
                 bucketPathMap,
                 vectorPkmapPaths,
-                vecMapping);
+                vecMappingByBucket);
     }
 
     @Override
@@ -512,17 +512,20 @@ public class SnapshotReaderImpl implements SnapshotReader {
                                     : Collections.emptyMap());
         }
 
-        // Load vector file mapping from index manifest. Use latest snapshot as fallback
-        // in case the scan snapshot is stale (e.g., from CachingCatalog after compact).
-        Snapshot mappingSnapshot = snapshot;
-        if (mappingSnapshot == null || mappingSnapshot.indexManifest() == null) {
-            Snapshot latest = snapshotManager.latestSnapshot();
-            if (latest != null && latest.indexManifest() != null) {
-                mappingSnapshot = latest;
+        // Load vector file mapping (use cache if available, otherwise from index manifest)
+        Map<String, VectorFileMapping> mappingByBucket;
+        if (cachedVectorFileMappingByBucket != null) {
+            mappingByBucket = cachedVectorFileMappingByBucket;
+        } else {
+            Snapshot mappingSnapshot = snapshot;
+            if (mappingSnapshot == null || mappingSnapshot.indexManifest() == null) {
+                Snapshot latest = snapshotManager.latestSnapshot();
+                if (latest != null && latest.indexManifest() != null) {
+                    mappingSnapshot = latest;
+                }
             }
+            mappingByBucket = loadVectorFileMappingByBucket(mappingSnapshot);
         }
-        Map<String, VectorFileMapping> mappingByBucket =
-                loadVectorFileMappingByBucket(mappingSnapshot);
         for (Map.Entry<BinaryRow, Map<Integer, List<ManifestEntry>>> entry : entries.entrySet()) {
             BinaryRow partition = entry.getKey();
             Map<Integer, List<ManifestEntry>> buckets = entry.getValue();
@@ -638,10 +641,19 @@ public class SnapshotReaderImpl implements SnapshotReader {
                                 : Collections.emptyMap());
 
         // Load vector file mapping for descriptor resolution (use cache if available)
-        VectorFileMapping vectorFileMapping =
-                cachedVectorFileMapping != null
-                        ? cachedVectorFileMapping
-                        : loadVectorFileMapping(snapshot);
+        VectorFileMapping vectorFileMapping;
+        if (cachedVectorFileMappingByBucket != null) {
+            VectorFileMapping.Builder fb = VectorFileMapping.builder();
+            for (VectorFileMapping m : cachedVectorFileMappingByBucket.values()) {
+                fb.addAll(m);
+            }
+            vectorFileMapping = fb.build();
+            if (vectorFileMapping.size() == 0) {
+                vectorFileMapping = null;
+            }
+        } else {
+            vectorFileMapping = loadVectorFileMapping(snapshot);
+        }
 
         List<VectorCFSearchSplit> result = new ArrayList<>();
 

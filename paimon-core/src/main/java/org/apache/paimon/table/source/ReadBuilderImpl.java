@@ -205,6 +205,12 @@ public class ReadBuilderImpl implements ReadBuilder {
 
     @Override
     public List<Split> planWithCache(PlanCache cache) {
+        return planWithCache(cache, null);
+    }
+
+    @Override
+    public List<Split> planWithCache(
+            PlanCache cache, @Nullable org.apache.paimon.metrics.MetricRegistry registry) {
         org.apache.paimon.table.FileStoreTable fst = (org.apache.paimon.table.FileStoreTable) table;
 
         if (topN != null) {
@@ -232,19 +238,24 @@ public class ReadBuilderImpl implements ReadBuilder {
         if (accelerateIndexSearch != null) {
             boolean isVectorCF = fst.coreOptions().vectorColumnFamilyEnabled();
             if (isVectorCF) {
-                return planVectorCFWithCache(fst, cache);
+                return planVectorCFWithCache(fst, cache, registry);
             } else {
-                return planAccelerateIndexWithCache(fst, cache);
+                return planAccelerateIndexWithCache(fst, cache, registry);
             }
         } else {
-            return planNormalWithCache(fst, cache);
+            return planNormalWithCache(fst, cache, registry);
         }
     }
 
     private List<Split> planNormalWithCache(
-            org.apache.paimon.table.FileStoreTable fst, PlanCache cache) {
+            org.apache.paimon.table.FileStoreTable fst,
+            PlanCache cache,
+            @Nullable org.apache.paimon.metrics.MetricRegistry registry) {
         org.apache.paimon.table.source.snapshot.SnapshotReader reader = fst.newSnapshotReader();
         reader.withPlanCache(cache);
+        if (registry != null) {
+            reader.withMetricRegistry(registry);
+        }
         reader.withMode(ScanMode.ALL);
         applyReaderFilters(fst, reader);
 
@@ -270,11 +281,16 @@ public class ReadBuilderImpl implements ReadBuilder {
     }
 
     private List<Split> planAccelerateIndexWithCache(
-            org.apache.paimon.table.FileStoreTable fst, PlanCache cache) {
+            org.apache.paimon.table.FileStoreTable fst,
+            PlanCache cache,
+            @Nullable org.apache.paimon.metrics.MetricRegistry registry) {
         int columnId = resolveColumnId(fst);
 
         org.apache.paimon.table.source.snapshot.SnapshotReader reader = fst.newSnapshotReader();
         reader.withPlanCache(cache);
+        if (registry != null) {
+            reader.withMetricRegistry(registry);
+        }
         reader.withLevelFilter(level -> level >= 1);
         if (partitionFilter != null) {
             reader.withPartitionFilter(partitionFilter);
@@ -322,11 +338,16 @@ public class ReadBuilderImpl implements ReadBuilder {
     }
 
     private List<Split> planVectorCFWithCache(
-            org.apache.paimon.table.FileStoreTable fst, PlanCache cache) {
+            org.apache.paimon.table.FileStoreTable fst,
+            PlanCache cache,
+            @Nullable org.apache.paimon.metrics.MetricRegistry registry) {
         int columnId = resolveColumnId(fst);
 
         org.apache.paimon.table.source.snapshot.SnapshotReader reader = fst.newSnapshotReader();
         reader.withPlanCache(cache);
+        if (registry != null) {
+            reader.withMetricRegistry(registry);
+        }
         if (partitionFilter != null) {
             reader.withPartitionFilter(partitionFilter);
         }

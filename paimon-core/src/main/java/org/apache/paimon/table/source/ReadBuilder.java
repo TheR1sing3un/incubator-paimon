@@ -21,6 +21,7 @@ package org.apache.paimon.table.source;
 import org.apache.paimon.accelerateindex.AccelerateIndexSearch;
 import org.apache.paimon.annotation.Public;
 import org.apache.paimon.data.InternalRow;
+import org.apache.paimon.metrics.MetricRegistry;
 import org.apache.paimon.partition.PartitionPredicate;
 import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.predicate.PredicateBuilder;
@@ -30,6 +31,8 @@ import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.Filter;
 import org.apache.paimon.utils.Range;
 import org.apache.paimon.utils.RowRangeIndex;
+
+import javax.annotation.Nullable;
 
 import java.io.Serializable;
 import java.util.List;
@@ -223,6 +226,17 @@ public interface ReadBuilder extends Serializable {
      */
     default List<Split> planWithCache(PlanCache cache) {
         throw new UnsupportedOperationException("PlanCache not supported by this ReadBuilder");
+    }
+
+    /**
+     * Plan with cache and collect scan metrics into the given registry.
+     *
+     * @param cache a cache built by {@link #buildPlanCache()}
+     * @param registry optional metric registry for scan metrics (duration, file counts, etc.)
+     * @return splits ready for distribution to readers
+     */
+    default List<Split> planWithCache(PlanCache cache, @Nullable MetricRegistry registry) {
+        return planWithCache(cache);
     }
 
     /** Create a {@link TableScan} to perform batch planning. */
