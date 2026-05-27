@@ -66,10 +66,15 @@ public class VectorBatchResolver {
 
     /**
      * Batch-resolve all vector columns. Returns a map of readPos → resolved ArrayColumnVector. Uses
-     * indexMapping to translate from readRowType positions to batch column positions.
+     * indexMapping to translate from readRowType positions to batch column positions. When
+     * selection is provided, only rows in the selection bitmap are resolved (others marked null).
      */
     public Map<Integer, ArrayColumnVector> resolve(
-            VectorizedColumnBatch batch, int numRows, @Nullable int[] indexMapping) {
+            VectorizedColumnBatch batch,
+            int numRows,
+            @Nullable int[] indexMapping,
+            @Nullable org.apache.paimon.utils.RoaringBitmap32 selection,
+            long batchStartFilePos) {
         Map<Integer, ArrayColumnVector> resolved = new HashMap<>();
         int numReadPositions = context.arrayLength();
         for (int readPos = 0; readPos < numReadPositions; readPos++) {
@@ -90,7 +95,14 @@ public class VectorBatchResolver {
             }
             try {
                 ArrayColumnVector resolvedCol =
-                        resolveColumn(batch, numRows, batchPos, bpv, context.dimension(readPos));
+                        resolveColumn(
+                                batch,
+                                numRows,
+                                batchPos,
+                                bpv,
+                                context.dimension(readPos),
+                                selection,
+                                batchStartFilePos);
                 if (resolvedCol != null) {
                     resolved.put(readPos, resolvedCol);
                 }
@@ -103,6 +115,17 @@ public class VectorBatchResolver {
     }
 
     /**
+     * Batch-resolve without selection (resolves all rows).
+     *
+     * @deprecated Use {@link #resolve(VectorizedColumnBatch, int, int[],
+     *     org.apache.paimon.utils.RoaringBitmap32, long)} instead.
+     */
+    public Map<Integer, ArrayColumnVector> resolve(
+            VectorizedColumnBatch batch, int numRows, @Nullable int[] indexMapping) {
+        return resolve(batch, numRows, indexMapping, null, 0);
+    }
+
+    /**
      * Batch-resolve all vector columns without indexMapping (identity mapping assumed).
      *
      * @deprecated Use {@link #resolve(VectorizedColumnBatch, int, int[])} instead.
@@ -112,7 +135,13 @@ public class VectorBatchResolver {
     }
 
     private ArrayColumnVector resolveColumn(
-            VectorizedColumnBatch batch, int numRows, int colPos, int bpv, int dim)
+            VectorizedColumnBatch batch,
+            int numRows,
+            int colPos,
+            int bpv,
+            int dim,
+            @Nullable org.apache.paimon.utils.RoaringBitmap32 selection,
+            long batchStartFilePos)
             throws IOException {
         BytesColumnVector bytesCol = (BytesColumnVector) batch.columns[colPos];
 
@@ -121,6 +150,12 @@ public class VectorBatchResolver {
         int nonNullCount = 0;
 
         for (int row = 0; row < numRows; row++) {
+            if (selection != null
+                    && batchStartFilePos >= 0
+                    && !selection.contains((int) (batchStartFilePos + row))) {
+                isNull[row] = true;
+                continue;
+            }
             if (bytesCol.isNullAt(row)) {
                 isNull[row] = true;
                 continue;

@@ -40,6 +40,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -504,9 +505,14 @@ public class PlanCacheTest {
     private static final int DIM = 4;
 
     private FileStoreTable createVcfTable(String name, boolean compactEnabled) throws Exception {
+        return createVcfTable(name, compactEnabled, true);
+    }
+
+    private FileStoreTable createVcfTable(String name, boolean compactEnabled, boolean dvEnabled)
+            throws Exception {
         CatalogContext context = CatalogContext.create(new Path("file://" + tempPath.toString()));
         Catalog catalog = CatalogFactory.createCatalog(context);
-        Schema schema =
+        Schema.Builder sb =
                 Schema.newBuilder()
                         .column("pk", DataTypes.INT())
                         .column("vec", DataTypes.VECTOR(DIM, DataTypes.FLOAT()))
@@ -514,7 +520,6 @@ public class PlanCacheTest {
                         .option("bucket", "1")
                         .option("file.format", "parquet")
                         .option("merge-engine", "partial-update")
-                        .option("deletion-vectors.enabled", "true")
                         .option("vector-column-family.enabled", "true")
                         .option("vector-column-family.target-file-rows", "10")
                         .option(
@@ -523,9 +528,11 @@ public class PlanCacheTest {
                         .option("vector-column-family.compact.min-files-to-merge", "2")
                         .option("num-sorted-runs.compaction-trigger", "999")
                         .option("compaction.min.file-num", "999")
-                        .option("compaction.max.file-num", "999")
-                        .build();
-        catalog.createTable(Identifier.create("default", name), schema, true);
+                        .option("compaction.max.file-num", "999");
+        if (dvEnabled) {
+            sb.option("deletion-vectors.enabled", "true");
+        }
+        catalog.createTable(Identifier.create("default", name), sb.build(), true);
         return (FileStoreTable) catalog.getTable(Identifier.create("default", name));
     }
 
@@ -709,5 +716,202 @@ public class PlanCacheTest {
         assertThat(restored.vectorFileMappingByBucket()).isNotEmpty();
         List<Split> restoredSplits = vcf.newReadBuilder().planWithCache(restored);
         assertThat(extractFileNames(restoredSplits)).isEqualTo(extractFileNames(cachedSplits));
+    }
+
+    @Test
+    public void testVcfReadWithPredicateFilter() throws Exception {
+        FileStoreTable vcf = createVcfTable("vcf_predicate", false);
+
+        writeVcfRows(vcf, 0, 8);
+
+        vcf =
+                (FileStoreTable)
+                        CatalogFactory.createCatalog(
+                                        CatalogContext.create(
+                                                new Path("file://" + tempPath.toString())))
+                                .getTable(Identifier.create("default", "vcf_predicate"));
+
+        // Read ALL rows
+        ReadBuilder rbAll = vcf.newReadBuilder();
+        List<Split> allSplits = rbAll.newScan().plan().splits();
+        TableRead readAll = rbAll.newRead();
+        int allCount = 0;
+        for (Split s : allSplits) {
+            try (org.apache.paimon.reader.RecordReader<org.apache.paimon.data.InternalRow> r =
+                    readAll.createReader(s)) {
+                org.apache.paimon.reader.RecordReader.RecordIterator<
+                                org.apache.paimon.data.InternalRow>
+                        batch;
+                while ((batch = r.readBatch()) != null) {
+                    org.apache.paimon.data.InternalRow row;
+                    while ((row = batch.next()) != null) {
+                        assertThat(row.getVector(1)).isNotNull();
+                        allCount++;
+                    }
+                    batch.releaseBatch();
+                }
+            }
+        }
+        assertThat(allCount).isEqualTo(8);
+
+        // Read with predicate pk=3 — predicate pushdown may not filter row-level,
+        // but all returned rows must have valid vectors
+        PredicateBuilder pb = new PredicateBuilder(vcf.rowType());
+        Predicate pkFilter = pb.equal(0, 3);
+        ReadBuilder rbFiltered = vcf.newReadBuilder().withFilter(pkFilter);
+        List<Split> filteredSplits = rbFiltered.newScan().plan().splits();
+        TableRead readFiltered = rbFiltered.newRead();
+        int filteredCount = 0;
+        boolean foundPk3 = false;
+        for (Split s : filteredSplits) {
+            try (org.apache.paimon.reader.RecordReader<org.apache.paimon.data.InternalRow> r =
+                    readFiltered.createReader(s)) {
+                org.apache.paimon.reader.RecordReader.RecordIterator<
+                                org.apache.paimon.data.InternalRow>
+                        batch;
+                while ((batch = r.readBatch()) != null) {
+                    org.apache.paimon.data.InternalRow row;
+                    while ((row = batch.next()) != null) {
+                        int pk = row.getInt(0);
+                        org.apache.paimon.data.InternalVector vec = row.getVector(1);
+                        assertThat(vec).as("Vector should not be null for pk=" + pk).isNotNull();
+                        float[] floats = vec.toFloatArray();
+                        assertThat(floats.length).isEqualTo(DIM);
+                        for (int d = 0; d < DIM; d++) {
+                            assertThat(floats[d]).isEqualTo(pk * 10.0f + d);
+                        }
+                        if (pk == 3) {
+                            foundPk3 = true;
+                        }
+                        filteredCount++;
+                    }
+                    batch.releaseBatch();
+                }
+            }
+        }
+        assertThat(filteredCount).isGreaterThan(0);
+        assertThat(foundPk3).as("Should find pk=3 in results").isTrue();
+    }
+
+    // ---- MOR (Merge-on-Read) VCF Tests ----
+
+    @Test
+    public void testVcfMorReadWithPkUpdate() throws Exception {
+        // MOR: no DV, overlapping L0 files merged at read time
+        FileStoreTable vcf = createVcfTable("vcf_mor_update", false, false);
+
+        // Write initial data
+        writeVcfRows(vcf, 0, 4); // pk 0-3
+
+        // Update pk=1 with new vector (creates overlapping L0 file)
+        writeVcfRows(vcf, 1, 1); // pk 1 overwritten
+
+        vcf = reloadVcfTable("vcf_mor_update");
+
+        // Read: MOR merge should return latest version of pk=1
+        ReadBuilder rb = vcf.newReadBuilder();
+        List<Split> splits = rb.newScan().plan().splits();
+        TableRead read = rb.newRead();
+        java.util.Map<Integer, float[]> results = new HashMap<>();
+        for (Split s : splits) {
+            try (org.apache.paimon.reader.RecordReader<org.apache.paimon.data.InternalRow> r =
+                    read.createReader(s)) {
+                org.apache.paimon.reader.RecordReader.RecordIterator<
+                                org.apache.paimon.data.InternalRow>
+                        batch;
+                while ((batch = r.readBatch()) != null) {
+                    org.apache.paimon.data.InternalRow row;
+                    while ((row = batch.next()) != null) {
+                        int pk = row.getInt(0);
+                        org.apache.paimon.data.InternalVector vec = row.getVector(1);
+                        assertThat(vec).as("Vector should not be null for pk=" + pk).isNotNull();
+                        results.put(pk, vec.toFloatArray());
+                    }
+                    batch.releaseBatch();
+                }
+            }
+        }
+
+        // Should have 4 distinct PKs
+        assertThat(results).hasSize(4);
+        // pk=1 should have the UPDATED vector value
+        float[] pk1Vec = results.get(1);
+        assertThat(pk1Vec).isNotNull();
+        for (int d = 0; d < DIM; d++) {
+            assertThat(pk1Vec[d]).isEqualTo(1 * 10.0f + d);
+        }
+    }
+
+    @Test
+    public void testVcfMorWithMappingAfterCompact() throws Exception {
+        // MOR + compact → mapping → write more → MOR merge with mapped + unmapped vectors
+        FileStoreTable vcf = createVcfTable("vcf_mor_mapping", true, false);
+
+        // Write 2 batches → 2 unfilled vector files
+        writeVcfRows(vcf, 0, 4);
+        writeVcfRows(vcf, 4, 4);
+
+        // Compact → merges vector files → produces mapping
+        vcf = reloadVcfTable("vcf_mor_mapping");
+        BatchWriteBuilder wb = vcf.newBatchWriteBuilder();
+        org.apache.paimon.disk.IOManager compactIo =
+                new org.apache.paimon.disk.IOManagerImpl(tempPath.toString());
+        BatchTableWrite write = wb.newWrite().withIOManager(compactIo);
+        write.compact(org.apache.paimon.data.BinaryRow.EMPTY_ROW, 0, false);
+        List<org.apache.paimon.table.sink.CommitMessage> msgs = write.prepareCommit();
+        write.close();
+        wb.newCommit().commit(msgs);
+
+        // Write new data AFTER compact (references new vector file, no mapping needed)
+        vcf = reloadVcfTable("vcf_mor_mapping");
+        writeVcfRows(vcf, 8, 4); // pk 8-11
+
+        // Also update pk=2 (creates overlapping L0 → MOR merge needed)
+        writeVcfRows(vcf, 2, 1);
+
+        vcf = reloadVcfTable("vcf_mor_mapping");
+
+        // Read: should resolve both mapped (pk 0-7) and unmapped (pk 8-11) vectors
+        ReadBuilder rb = vcf.newReadBuilder();
+        List<Split> splits = rb.newScan().plan().splits();
+        TableRead read = rb.newRead();
+        java.util.Map<Integer, float[]> results = new HashMap<>();
+        for (Split s : splits) {
+            try (org.apache.paimon.reader.RecordReader<org.apache.paimon.data.InternalRow> r =
+                    read.createReader(s)) {
+                org.apache.paimon.reader.RecordReader.RecordIterator<
+                                org.apache.paimon.data.InternalRow>
+                        batch;
+                while ((batch = r.readBatch()) != null) {
+                    org.apache.paimon.data.InternalRow row;
+                    while ((row = batch.next()) != null) {
+                        int pk = row.getInt(0);
+                        org.apache.paimon.data.InternalVector vec = row.getVector(1);
+                        assertThat(vec).as("Vector should not be null for pk=" + pk).isNotNull();
+                        float[] floats = vec.toFloatArray();
+                        assertThat(floats.length).isEqualTo(DIM);
+                        for (int d = 0; d < DIM; d++) {
+                            assertThat(floats[d]).isEqualTo(pk * 10.0f + d);
+                        }
+                        results.put(pk, floats);
+                    }
+                    batch.releaseBatch();
+                }
+            }
+        }
+
+        // Should have 12 distinct PKs (0-11), with pk=2 updated
+        assertThat(results).hasSize(12);
+        // All vectors should have correct values
+        for (int pk = 0; pk < 12; pk++) {
+            assertThat(results).containsKey(pk);
+        }
+    }
+
+    private FileStoreTable reloadVcfTable(String name) throws Exception {
+        return (FileStoreTable)
+                CatalogFactory.createCatalog(
+                                CatalogContext.create(new Path("file://" + tempPath.toString())))
+                        .getTable(Identifier.create("default", name));
     }
 }

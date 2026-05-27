@@ -56,6 +56,7 @@ public class ColumnarRowIterator extends RecyclableIterator<InternalRow>
     protected int returnedPositionIndex;
     protected long returnedPosition;
     protected LongIterator positionIterator;
+    protected long batchStartFilePos;
 
     public ColumnarRowIterator(Path filePath, ColumnarRow row, @Nullable Runnable recycler) {
         super(recycler);
@@ -65,6 +66,7 @@ public class ColumnarRowIterator extends RecyclableIterator<InternalRow>
     }
 
     public void reset(long nextFilePos) {
+        this.batchStartFilePos = nextFilePos;
         reset(LongIterator.fromRange(nextFilePos, nextFilePos + row.batch().getNumRows()));
     }
 
@@ -74,6 +76,7 @@ public class ColumnarRowIterator extends RecyclableIterator<InternalRow>
         this.index = 0;
         this.returnedPositionIndex = 0;
         this.returnedPosition = -1;
+        this.batchStartFilePos = -1;
     }
 
     @Nullable
@@ -85,6 +88,10 @@ public class ColumnarRowIterator extends RecyclableIterator<InternalRow>
         } else {
             return null;
         }
+    }
+
+    public long batchStartFilePos() {
+        return batchStartFilePos;
     }
 
     @Override
