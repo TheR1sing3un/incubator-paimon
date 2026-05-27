@@ -18,6 +18,7 @@
 
 package org.apache.paimon.operation;
 
+import org.apache.paimon.annotation.VisibleForTesting;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.data.VectorDescriptor;
 import org.apache.paimon.data.columnar.VectorCFReaderContext;
@@ -45,7 +46,9 @@ import java.util.List;
 public class PostFilterVectorResolveReader implements RecordReader<InternalRow> {
 
     private static final int GAP_THRESHOLD = 64;
-    private static final int BUFFER_SIZE = 1024;
+
+    @VisibleForTesting
+    public static final ThreadLocal<Stats> STATS = ThreadLocal.withInitial(Stats::new);
 
     private final RecordReader<InternalRow> inner;
     private final FileIO fileIO;
@@ -85,9 +88,6 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
             return null;
         }
 
-        // Phase 1: Consume filtered iterator, snapshot each row into GenericRow.
-        // Rows may be reused (ColumnarRow setRowId, or merge function GenericRow),
-        // so we must copy field values. Skip vectorReadPos (will be replaced).
         List<org.apache.paimon.data.GenericRow> snapshots = new ArrayList<>();
         List<byte[]> descriptors = new ArrayList<>();
 
@@ -103,8 +103,6 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
                         try {
                             desc = row.getBinary(i);
                         } catch (ClassCastException e) {
-                            // MOR merge may store VectorRef instead of raw bytes.
-                            // Try extracting descriptor from the VectorRef.
                             org.apache.paimon.data.InternalVector vec = row.getVector(i);
                             if (vec instanceof org.apache.paimon.data.VectorRef) {
                                 desc = ((org.apache.paimon.data.VectorRef) vec).toDescriptorBytes();
@@ -120,14 +118,15 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
         }
         batch.releaseBatch();
 
+        Stats stats = STATS.get();
+        stats.survivingRows += snapshots.size();
+
         if (snapshots.isEmpty()) {
             return new EmptyIterator();
         }
 
-        // Phase 2: Coalesced batch resolve
         float[][] resolved = coalesceAndResolve(descriptors);
 
-        // Phase 3: Set resolved vectors directly on GenericRow
         for (int i = 0; i < snapshots.size(); i++) {
             if (resolved[i] != null) {
                 snapshots
@@ -139,14 +138,13 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
             }
         }
 
-        // Phase 4: Return iterator over independent GenericRow objects
         return new SnapshotIterator(snapshots);
     }
 
     private float[][] coalesceAndResolve(List<byte[]> descriptors) throws IOException {
         float[][] resolved = new float[descriptors.size()][];
+        Stats stats = STATS.get();
 
-        // Collect pending reads
         List<PendingRead> pending = new ArrayList<>();
         for (int i = 0; i < descriptors.size(); i++) {
             byte[] desc = descriptors.get(i);
@@ -159,11 +157,12 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
             pending.add(new PendingRead(i, fileId, actualRowIndex));
         }
 
+        stats.resolvedVectors += pending.size();
+
         if (pending.isEmpty()) {
             return resolved;
         }
 
-        // Group by fileId, sort by rowIndex
         pending.sort(
                 (a, b) -> {
                     if (a.fileId != b.fileId) {
@@ -172,23 +171,20 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
                     return Long.compare(a.rowIndex, b.rowIndex);
                 });
 
-        // Coalesced reads per fileId
         int pos = 0;
         while (pos < pending.size()) {
             int fid = pending.get(pos).fileId;
             String filePath = context.resolveFilePath(fid);
             if (filePath == null) {
-                // Skip all rows with this fileId
                 while (pos < pending.size() && pending.get(pos).fileId == fid) {
                     pos++;
                 }
                 continue;
             }
 
-            // Find contiguous range for this fileId
+            stats.streamOpens++;
             try (SeekableInputStream stream = fileIO.newInputStream(new Path(filePath))) {
                 while (pos < pending.size() && pending.get(pos).fileId == fid) {
-                    // Find end of coalesced range
                     int endPos = pos;
                     long startIdx = pending.get(pos).rowIndex;
                     long endIdx = startIdx;
@@ -204,7 +200,8 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
                         endPos = j;
                     }
 
-                    // Read the coalesced range
+                    stats.coalescedRanges++;
+
                     long rangeRows = endIdx - startIdx + 1;
                     int bytesToRead = (int) (rangeRows * bpv);
                     byte[] rangeBuf = new byte[bytesToRead];
@@ -212,7 +209,6 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
                     stream.seek(fileOffset);
                     org.apache.paimon.utils.IOUtils.readFully(stream, rangeBuf, 0, bytesToRead);
 
-                    // Dispatch to individual rows
                     for (int j = pos; j <= endPos; j++) {
                         int localOffset = (int) ((pending.get(j).rowIndex - startIdx) * bpv);
                         float[] floats = new float[dim];
@@ -234,6 +230,22 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
     @Override
     public void close() throws IOException {
         inner.close();
+    }
+
+    /** Accumulated statistics for testing and monitoring. */
+    @VisibleForTesting
+    public static class Stats {
+        public long survivingRows;
+        public long resolvedVectors;
+        public long streamOpens;
+        public long coalescedRanges;
+
+        public void reset() {
+            survivingRows = 0;
+            resolvedVectors = 0;
+            streamOpens = 0;
+            coalescedRanges = 0;
+        }
     }
 
     private static class PendingRead {

@@ -923,6 +923,9 @@ public class PlanCacheTest {
         Predicate pkFilter = pb.greaterOrEqual(0, 5); // pk >= 5
         List<Split> splits = vcf.newReadBuilder().withFilter(pkFilter).newScan().plan().splits();
         TableRead read = vcf.newReadBuilder().withFilter(pkFilter).newRead().executeFilter();
+
+        org.apache.paimon.operation.PostFilterVectorResolveReader.STATS.get().reset();
+
         java.util.Map<Integer, float[]> results = new HashMap<>();
         for (Split s : splits) {
             try (org.apache.paimon.reader.RecordReader<org.apache.paimon.data.InternalRow> r =
@@ -949,6 +952,16 @@ public class PlanCacheTest {
         }
         assertThat(results).hasSize(3); // pk 5,6,7
         assertThat(results).containsKeys(5, 6, 7);
+
+        // Verify optimization behavior: only surviving rows resolved, batch I/O
+        org.apache.paimon.operation.PostFilterVectorResolveReader.Stats stats =
+                org.apache.paimon.operation.PostFilterVectorResolveReader.STATS.get();
+        // 9 total rows (8 original + 1 update) in files, but only 3 survive filter
+        assertThat(stats.survivingRows).isEqualTo(3);
+        assertThat(stats.resolvedVectors).isEqualTo(3);
+        // Batch: at most 2 streams (2 vector files from 2 writes), not 3 per-row opens
+        assertThat(stats.streamOpens).isLessThanOrEqualTo(2);
+        assertThat(stats.coalescedRanges).isLessThanOrEqualTo(stats.streamOpens);
     }
 
     @Test
@@ -976,6 +989,9 @@ public class PlanCacheTest {
         Predicate pkFilter = pb.equal(0, 2); // pk == 2
         List<Split> splits = vcf.newReadBuilder().withFilter(pkFilter).newScan().plan().splits();
         TableRead read = vcf.newReadBuilder().withFilter(pkFilter).newRead().executeFilter();
+
+        org.apache.paimon.operation.PostFilterVectorResolveReader.STATS.get().reset();
+
         java.util.Map<Integer, float[]> results = new HashMap<>();
         for (Split s : splits) {
             try (org.apache.paimon.reader.RecordReader<org.apache.paimon.data.InternalRow> r =
@@ -1002,6 +1018,14 @@ public class PlanCacheTest {
         }
         assertThat(results).hasSize(1);
         assertThat(results).containsKey(2);
+
+        // Verify: 8 rows in file, only 1 resolved via mapping + batch I/O
+        org.apache.paimon.operation.PostFilterVectorResolveReader.Stats stats =
+                org.apache.paimon.operation.PostFilterVectorResolveReader.STATS.get();
+        assertThat(stats.survivingRows).isEqualTo(1);
+        assertThat(stats.resolvedVectors).isEqualTo(1);
+        assertThat(stats.streamOpens).isEqualTo(1);
+        assertThat(stats.coalescedRanges).isEqualTo(1);
     }
 
     @Test
@@ -1035,6 +1059,9 @@ public class PlanCacheTest {
         Predicate pkFilter = pb.greaterOrEqual(0, 6);
         List<Split> splits = vcf.newReadBuilder().withFilter(pkFilter).newScan().plan().splits();
         TableRead read = vcf.newReadBuilder().withFilter(pkFilter).newRead().executeFilter();
+
+        org.apache.paimon.operation.PostFilterVectorResolveReader.STATS.get().reset();
+
         java.util.Map<Integer, float[]> results = new HashMap<>();
         for (Split s : splits) {
             try (org.apache.paimon.reader.RecordReader<org.apache.paimon.data.InternalRow> r =
@@ -1061,8 +1088,16 @@ public class PlanCacheTest {
         }
         assertThat(results).hasSize(6); // pk 6,7,8,9,10,11
         assertThat(results).containsKeys(6, 7, 8, 9, 10, 11);
-        // pk=1 should NOT appear (filtered out by predicate)
         assertThat(results).doesNotContainKey(1);
+
+        // Verify: 13 total rows in files (8+4+1), only 6 survive filter, batch I/O
+        org.apache.paimon.operation.PostFilterVectorResolveReader.Stats stats =
+                org.apache.paimon.operation.PostFilterVectorResolveReader.STATS.get();
+        assertThat(stats.survivingRows).isEqualTo(6);
+        assertThat(stats.resolvedVectors).isEqualTo(6);
+        // Batch: at most 3 streams (mapped file + 2 new vector files), not 6 per-row
+        assertThat(stats.streamOpens).isLessThanOrEqualTo(3);
+        assertThat(stats.coalescedRanges).isLessThanOrEqualTo(stats.streamOpens);
     }
 
     private FileStoreTable reloadVcfTable(String name) throws Exception {
