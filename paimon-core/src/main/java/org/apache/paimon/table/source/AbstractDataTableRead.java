@@ -104,9 +104,8 @@ public abstract class AbstractDataTableRead implements InnerTableRead {
         }
         if (executeFilter) {
             reader = executeFilter(reader);
+            reader = wrapWithPostFilterVectorResolve(reader, split);
         }
-
-        reader = wrapWithPostFilterVectorResolve(reader, split);
 
         return reader;
     }
