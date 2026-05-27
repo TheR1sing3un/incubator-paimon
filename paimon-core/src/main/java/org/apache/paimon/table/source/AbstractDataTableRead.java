@@ -44,7 +44,7 @@ public abstract class AbstractDataTableRead implements InnerTableRead {
     private RowType readType;
     private boolean executeFilter = false;
     private Predicate predicate;
-    private final TableSchema schema;
+    protected final TableSchema schema;
 
     public AbstractDataTableRead(TableSchema schema) {
         this.schema = schema;
@@ -106,6 +106,8 @@ public abstract class AbstractDataTableRead implements InnerTableRead {
             reader = executeFilter(reader);
         }
 
+        reader = wrapWithPostFilterVectorResolve(reader, split);
+
         return reader;
     }
 
@@ -136,6 +138,16 @@ public abstract class AbstractDataTableRead implements InnerTableRead {
         if (backRow != null) {
             reader = reader.transform(backRow::replaceRow);
         }
+        return reader;
+    }
+
+    /**
+     * Hook for subclasses to wrap the reader with post-filter vector resolution. Default
+     * implementation returns the reader unchanged. Overridden in KeyValue table reads to add
+     * coalesced VCF vector resolution after merge + predicate filter.
+     */
+    protected RecordReader<InternalRow> wrapWithPostFilterVectorResolve(
+            RecordReader<InternalRow> reader, Split split) {
         return reader;
     }
 

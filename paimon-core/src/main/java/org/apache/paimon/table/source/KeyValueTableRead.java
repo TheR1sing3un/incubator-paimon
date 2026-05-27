@@ -23,6 +23,7 @@ import org.apache.paimon.KeyValue;
 import org.apache.paimon.annotation.VisibleForTesting;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.disk.IOManager;
+import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.operation.MergeFileSplitRead;
 import org.apache.paimon.operation.RawFileSplitRead;
 import org.apache.paimon.operation.SplitRead;
@@ -52,6 +53,8 @@ import java.util.function.Supplier;
 public final class KeyValueTableRead extends AbstractDataTableRead {
 
     private final List<SplitReadProvider> readProviders;
+    private final FileIO fileIO;
+    private final CoreOptions options;
 
     @Nullable private RowType readType = null;
     private boolean forceKeepDelete = false;
@@ -63,8 +66,12 @@ public final class KeyValueTableRead extends AbstractDataTableRead {
     public KeyValueTableRead(
             Supplier<MergeFileSplitRead> mergeReadSupplier,
             Supplier<RawFileSplitRead> batchRawReadSupplier,
-            TableSchema schema) {
+            TableSchema schema,
+            FileIO fileIO,
+            CoreOptions options) {
         super(schema);
+        this.fileIO = fileIO;
+        this.options = options;
         this.readProviders =
                 Arrays.asList(
                         new PrimaryKeyTableRawFileSplitReadProvider(
@@ -182,5 +189,57 @@ public final class KeyValueTableRead extends AbstractDataTableRead {
     @VisibleForTesting
     public IOManager ioManager() {
         return ioManager;
+    }
+
+    @Override
+    protected RecordReader<InternalRow> wrapWithPostFilterVectorResolve(
+            RecordReader<InternalRow> reader, Split split) {
+        if (!options.vectorColumnFamilyEnabled() || !(split instanceof DataSplit)) {
+            return reader;
+        }
+        DataSplit dataSplit = (DataSplit) split;
+
+        RowType rowType = readType != null ? readType : schema.logicalRowType();
+
+        // Find vector column position and its VectorType info
+        int vectorPos = -1;
+        int dim = 0;
+        int bpv = 0;
+        for (int i = 0; i < rowType.getFieldCount(); i++) {
+            if (rowType.getTypeAt(i) instanceof org.apache.paimon.types.VectorType) {
+                org.apache.paimon.types.VectorType vt =
+                        (org.apache.paimon.types.VectorType) rowType.getTypeAt(i);
+                vectorPos = i;
+                dim = vt.getLength();
+                int elementSize =
+                        org.apache.paimon.data.BinaryVector.getPrimitiveElementSize(
+                                vt.getElementType());
+                bpv = ((dim * elementSize + 7) / 8) * 8;
+                break;
+            }
+        }
+        if (vectorPos < 0) {
+            return reader;
+        }
+
+        // Build VectorCFReaderContext from split data
+        org.apache.paimon.io.DataFilePathFactory pathFactory =
+                new org.apache.paimon.io.DataFilePathFactory(
+                        new org.apache.paimon.fs.Path(dataSplit.bucketPath()),
+                        "parquet",
+                        "data-",
+                        "changelog-",
+                        false,
+                        "none",
+                        null);
+        org.apache.paimon.data.columnar.VectorCFReaderContext vcfContext =
+                org.apache.paimon.operation.VectorCFReaderContextBuilder.build(
+                        dataSplit.dataFiles(), pathFactory, rowType, dataSplit.vectorFileMapping());
+        if (vcfContext == null) {
+            return reader;
+        }
+
+        return new org.apache.paimon.operation.PostFilterVectorResolveReader(
+                reader, fileIO, vcfContext, vectorPos, bpv, dim, rowType);
     }
 }
