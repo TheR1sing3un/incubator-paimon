@@ -908,6 +908,163 @@ public class PlanCacheTest {
         }
     }
 
+    @Test
+    public void testVcfMorWithPredicateFilter() throws Exception {
+        // MOR + VCF + executeFilter: predicate filter at row level, then vector resolve
+        FileStoreTable vcf = createVcfTable("vcf_mor_pred", false, false);
+
+        writeVcfRows(vcf, 0, 8); // pk 0-7
+        // Update pk=3 (creates overlapping L0 → MOR)
+        writeVcfRows(vcf, 3, 1);
+
+        vcf = reloadVcfTable("vcf_mor_pred");
+
+        PredicateBuilder pb = new PredicateBuilder(vcf.rowType());
+        Predicate pkFilter = pb.greaterOrEqual(0, 5); // pk >= 5
+        List<Split> splits = vcf.newReadBuilder().withFilter(pkFilter).newScan().plan().splits();
+        TableRead read = vcf.newReadBuilder().withFilter(pkFilter).newRead().executeFilter();
+        java.util.Map<Integer, float[]> results = new HashMap<>();
+        for (Split s : splits) {
+            try (org.apache.paimon.reader.RecordReader<org.apache.paimon.data.InternalRow> r =
+                    read.createReader(s)) {
+                org.apache.paimon.reader.RecordReader.RecordIterator<
+                                org.apache.paimon.data.InternalRow>
+                        batch;
+                while ((batch = r.readBatch()) != null) {
+                    org.apache.paimon.data.InternalRow row;
+                    while ((row = batch.next()) != null) {
+                        int pk = row.getInt(0);
+                        assertThat(pk).isGreaterThanOrEqualTo(5);
+                        org.apache.paimon.data.InternalVector vec = row.getVector(1);
+                        assertThat(vec).as("Vector for pk=" + pk).isNotNull();
+                        float[] floats = vec.toFloatArray();
+                        for (int d = 0; d < DIM; d++) {
+                            assertThat(floats[d]).isEqualTo(pk * 10.0f + d);
+                        }
+                        results.put(pk, floats);
+                    }
+                    batch.releaseBatch();
+                }
+            }
+        }
+        assertThat(results).hasSize(3); // pk 5,6,7
+        assertThat(results).containsKeys(5, 6, 7);
+    }
+
+    @Test
+    public void testVcfMappingWithPredicateFilter() throws Exception {
+        // Non-MOR + VCF + mapping + executeFilter: compact then read with row-level predicate
+        FileStoreTable vcf = createVcfTable("vcf_map_pred", true);
+
+        writeVcfRows(vcf, 0, 4);
+        writeVcfRows(vcf, 4, 4);
+
+        // Compact → produces mapping
+        vcf = reloadVcfTable("vcf_map_pred");
+        BatchWriteBuilder wb = vcf.newBatchWriteBuilder();
+        org.apache.paimon.disk.IOManager compactIo =
+                new org.apache.paimon.disk.IOManagerImpl(tempPath.toString());
+        BatchTableWrite write = wb.newWrite().withIOManager(compactIo);
+        write.compact(org.apache.paimon.data.BinaryRow.EMPTY_ROW, 0, false);
+        List<org.apache.paimon.table.sink.CommitMessage> msgs = write.prepareCommit();
+        write.close();
+        wb.newCommit().commit(msgs);
+
+        vcf = reloadVcfTable("vcf_map_pred");
+
+        PredicateBuilder pb = new PredicateBuilder(vcf.rowType());
+        Predicate pkFilter = pb.equal(0, 2); // pk == 2
+        List<Split> splits = vcf.newReadBuilder().withFilter(pkFilter).newScan().plan().splits();
+        TableRead read = vcf.newReadBuilder().withFilter(pkFilter).newRead().executeFilter();
+        java.util.Map<Integer, float[]> results = new HashMap<>();
+        for (Split s : splits) {
+            try (org.apache.paimon.reader.RecordReader<org.apache.paimon.data.InternalRow> r =
+                    read.createReader(s)) {
+                org.apache.paimon.reader.RecordReader.RecordIterator<
+                                org.apache.paimon.data.InternalRow>
+                        batch;
+                while ((batch = r.readBatch()) != null) {
+                    org.apache.paimon.data.InternalRow row;
+                    while ((row = batch.next()) != null) {
+                        int pk = row.getInt(0);
+                        assertThat(pk).isEqualTo(2);
+                        org.apache.paimon.data.InternalVector vec = row.getVector(1);
+                        assertThat(vec).as("Vector for pk=2").isNotNull();
+                        float[] floats = vec.toFloatArray();
+                        for (int d = 0; d < DIM; d++) {
+                            assertThat(floats[d]).isEqualTo(2 * 10.0f + d);
+                        }
+                        results.put(pk, floats);
+                    }
+                    batch.releaseBatch();
+                }
+            }
+        }
+        assertThat(results).hasSize(1);
+        assertThat(results).containsKey(2);
+    }
+
+    @Test
+    public void testVcfMorMappingWithPredicateFilter() throws Exception {
+        // MOR + VCF + mapping + executeFilter: full combination
+        FileStoreTable vcf = createVcfTable("vcf_mor_map_pred", true, false);
+
+        writeVcfRows(vcf, 0, 4);
+        writeVcfRows(vcf, 4, 4);
+
+        // Compact → mapping
+        vcf = reloadVcfTable("vcf_mor_map_pred");
+        BatchWriteBuilder wb = vcf.newBatchWriteBuilder();
+        org.apache.paimon.disk.IOManager compactIo =
+                new org.apache.paimon.disk.IOManagerImpl(tempPath.toString());
+        BatchTableWrite write = wb.newWrite().withIOManager(compactIo);
+        write.compact(org.apache.paimon.data.BinaryRow.EMPTY_ROW, 0, false);
+        List<org.apache.paimon.table.sink.CommitMessage> msgs = write.prepareCommit();
+        write.close();
+        wb.newCommit().commit(msgs);
+
+        // Write more + update pk=1 (creates MOR overlap)
+        vcf = reloadVcfTable("vcf_mor_map_pred");
+        writeVcfRows(vcf, 8, 4); // pk 8-11
+        writeVcfRows(vcf, 1, 1); // pk 1 updated
+
+        vcf = reloadVcfTable("vcf_mor_map_pred");
+
+        // Filter pk >= 6: should return pk 6,7,8,9,10,11
+        PredicateBuilder pb = new PredicateBuilder(vcf.rowType());
+        Predicate pkFilter = pb.greaterOrEqual(0, 6);
+        List<Split> splits = vcf.newReadBuilder().withFilter(pkFilter).newScan().plan().splits();
+        TableRead read = vcf.newReadBuilder().withFilter(pkFilter).newRead().executeFilter();
+        java.util.Map<Integer, float[]> results = new HashMap<>();
+        for (Split s : splits) {
+            try (org.apache.paimon.reader.RecordReader<org.apache.paimon.data.InternalRow> r =
+                    read.createReader(s)) {
+                org.apache.paimon.reader.RecordReader.RecordIterator<
+                                org.apache.paimon.data.InternalRow>
+                        batch;
+                while ((batch = r.readBatch()) != null) {
+                    org.apache.paimon.data.InternalRow row;
+                    while ((row = batch.next()) != null) {
+                        int pk = row.getInt(0);
+                        assertThat(pk).isGreaterThanOrEqualTo(6);
+                        org.apache.paimon.data.InternalVector vec = row.getVector(1);
+                        assertThat(vec).as("Vector for pk=" + pk).isNotNull();
+                        float[] floats = vec.toFloatArray();
+                        for (int d = 0; d < DIM; d++) {
+                            assertThat(floats[d]).isEqualTo(pk * 10.0f + d);
+                        }
+                        results.put(pk, floats);
+                    }
+                    batch.releaseBatch();
+                }
+            }
+        }
+        assertThat(results).hasSize(6); // pk 6,7,8,9,10,11
+        assertThat(results).containsKeys(6, 7, 8, 9, 10, 11);
+        // pk=1 should NOT appear (filtered out by predicate)
+        assertThat(results).doesNotContainKey(1);
+    }
+
     private FileStoreTable reloadVcfTable(String name) throws Exception {
         return (FileStoreTable)
                 CatalogFactory.createCatalog(

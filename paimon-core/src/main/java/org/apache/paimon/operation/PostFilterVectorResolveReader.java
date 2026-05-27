@@ -173,7 +173,6 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
                 });
 
         // Coalesced reads per fileId
-        byte[] readBuffer = new byte[bpv];
         int pos = 0;
         while (pos < pending.size()) {
             int fid = pending.get(pos).fileId;
@@ -187,7 +186,6 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
             }
 
             // Find contiguous range for this fileId
-            int rangeStart = pos;
             try (SeekableInputStream stream = fileIO.newInputStream(new Path(filePath))) {
                 while (pos < pending.size() && pending.get(pos).fileId == fid) {
                     // Find end of coalesced range
