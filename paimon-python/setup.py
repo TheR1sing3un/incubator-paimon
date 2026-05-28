@@ -44,6 +44,11 @@ install_requires = [
     'zstandard>=0.19,<1',
     'cramjam>=1.3.0,<3; python_version>="3.7"',
     'pyyaml>=5.4,<7',
+    # Patched hdfs-native (kwai vendor-fork tag-9 fix) — single abi3 wheel
+    # covers Python 3.10+. Marker keeps it off non-Linux/x86_64 hosts so the
+    # ImportError fallback in FileIO.get() can still bring up pyarrow on
+    # local Mac dev boxes.
+    'hdfs-native @ http://bs3-hb1.internal/dp-lance-test-0/hdfs_native-0.13.5-cp310-abi3-manylinux_2_34_x86_64.whl ; platform_system == "Linux" and platform_machine == "x86_64" and python_version >= "3.10"',
 ]
 
 long_description = "See Apache Paimon Python API \
@@ -94,9 +99,6 @@ setup(
             'faiss-cpu==1.7.2; python_version >= "3.6" and python_version < "3.7"',
             'faiss-cpu==1.7.4; python_version >= "3.7" and python_version < "3.12"',
             'faiss-cpu>=1.10,<2; python_version >= "3.12"',
-        ],
-        'hdfs': [
-            'hdfs-native>=0.13,<1; platform_system!="Windows"',
         ],
     },
     description="Apache Paimon Python API",

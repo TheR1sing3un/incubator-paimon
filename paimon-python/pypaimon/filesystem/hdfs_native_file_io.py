@@ -184,9 +184,13 @@ class HdfsNativeFileIO(FileIO):
         try:
             from hdfs_native import Client, WriteOptions
         except ImportError as e:
+            # ks-pypaimon bundles the patched hdfs-native wheel via
+            # install_requires direct URL; only reachable on Linux x86_64 +
+            # Python>=3.10. Non-supported platforms (e.g. macOS local dev)
+            # fall through to PyArrowFileIO via FileIO.get()'s fallback.
             raise ImportError(
-                "hdfs-native is not installed. "
-                "Install with: pip install 'pypaimon[hdfs]'"
+                "hdfs-native is not installed for this host "
+                "(Linux x86_64 + Python>=3.10 only)."
             ) from e
         self._WriteOptions = WriteOptions
 
