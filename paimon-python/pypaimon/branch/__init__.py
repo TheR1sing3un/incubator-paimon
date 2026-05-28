@@ -15,22 +15,8 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Consumer management for tracking streaming read progress."""
+from .branch_manager import BranchManager, DEFAULT_MAIN_BRANCH
+from .catalog_branch_manager import CatalogBranchManager
+from .filesystem_branch_manager import FileSystemBranchManager
 
-from pypaimon.consumer.consumer import Consumer
-from pypaimon.consumer.consumer_manager import (
-    DEFAULT_MAIN_BRANCH,
-    ConsumerManager,
-    _branch_path,
-    _is_main_branch,
-    _normalize_branch,
-)
-
-__all__ = [
-    'Consumer',
-    'ConsumerManager',
-    'DEFAULT_MAIN_BRANCH',
-    '_branch_path',
-    '_is_main_branch',
-    '_normalize_branch',
-]
+__all__ = ['BranchManager', 'DEFAULT_MAIN_BRANCH', 'CatalogBranchManager', 'FileSystemBranchManager']
