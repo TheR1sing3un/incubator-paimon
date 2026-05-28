@@ -1,20 +1,19 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-# limitations under the License.
-#################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Union
@@ -161,7 +160,7 @@ class Catalog(ABC):
             snapshot: Snapshot,
             statistics: List[PartitionStatistics],
             committer: Optional[str] = None,
-            message: Optional[str] = None
+            message: Optional[str] = None,
     ) -> bool:
         """
         Commit the Snapshot for table identified by the given Identifier.
@@ -194,86 +193,6 @@ class Catalog(ABC):
             "rollback_to is not supported by this catalog."
         )
 
-    def create_branch(self, identifier: Union[str, Identifier],
-                      branch_name: str, from_tag: Optional[str] = None):
-        """Create a branch for a table.
-
-        Args:
-            identifier: Table identifier.
-            branch_name: Name of the branch to create.
-            from_tag: Optional tag name to create the branch from.
-        """
-        raise NotImplementedError(
-            "create_branch is not supported by this catalog."
-        )
-
-    def delete_branch(self, identifier: Union[str, Identifier],
-                      branch_name: str):
-        """Delete a branch from a table.
-
-        Args:
-            identifier: Table identifier.
-            branch_name: Name of the branch to delete.
-        """
-        raise NotImplementedError(
-            "delete_branch is not supported by this catalog."
-        )
-
-    def list_branches(self, identifier: Union[str, Identifier]) -> List[str]:
-        """List all branches of a table.
-
-        Args:
-            identifier: Table identifier.
-
-        Returns:
-            List of branch names.
-        """
-        raise NotImplementedError(
-            "list_branches is not supported by this catalog."
-        )
-
-    def create_tag(self, identifier: Union[str, Identifier],
-                   tag_name: str, snapshot_id: Optional[int] = None,
-                   time_retained: Optional[str] = None,
-                   ignore_if_exists: bool = False):
-        """Create a tag for a table.
-
-        Args:
-            identifier: Table identifier.
-            tag_name: Name of the tag to create.
-            snapshot_id: Optional snapshot ID to tag.
-            time_retained: Optional time retained string.
-            ignore_if_exists: If True, do not raise error if tag exists.
-        """
-        raise NotImplementedError(
-            "create_tag is not supported by this catalog."
-        )
-
-    def delete_tag(self, identifier: Union[str, Identifier],
-                   tag_name: str):
-        """Delete a tag from a table.
-
-        Args:
-            identifier: Table identifier.
-            tag_name: Name of the tag to delete.
-        """
-        raise NotImplementedError(
-            "delete_tag is not supported by this catalog."
-        )
-
-    def list_tags(self, identifier: Union[str, Identifier]) -> List[str]:
-        """List all tags of a table.
-
-        Args:
-            identifier: Table identifier.
-
-        Returns:
-            List of tag names.
-        """
-        raise NotImplementedError(
-            "list_tags is not supported by this catalog."
-        )
-
     def drop_partitions(
             self,
             identifier: Union[str, Identifier],
@@ -281,4 +200,206 @@ class Catalog(ABC):
     ) -> None:
         raise NotImplementedError(
             "drop_partitions is not supported by this catalog. Use REST catalog for partition drop."
+        )
+
+    def list_partitions_paged(
+            self,
+            identifier: Union[str, Identifier],
+            max_results: Optional[int] = None,
+            page_token: Optional[str] = None,
+            partition_name_pattern: Optional[str] = None,
+    ):
+        """List partitions of a table with pagination.
+
+        Args:
+            identifier: Path of the table.
+            max_results: Maximum number of results to return per page.
+            page_token: Token for pagination.
+            partition_name_pattern: Optional pattern to filter partition names.
+
+        Returns:
+            PagedList of Partition objects.
+
+        Raises:
+            NotImplementedError: If the catalog does not support listing partitions.
+        """
+        raise NotImplementedError(
+            "list_partitions_paged is not supported by this catalog."
+        )
+
+    def create_branch(
+            self,
+            identifier: Identifier,
+            branch_name: str,
+            tag_name: Optional[str] = None
+    ) -> None:
+        """
+        Create a branch for the table.
+
+        Args:
+            identifier: Table identifier
+            branch_name: Name of the branch to create
+            tag_name: Optional tag name to create branch from, None for current state
+
+        Raises:
+            NotImplementedError: If the catalog does not support branch management
+        """
+        raise NotImplementedError(
+            "create_branch is not supported by this catalog."
+        )
+
+    def drop_branch(self, identifier: Identifier, branch_name: str) -> None:
+        """
+        Drop a branch for the table.
+
+        Args:
+            identifier: Table identifier
+            branch_name: Name of the branch to drop
+
+        Raises:
+            NotImplementedError: If the catalog does not support branch management
+        """
+        raise NotImplementedError(
+            "drop_branch is not supported by this catalog."
+        )
+
+    def fast_forward(self, identifier: Identifier, branch_name: str) -> None:
+        """
+        Fast forward the current branch to the specified branch.
+
+        Args:
+            identifier: Table identifier
+            branch_name: The branch to fast forward to
+
+        Raises:
+            NotImplementedError: If the catalog does not support branch management
+        """
+        raise NotImplementedError(
+            "fast_forward is not supported by this catalog."
+        )
+
+    def list_branches(self, identifier: Identifier) -> List[str]:
+        """
+        List all branches for the table.
+
+        Args:
+            identifier: Table identifier
+
+        Returns:
+            List of branch names
+
+        Raises:
+            NotImplementedError: If the catalog does not support branch management
+        """
+        raise NotImplementedError(
+            "list_branches is not supported by this catalog."
+        )
+
+    def rename_branch(
+            self,
+            identifier: Identifier,
+            from_branch: str,
+            to_branch: str
+    ) -> None:
+        """
+        Rename a branch for the table.
+
+        Args:
+            identifier: Table identifier
+            from_branch: Existing branch name to rename
+            to_branch: New branch name
+
+        Raises:
+            NotImplementedError: If the catalog does not support branch management
+        """
+        raise NotImplementedError(
+            "rename_branch is not supported by this catalog."
+        )
+
+    def create_tag(
+            self,
+            identifier: Union[str, Identifier],
+            tag_name: str,
+            snapshot_id: Optional[int] = None,
+            time_retained: Optional[str] = None,
+            ignore_if_exists: bool = False,
+    ) -> None:
+        """Create a tag on a table.
+
+        Args:
+            identifier: Table identifier (Identifier or string).
+            tag_name: Tag name to create.
+            snapshot_id: Optional snapshot id; if not set the latest snapshot is tagged.
+            time_retained: Optional time retained string (e.g., ``"1d"``, ``"12h"``, ``"30m"``).
+            ignore_if_exists: If True, do not raise when the tag already exists.
+
+        Raises:
+            NotImplementedError: If the catalog does not support tag management.
+        """
+        raise NotImplementedError(
+            "create_tag is not supported by this catalog."
+        )
+
+    def delete_tag(
+            self,
+            identifier: Union[str, Identifier],
+            tag_name: str,
+    ) -> None:
+        """Delete a tag from a table.
+
+        Args:
+            identifier: Table identifier (Identifier or string).
+            tag_name: Tag name to delete.
+
+        Raises:
+            NotImplementedError: If the catalog does not support tag management.
+        """
+        raise NotImplementedError(
+            "delete_tag is not supported by this catalog."
+        )
+
+    def get_tag(
+            self,
+            identifier: Union[str, Identifier],
+            tag_name: str,
+    ):
+        """Get a tag of a table.
+
+        Args:
+            identifier: Table identifier (Identifier or string).
+            tag_name: Tag name to look up.
+
+        Returns:
+            GetTagResponse describing the tag.
+
+        Raises:
+            NotImplementedError: If the catalog does not support tag management.
+        """
+        raise NotImplementedError(
+            "get_tag is not supported by this catalog."
+        )
+
+    def list_tags_paged(
+            self,
+            identifier: Union[str, Identifier],
+            max_results: Optional[int] = None,
+            page_token: Optional[str] = None,
+            tag_name_prefix: Optional[str] = None,
+    ):
+        """List tags of a table with pagination.
+
+        Args:
+            identifier: Table identifier (Identifier or string).
+            max_results: Maximum number of results to return per page.
+            page_token: Token for pagination.
+            tag_name_prefix: Optional prefix filter for tag names.
+
+        Returns:
+            PagedList of tag names.
+
+        Raises:
+            NotImplementedError: If the catalog does not support tag management.
+        """
+        raise NotImplementedError(
+            "list_tags_paged is not supported by this catalog."
         )

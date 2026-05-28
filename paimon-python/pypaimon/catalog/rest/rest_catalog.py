@@ -1,41 +1,47 @@
-"""
-Licensed to the Apache Software Foundation (ASF) under one
-or more contributor license agreements.  See the NOTICE file
-distributed with this work for additional information
-regarding copyright ownership.  The ASF licenses this file
-to you under the Apache License, Version 2.0 (the
-"License"); you may not use this file except in compliance
-with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-"""
+import logging
 from typing import Any, Callable, Dict, List, Optional, Union
-
 from pypaimon.api.api_response import GetTableResponse, PagedList, ErrorResponse
 from pypaimon.api.rest_api import RESTApi
+from pypaimon.catalog.catalog_exception import IllegalArgumentError
 from pypaimon.api.rest_exception import (NoSuchResourceException, AlreadyExistsException,
-                                         ForbiddenException, NotImplementedException)
+                                         ForbiddenException, BadRequestException)
 from pypaimon.catalog.catalog import Catalog
 from pypaimon.catalog.catalog_context import CatalogContext
 from pypaimon.catalog.catalog_environment import CatalogEnvironment
 from pypaimon.catalog.catalog_exception import (
     TableNotExistException, DatabaseAlreadyExistException,
     TableAlreadyExistException, DatabaseNotExistException,
-    TableNoPermissionException, DatabaseNoPermissionException
+    TableNoPermissionException, DatabaseNoPermissionException,
+    FunctionNotExistException, FunctionAlreadyExistException,
+    DefinitionAlreadyExistException, DefinitionNotExistException,
+    TagNotExistException, TagAlreadyExistException,
+    BranchNotExistException, BranchAlreadyExistException,
 )
 from pypaimon.catalog.database import Database
 from pypaimon.catalog.rest.property_change import PropertyChange
 from pypaimon.catalog.rest.rest_token_file_io import RESTTokenFileIO
 from pypaimon.catalog.rest.table_metadata import TableMetadata
-from pypaimon.common.options.config import CatalogOptions
+from pypaimon.common.options.config import CatalogOptions, FuseOptions
 from pypaimon.common.options.core_options import CoreOptions
 from pypaimon.common.file_io import FileIO
+from pypaimon.filesystem.caching_file_io import CachingFileIO
 from pypaimon.common.identifier import Identifier
 from pypaimon.schema.schema import Schema
 from pypaimon.schema.schema_change import SchemaChange
@@ -46,6 +52,8 @@ from pypaimon.table.file_store_table import FileStoreTable
 from pypaimon.table.format.format_table import FormatTable, Format
 from pypaimon.table.iceberg.iceberg_table import IcebergTable
 from pypaimon.table.object.object_table import ObjectTable
+
+logger = logging.getLogger(__name__)
 
 FORMAT_TABLE_TYPE = "format-table"
 ICEBERG_TABLE_TYPE = "iceberg-table"
@@ -59,6 +67,14 @@ class RESTCatalog(Catalog):
         self.context = CatalogContext.create(self.rest_api.options, context.hadoop_conf,
                                              context.prefer_io_loader, context.fallback_io_loader)
         self.data_token_enabled = self.rest_api.options.get(CatalogOptions.DATA_TOKEN_ENABLED)
+        self._cache_manager = CachingFileIO.create_cache_manager(self.context.options)
+
+        # FUSE support (lazy import only when enabled)
+        self.fuse_enabled = self.context.options.get(FuseOptions.FUSE_ENABLED, False)
+        self._fuse_resolver = None
+        if self.fuse_enabled:
+            from pypaimon.catalog.rest.fuse_support import FusePathResolver
+            self._fuse_resolver = FusePathResolver(self.context.options, self.rest_api)
 
     def catalog_loader(self):
         """
@@ -86,7 +102,7 @@ class RESTCatalog(Catalog):
             snapshot: Snapshot,
             statistics: List[PartitionStatistics],
             committer: Optional[str] = None,
-            message: Optional[str] = None
+            message: Optional[str] = None,
     ) -> bool:
         """
         Commit the Snapshot for table identified by the given Identifier.
@@ -96,8 +112,8 @@ class RESTCatalog(Catalog):
             table_uuid: UUID of the table to avoid wrong commit
             snapshot: Snapshot to be committed
             statistics: Statistics information of this change
-            committer: Optional committer name for audit tracking
-            message: Optional commit message for audit tracking
+            committer: Optional committer name attached to this commit.
+            message: Optional commit message attached to this commit.
 
         Returns:
             True if commit was successful, False otherwise
@@ -108,16 +124,15 @@ class RESTCatalog(Catalog):
         """
         try:
             return self.rest_api.commit_snapshot(
-                identifier, table_uuid, snapshot, statistics, committer, message)
+                identifier, table_uuid, snapshot, statistics,
+                committer=committer, message=message,
+            )
         except NoSuchResourceException as e:
             raise TableNotExistException(identifier) from e
         except ForbiddenException as e:
             raise TableNoPermissionException(identifier) from e
-        except NotImplementedException:
-            # Server returned 501: underlying catalog doesn't support commitSnapshot.
-            # Let it propagate so callers can fall back to filesystem commit.
-            raise
         except Exception as e:
+            # Handle other exceptions that might be thrown by the API
             raise RuntimeError(f"Failed to commit snapshot for table {identifier.get_full_name()}: {e}") from e
 
     def list_databases(self) -> List[str]:
@@ -213,39 +228,33 @@ class RESTCatalog(Catalog):
     def get_table(self, identifier: Union[str, Identifier]):
         if not isinstance(identifier, Identifier):
             identifier = Identifier.from_string(identifier)
-
         if identifier.is_system_table():
-            base_id = Identifier.create(
-                identifier.get_database_name(),
-                identifier.get_table_name(),
-                branch=identifier.get_branch_name(),
-            )
-            origin = self.load_table(
-                base_id,
-                lambda path: self.file_io_for_data(path, base_id),
-                self.file_io_from_options,
-                self.load_table_metadata,
-            )
-            from pypaimon.table.system.system_table_loader import \
-                SystemTableLoader
-            system_table = SystemTableLoader.load(
-                identifier.get_system_table_name(), origin, catalog=self
-            )
-            if system_table is None:
-                raise ValueError(
-                    "Unknown system table: {} (supported: {})".format(
-                        identifier.get_system_table_name(),
-                        ", ".join(SystemTableLoader.system_tables()),
-                    )
-                )
-            return system_table
+            return self._load_system_table(identifier)
+        return self._load_data_table(identifier)
 
+    def _load_data_table(self, identifier: Identifier):
         return self.load_table(
             identifier,
             lambda path: self.file_io_for_data(path, identifier),
             self.file_io_from_options,
             self.load_table_metadata,
         )
+
+    def _load_system_table(self, identifier: Identifier):
+        from pypaimon.table.system import system_table_loader
+
+        base_identifier = Identifier.create(
+            identifier.get_database_name(),
+            identifier.get_table_name(),
+            branch=identifier.get_branch_name(),
+        )
+        base_table = self._load_data_table(base_identifier)
+        sys_table = system_table_loader.load(
+            identifier.get_system_table_name(), base_table
+        )
+        if sys_table is None:
+            raise TableNotExistException(identifier)
+        return sys_table
 
     def create_table(self, identifier: Union[str, Identifier], schema: Schema, ignore_if_exists: bool):
         if not isinstance(identifier, Identifier):
@@ -302,6 +311,27 @@ class RESTCatalog(Catalog):
             commit.truncate_partitions(partitions)
         finally:
             commit.close()
+
+    def list_partitions_paged(
+            self,
+            identifier: Union[str, Identifier],
+            max_results: Optional[int] = None,
+            page_token: Optional[str] = None,
+            partition_name_pattern: Optional[str] = None,
+    ):
+        if not isinstance(identifier, Identifier):
+            identifier = Identifier.from_string(identifier)
+        try:
+            return self.rest_api.list_partitions_paged(
+                identifier,
+                max_results,
+                page_token,
+                partition_name_pattern
+            )
+        except NoSuchResourceException as e:
+            raise TableNotExistException(identifier) from e
+        except ForbiddenException as e:
+            raise TableNoPermissionException(identifier) from e
 
     def alter_table(
         self,
@@ -371,77 +401,222 @@ class RESTCatalog(Catalog):
         except ForbiddenException as e:
             raise TableNoPermissionException(identifier) from e
 
-    def create_branch(self, identifier, branch_name, from_tag=None):
+    def list_functions(self, database_name: str) -> List[str]:
+        try:
+            return self.rest_api.list_functions(database_name)
+        except NoSuchResourceException as e:
+            raise DatabaseNotExistException(database_name) from e
+
+    def get_function(self, identifier: Union[str, Identifier]) -> 'Function':
         if not isinstance(identifier, Identifier):
             identifier = Identifier.from_string(identifier)
         try:
-            self.rest_api.create_branch(identifier, branch_name, from_tag)
+            response = self.rest_api.get_function(identifier)
+            return response.to_function(identifier)
+        except NoSuchResourceException as e:
+            raise FunctionNotExistException(identifier) from e
+
+    def create_function(self, identifier: Union[str, Identifier],
+                        function: 'Function', ignore_if_exists: bool = False) -> None:
+        if not isinstance(identifier, Identifier):
+            identifier = Identifier.from_string(identifier)
+        try:
+            self.rest_api.create_function(identifier, function)
+        except NoSuchResourceException as e:
+            raise DatabaseNotExistException(identifier.get_database_name()) from e
         except AlreadyExistsException as e:
-            raise ValueError(
-                "Branch '{}' already exists.".format(branch_name)) from e
-        except NoSuchResourceException as e:
-            raise TableNotExistException(identifier) from e
-        except ForbiddenException as e:
-            raise TableNoPermissionException(identifier) from e
+            if ignore_if_exists:
+                return
+            raise FunctionAlreadyExistException(identifier) from e
 
-    def delete_branch(self, identifier, branch_name):
+    def drop_function(self, identifier: Union[str, Identifier],
+                      ignore_if_not_exists: bool = False) -> None:
         if not isinstance(identifier, Identifier):
             identifier = Identifier.from_string(identifier)
         try:
-            self.rest_api.delete_branch(identifier, branch_name)
+            self.rest_api.drop_function(identifier)
         except NoSuchResourceException as e:
-            if e.resource_type == ErrorResponse.RESOURCE_TYPE_BRANCH:
-                raise ValueError(
-                    "Branch '{}' doesn't exist.".format(branch_name)) from e
-            raise TableNotExistException(identifier) from e
-        except ForbiddenException as e:
-            raise TableNoPermissionException(identifier) from e
+            if ignore_if_not_exists:
+                return
+            raise FunctionNotExistException(identifier) from e
 
-    def list_branches(self, identifier):
+    def alter_function(self, identifier: Union[str, Identifier],
+                       changes: List['FunctionChange'],
+                       ignore_if_not_exists: bool = False) -> None:
         if not isinstance(identifier, Identifier):
             identifier = Identifier.from_string(identifier)
         try:
-            return self.rest_api.list_branches(identifier)
+            self.rest_api.alter_function(identifier, changes)
+        except AlreadyExistsException as e:
+            raise DefinitionAlreadyExistException(identifier, e.resource_name) from e
         except NoSuchResourceException as e:
-            raise TableNotExistException(identifier) from e
-        except ForbiddenException as e:
-            raise TableNoPermissionException(identifier) from e
+            if e.resource_type == ErrorResponse.RESOURCE_TYPE_DEFINITION:
+                raise DefinitionNotExistException(identifier, e.resource_name) from e
+            if not ignore_if_not_exists:
+                raise FunctionNotExistException(identifier) from e
+        except BadRequestException as e:
+            raise IllegalArgumentError(str(e)) from e
 
-    def create_tag(self, identifier, tag_name, snapshot_id=None,
-                   time_retained=None, ignore_if_exists=False):
+    def list_functions_paged(
+            self,
+            database_name: str,
+            max_results: Optional[int] = None,
+            page_token: Optional[str] = None,
+            function_name_pattern: Optional[str] = None,
+    ) -> PagedList[str]:
+        try:
+            return self.rest_api.list_functions_paged(
+                database_name, max_results, page_token, function_name_pattern)
+        except NoSuchResourceException as e:
+            raise DatabaseNotExistException(database_name) from e
+
+    def list_functions_paged_globally(
+            self,
+            database_name_pattern: Optional[str] = None,
+            function_name_pattern: Optional[str] = None,
+            max_results: Optional[int] = None,
+            page_token: Optional[str] = None,
+    ) -> PagedList[Identifier]:
+        result = self.rest_api.list_functions_paged_globally(
+            database_name_pattern, function_name_pattern, max_results, page_token)
+        functions = result.elements if result.elements else []
+        return PagedList(functions, result.next_page_token)
+
+    def list_function_details_paged(
+            self,
+            database_name: str,
+            max_results: Optional[int] = None,
+            page_token: Optional[str] = None,
+            function_name_pattern: Optional[str] = None,
+    ) -> PagedList['Function']:
+        try:
+            result = self.rest_api.list_function_details_paged(
+                database_name, max_results, page_token, function_name_pattern)
+            functions = [
+                resp.to_function(Identifier.create(database_name, resp.name))
+                for resp in result.elements
+            ]
+            return PagedList(functions, result.next_page_token)
+        except NoSuchResourceException as e:
+            raise DatabaseNotExistException(database_name) from e
+
+    # Tag CRUD: mirrors Java RESTCatalog tag handlers.
+    def create_tag(self, identifier: Union[str, Identifier], tag_name: str,
+                   snapshot_id: Optional[int] = None,
+                   time_retained: Optional[str] = None,
+                   ignore_if_exists: bool = False) -> None:
         if not isinstance(identifier, Identifier):
             identifier = Identifier.from_string(identifier)
         try:
-            self.rest_api.create_tag(
-                identifier, tag_name, snapshot_id,
-                time_retained, ignore_if_exists)
+            self.rest_api.create_tag(identifier, tag_name, snapshot_id, time_retained)
         except AlreadyExistsException as e:
             if not ignore_if_exists:
+                raise TagAlreadyExistException(tag_name) from e
+        except NoSuchResourceException as e:
+            if e.resource_type == ErrorResponse.RESOURCE_TYPE_SNAPSHOT:
                 raise ValueError(
-                    "Tag '{}' already exists.".format(tag_name)) from e
+                    "Snapshot {} in table {} doesn't exist.".format(
+                        e.resource_name, identifier.get_full_name())) from e
+            raise TableNotExistException(identifier) from e
+        except ForbiddenException as e:
+            raise TableNoPermissionException(identifier) from e
+        except BadRequestException as e:
+            raise IllegalArgumentError(str(e)) from e
+
+    def get_tag(self, identifier: Union[str, Identifier], tag_name: str):
+        if not isinstance(identifier, Identifier):
+            identifier = Identifier.from_string(identifier)
+        try:
+            return self.rest_api.get_tag(identifier, tag_name)
+        except NoSuchResourceException as e:
+            if e.resource_type == ErrorResponse.RESOURCE_TYPE_TAG:
+                raise TagNotExistException(tag_name) from e
+            raise TableNotExistException(identifier) from e
+        except ForbiddenException as e:
+            raise TableNoPermissionException(identifier) from e
+
+    def list_tags_paged(self, identifier: Union[str, Identifier],
+                        max_results: Optional[int] = None,
+                        page_token: Optional[str] = None,
+                        tag_name_prefix: Optional[str] = None) -> PagedList[str]:
+        if not isinstance(identifier, Identifier):
+            identifier = Identifier.from_string(identifier)
+        try:
+            return self.rest_api.list_tags_paged(
+                identifier, max_results, page_token, tag_name_prefix)
         except NoSuchResourceException as e:
             raise TableNotExistException(identifier) from e
         except ForbiddenException as e:
             raise TableNoPermissionException(identifier) from e
 
-    def delete_tag(self, identifier, tag_name):
+    def delete_tag(self, identifier: Union[str, Identifier], tag_name: str) -> None:
         if not isinstance(identifier, Identifier):
             identifier = Identifier.from_string(identifier)
         try:
             self.rest_api.delete_tag(identifier, tag_name)
         except NoSuchResourceException as e:
             if e.resource_type == ErrorResponse.RESOURCE_TYPE_TAG:
-                raise ValueError(
-                    "Tag '{}' doesn't exist.".format(tag_name)) from e
+                raise TagNotExistException(tag_name) from e
             raise TableNotExistException(identifier) from e
         except ForbiddenException as e:
             raise TableNoPermissionException(identifier) from e
 
-    def list_tags(self, identifier):
+    # Branch CRUD: mirrors Java RESTCatalog branch handlers.
+    def create_branch(self, identifier: Union[str, Identifier], branch_name: str,
+                      tag_name: Optional[str] = None) -> None:
         if not isinstance(identifier, Identifier):
             identifier = Identifier.from_string(identifier)
         try:
-            return self.rest_api.list_tags(identifier)
+            self.rest_api.create_branch(identifier, branch_name, tag_name)
+        except NoSuchResourceException as e:
+            if e.resource_type == ErrorResponse.RESOURCE_TYPE_TAG:
+                raise TagNotExistException(tag_name) from e
+            raise TableNotExistException(identifier) from e
+        except AlreadyExistsException as e:
+            raise BranchAlreadyExistException(branch_name) from e
+        except ForbiddenException as e:
+            raise TableNoPermissionException(identifier) from e
+        except BadRequestException as e:
+            raise IllegalArgumentError(str(e)) from e
+
+    def drop_branch(self, identifier: Union[str, Identifier], branch_name: str) -> None:
+        if not isinstance(identifier, Identifier):
+            identifier = Identifier.from_string(identifier)
+        try:
+            self.rest_api.drop_branch(identifier, branch_name)
+        except NoSuchResourceException as e:
+            raise BranchNotExistException(branch_name) from e
+        except ForbiddenException as e:
+            raise TableNoPermissionException(identifier) from e
+
+    def rename_branch(self, identifier: Union[str, Identifier], from_branch: str,
+                      to_branch: str) -> None:
+        if not isinstance(identifier, Identifier):
+            identifier = Identifier.from_string(identifier)
+        try:
+            self.rest_api.rename_branch(identifier, from_branch, to_branch)
+        except NoSuchResourceException as e:
+            raise BranchNotExistException(from_branch) from e
+        except AlreadyExistsException as e:
+            raise BranchAlreadyExistException(to_branch) from e
+        except ForbiddenException as e:
+            raise TableNoPermissionException(identifier) from e
+
+    def fast_forward(self, identifier: Union[str, Identifier], branch_name: str) -> None:
+        if not isinstance(identifier, Identifier):
+            identifier = Identifier.from_string(identifier)
+        try:
+            self.rest_api.fast_forward(identifier, branch_name)
+        except NoSuchResourceException as e:
+            raise BranchNotExistException(branch_name) from e
+        except ForbiddenException as e:
+            raise TableNoPermissionException(identifier) from e
+
+    def list_branches(self, identifier: Union[str, Identifier]) -> List[str]:
+        if not isinstance(identifier, Identifier):
+            identifier = Identifier.from_string(identifier)
+        try:
+            return self.rest_api.list_branches(identifier)
         except NoSuchResourceException as e:
             raise TableNotExistException(identifier) from e
         except ForbiddenException as e:
@@ -469,9 +644,23 @@ class RESTCatalog(Catalog):
         )
 
     def file_io_from_options(self, table_path: str) -> FileIO:
-        return FileIO.get(table_path, self.context.options)
+        return CachingFileIO.wrap_with_caching_if_needed(
+            FileIO.get(table_path, self.context.options), self.context.options,
+            self._cache_manager)
 
     def file_io_for_data(self, table_path: str, identifier: Identifier):
+        """
+        Get FileIO for data access, supporting FUSE local path mapping.
+        """
+        if self._fuse_resolver is not None:
+            return self._fuse_resolver.get_file_io(
+                table_path, identifier, self.data_token_enabled,
+                rest_token_file_io_factory=lambda: RESTTokenFileIO(
+                    identifier, table_path, self.context.options),
+                default_file_io_factory=lambda: self.file_io_from_options(table_path),
+            )
+
+        # Fallback to original logic
         return RESTTokenFileIO(identifier, table_path, self.context.options) \
             if self.data_token_enabled else self.file_io_from_options(table_path)
 
