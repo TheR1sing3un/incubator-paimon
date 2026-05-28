@@ -1,19 +1,19 @@
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#    http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing,
-#  software distributed under the License is distributed on an
-#  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-#  KIND, either express or implied.  See the License for the
-#  specific language governing permissions and limitations
-#  under the License.
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
 """
 Paimon CLI - Command Line Interface for Apache Paimon.
@@ -121,15 +121,9 @@ def main():
     from pypaimon.cli.cli_catalog import add_catalog_subcommands
     add_catalog_subcommands(catalog_parser)
 
-    # SQL commands
-    sql_parser = subparsers.add_parser('sql', help='Interactive SQL shell (DuckDB)')
+    # SQL command
     from pypaimon.cli.cli_sql import add_sql_subcommand
-    add_sql_subcommand(sql_parser)
-
-    # Query server commands
-    qs_parser = subparsers.add_parser('query-server', help='Query server management')
-    from pypaimon.cli.cli_query_server import add_query_server_subcommands
-    add_query_server_subcommands(qs_parser)
+    add_sql_subcommand(subparsers)
 
     args = parser.parse_args()
     
