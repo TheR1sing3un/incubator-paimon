@@ -1,41 +1,38 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 import random
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import pyarrow as pa
 
-from pypaimon.common.options.core_options import CoreOptions, MergeEngine
-from pypaimon.common.versioned_merge_mode import VersionedMergeMode
+from pypaimon.common.options.core_options import CoreOptions
 from pypaimon.write.commit_message import CommitMessage
 from pypaimon.write.writer.append_only_data_writer import AppendOnlyDataWriter
 from pypaimon.write.writer.data_blob_writer import DataBlobWriter
 from pypaimon.write.writer.data_writer import DataWriter
 from pypaimon.write.writer.key_value_data_writer import KeyValueDataWriter
-from pypaimon.write.writer.vector_cf_data_writer import VectorColumnFamilyDataWriter
-from pypaimon.schema.data_types import VectorType
 from pypaimon.table.bucket_mode import BucketMode
 
 
 class FileStoreWrite:
     """Base class for file store write operations."""
 
-    def __init__(self, table, commit_user, dynamic_options: Optional[Dict[str, str]] = None):
+    def __init__(self, table, commit_user):
         from pypaimon.table.file_store_table import FileStoreTable
 
         self.table: FileStoreTable = table
@@ -44,13 +41,15 @@ class FileStoreWrite:
         self.write_cols = None
         self.commit_identifier = 0
         self.options = CoreOptions.copy(table.options)
-        if dynamic_options:
-            for key, value in dynamic_options.items():
-                self.options.options.data[key] = value
         if self.table.bucket_mode() == BucketMode.POSTPONE_MODE:
             self.options.set(CoreOptions.DATA_FILE_PREFIX,
                              (f"{self.options.data_file_prefix()}-u-{commit_user}"
                               f"-s-{random.randint(0, 2 ** 31 - 2)}-w-"))
+
+    def disable_rolling(self):
+        """Disable file rolling by setting target_file_size to max."""
+        self.options.set(
+            CoreOptions.TARGET_FILE_SIZE, str(2 ** 63 - 1))
 
     def write(self, partition: Tuple, bucket: int, data: pa.RecordBatch):
         key = (partition, bucket)
@@ -60,39 +59,8 @@ class FileStoreWrite:
         writer.write(data)
 
     def _create_data_writer(self, partition: Tuple, bucket: int, options: CoreOptions) -> DataWriter:
-        # When sequence.snapshot-ordering is enabled, merge-read tiebreaks by (commit_snapshot_id,
-        # sequence_number), so per-worker seq only needs to be self-consistent within the current
-        # commit — no need to scan the latest snapshot to find an existing max. Skipping avoids a
-        # catalog + manifest scan per (worker, partition), which dominates Ray cold-start cost.
-        snapshot_ordering = options.snapshot_sequence_ordering()
-
         def max_seq_number():
-            if snapshot_ordering:
-                return 0
             return self._seq_number_stats(partition).get(bucket, 1)
-
-        # VCF: highest precedence — only meaningful on PK tables
-        if options.vector_column_family_enabled() and self.table.is_primary_key_table:
-            configured = options.vector_column_family_columns()
-            vector_cols = configured or [
-                f.name for f in self.table.fields if isinstance(f.type, VectorType)
-            ]
-            if len(vector_cols) != 1:
-                raise ValueError(
-                    "Vector column family currently supports exactly one vector column, got {}."
-                    .format(vector_cols))
-            merge_mode = self._resolve_merge_mode(options)
-            return VectorColumnFamilyDataWriter(
-                table=self.table,
-                partition=partition,
-                bucket=bucket,
-                max_seq_number=max_seq_number(),
-                options=options,
-                vector_column=vector_cols[0],
-                target_file_size=options.vector_column_family_target_file_size(),
-                write_cols=self.write_cols,
-                merge_mode=merge_mode,
-            )
 
         # Check if table has blob columns
         if self._has_blob_columns():
@@ -101,17 +69,16 @@ class FileStoreWrite:
                 partition=partition,
                 bucket=bucket,
                 max_seq_number=0,
-                options=options
+                options=options,
+                write_cols=self.write_cols,
             )
         elif self.table.is_primary_key_table:
-            merge_mode = self._resolve_merge_mode(options)
             return KeyValueDataWriter(
                 table=self.table,
                 partition=partition,
                 bucket=bucket,
                 max_seq_number=max_seq_number(),
-                options=options,
-                merge_mode=merge_mode)
+                options=options)
         else:
             seq_number = 0 if self.table.bucket_mode() == BucketMode.BUCKET_UNAWARE else max_seq_number()
             return AppendOnlyDataWriter(
@@ -122,16 +89,6 @@ class FileStoreWrite:
                 options=options,
                 write_cols=self.write_cols
             )
-
-    @staticmethod
-    def _resolve_merge_mode(options: CoreOptions) -> Optional[int]:
-        # Align with Java: UPSERT -> None (serialized as null), IGNORE -> 1
-        if options.merge_engine() == MergeEngine.VERSIONED_PARTIAL_UPDATE:
-            mode_str = options.versioned_partial_update_merge_mode()
-            vm = VersionedMergeMode.from_string(mode_str)
-            if vm == VersionedMergeMode.IGNORE:
-                return vm.to_byte_value()
-        return None
 
     def _has_blob_columns(self) -> bool:
         """Check if the table schema contains blob columns."""
