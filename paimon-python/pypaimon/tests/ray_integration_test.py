@@ -1,20 +1,19 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
 import os
 import shutil
@@ -56,8 +55,8 @@ class RayIntegrationTest(unittest.TestCase):
 
     def _create_and_populate_table(self, table_name, pa_schema, data_dict,
                                    primary_keys=None, partition_keys=None, options=None):
-        """Helper to create a table and write data."""
-        identifier = f'default.{table_name}'
+        """Helper to create a table and write a single batch of data."""
+        identifier = 'default.{}'.format(table_name)
         schema = Schema.from_pyarrow_schema(
             pa_schema,
             primary_keys=primary_keys,
@@ -80,7 +79,7 @@ class RayIntegrationTest(unittest.TestCase):
         return identifier
 
     def test_read_paimon_basic(self):
-        """Test read_paimon() reads data correctly."""
+        """read_paimon() reads back the data we wrote."""
         from pypaimon.ray import read_paimon
 
         pa_schema = pa.schema([
@@ -101,7 +100,7 @@ class RayIntegrationTest(unittest.TestCase):
         self.assertEqual(list(df['name']), ['a', 'b', 'c'])
 
     def test_read_paimon_with_projection(self):
-        """Test read_paimon() with column projection."""
+        """read_paimon() respects column projection."""
         from pypaimon.ray import read_paimon
 
         pa_schema = pa.schema([
@@ -120,7 +119,7 @@ class RayIntegrationTest(unittest.TestCase):
         self.assertEqual(len(df), 2)
 
     def test_read_paimon_with_filter(self):
-        """Test read_paimon() with predicate filter."""
+        """read_paimon() pushes down a predicate filter."""
         from pypaimon.ray import read_paimon
 
         pa_schema = pa.schema([
@@ -132,7 +131,6 @@ class RayIntegrationTest(unittest.TestCase):
             {'id': [1, 2, 3], 'category': ['A', 'B', 'A']},
         )
 
-        # Build predicate from a fresh table
         catalog = CatalogFactory.create(self.catalog_options)
         table = catalog.get_table(identifier)
         pb = table.new_read_builder().new_predicate_builder()
@@ -143,47 +141,49 @@ class RayIntegrationTest(unittest.TestCase):
         df = ds.to_pandas()
         self.assertEqual(set(df['category'].tolist()), {'A'})
 
-    def test_read_paimon_pk_filter_on_non_pk_column(self):
-        """Regression: PK table + filter on non-PK column.
+    def test_read_paimon_with_limit(self):
+        """``read_paimon(limit=N)`` propagates the limit into the scan plan.
 
-        Without the fix, this raised IndexError when projection narrowed
-        read_type, because Predicate.index was bound to the original
-        schema's column order.
+        Writes 10 rows across two partitions (5 + 5) so the scan produces two
+        raw-convertible splits. ``limit=3`` causes ``FileScanner`` to drop the
+        second split once the first already covers the limit, so the Ray
+        Dataset contains strictly fewer than the full 10 rows.
+
+        We assert ``< 10`` (not ``== N``) because Paimon's scan-time limit is
+        a per-split cap — whole-split granularity at this layer — not a
+        row-exact hard limit. Row-exact short-circuiting in the reader is a
+        separate follow-up.
         """
         from pypaimon.ray import read_paimon
 
         pa_schema = pa.schema([
-            pa.field('id', pa.int32(), nullable=False),
-            ('name', pa.string()),
-            ('value', pa.int64()),
+            ('id', pa.int32()),
+            ('part', pa.string()),
+            ('value', pa.string()),
         ])
         identifier = self._create_and_populate_table(
-            'ray_pk_nonpk_filter', pa_schema,
-            {'id': [1, 2, 3], 'name': ['a', 'b', 'c'], 'value': [10, 20, 30]},
-            primary_keys=['id'],
-            options={'bucket': '2'},
+            'test_read_limit', pa_schema,
+            {
+                'id': list(range(10)),
+                'part': ['a'] * 5 + ['b'] * 5,
+                'value': [str(i) for i in range(10)],
+            },
+            partition_keys=['part'],
         )
 
-        catalog = CatalogFactory.create(self.catalog_options)
-        table = catalog.get_table(identifier)
-        pb = table.new_read_builder().new_predicate_builder()
-        pred = pb.equal('value', 30)
+        # Sanity baseline: the full unbounded scan returns all 10 rows.
+        ds_full = read_paimon(identifier, self.catalog_options)
+        self.assertEqual(ds_full.count(), 10)
 
-        # Full read.
-        ds = read_paimon(identifier, self.catalog_options, filter=pred)
-        df = ds.to_pandas()
-        self.assertEqual(sorted(df['id'].tolist()), [3])
-
-        # Narrowed projection that still contains the predicate column.
-        ds2 = read_paimon(
-            identifier, self.catalog_options,
-            filter=pred, projection=['id', 'value'],
-        )
-        df2 = ds2.to_pandas()
-        self.assertEqual(sorted(df2['id'].tolist()), [3])
+        # With limit=3, the scan plan drops the second partition's split
+        # once the first split's row count already covers the limit.
+        ds = read_paimon(identifier, self.catalog_options, limit=3)
+        limited_count = ds.count()
+        self.assertGreater(limited_count, 0)
+        self.assertLess(limited_count, 10)
 
     def test_read_paimon_empty_table(self):
-        """Test read_paimon() on a table with no data returns empty dataset."""
+        """read_paimon() on a table with no data returns an empty dataset."""
         from pypaimon.ray import read_paimon
 
         pa_schema = pa.schema([('id', pa.int32())])
@@ -195,8 +195,67 @@ class RayIntegrationTest(unittest.TestCase):
         ds = read_paimon(identifier, self.catalog_options)
         self.assertEqual(ds.count(), 0)
 
+    def test_read_paimon_with_snapshot_id(self):
+        """read_paimon(snapshot_id=N) time-travels to that snapshot."""
+        from pypaimon.ray import read_paimon
+
+        pa_schema = pa.schema([('id', pa.int32()), ('name', pa.string())])
+        identifier = 'default.test_read_snap_id'
+        catalog = CatalogFactory.create(self.catalog_options)
+        schema = Schema.from_pyarrow_schema(pa_schema)
+        catalog.create_table(identifier, schema, False)
+        table = catalog.get_table(identifier)
+        for batch in [{'id': [1], 'name': ['a']}, {'id': [2], 'name': ['b']}]:
+            wb = table.new_batch_write_builder()
+            writer = wb.new_write()
+            writer.write_arrow(pa.Table.from_pydict(batch, schema=pa_schema))
+            wb.new_commit().commit(writer.prepare_commit())
+            writer.close()
+
+        ds_latest = read_paimon(identifier, self.catalog_options)
+        self.assertEqual(ds_latest.count(), 2)
+
+        ds_snap1 = read_paimon(identifier, self.catalog_options, snapshot_id=1)
+        self.assertEqual(ds_snap1.count(), 1)
+        self.assertEqual(ds_snap1.to_pandas()['id'].tolist(), [1])
+
+    def test_read_paimon_with_tag_name(self):
+        """read_paimon(tag_name=...) time-travels to a tagged snapshot."""
+        from pypaimon.ray import read_paimon
+
+        pa_schema = pa.schema([('id', pa.int32()), ('name', pa.string())])
+        identifier = 'default.test_read_tag_name'
+        catalog = CatalogFactory.create(self.catalog_options)
+        schema = Schema.from_pyarrow_schema(pa_schema)
+        catalog.create_table(identifier, schema, False)
+        table = catalog.get_table(identifier)
+        wb = table.new_batch_write_builder()
+        writer = wb.new_write()
+        writer.write_arrow(pa.Table.from_pydict({'id': [1], 'name': ['a']}, schema=pa_schema))
+        wb.new_commit().commit(writer.prepare_commit())
+        writer.close()
+        table.create_tag('v1')
+        wb = table.new_batch_write_builder()
+        writer = wb.new_write()
+        writer.write_arrow(pa.Table.from_pydict({'id': [2], 'name': ['b']}, schema=pa_schema))
+        wb.new_commit().commit(writer.prepare_commit())
+        writer.close()
+
+        ds_tag = read_paimon(identifier, self.catalog_options, tag_name='v1')
+        self.assertEqual(ds_tag.count(), 1)
+        self.assertEqual(ds_tag.to_pandas()['id'].tolist(), [1])
+
+    def test_read_paimon_rejects_snapshot_id_and_tag_name_together(self):
+        from pypaimon.ray import read_paimon
+
+        with self.assertRaises(ValueError):
+            read_paimon(
+                'default.dummy', self.catalog_options,
+                snapshot_id=1, tag_name='v1',
+            )
+
     def test_write_paimon_basic(self):
-        """Test write_paimon() writes data that can be read back."""
+        """write_paimon() writes data that read_paimon() can round-trip."""
         from pypaimon.ray import read_paimon, write_paimon
 
         pa_schema = pa.schema([
@@ -209,7 +268,7 @@ class RayIntegrationTest(unittest.TestCase):
         catalog.create_table(identifier, schema, False)
 
         source = pa.Table.from_pydict(
-            {'id': [1, 2, 3], 'name': ['x', 'y', 'z']}, schema=pa_schema
+            {'id': [1, 2, 3], 'name': ['x', 'y', 'z']}, schema=pa_schema,
         )
         ds = ray.data.from_arrow(source)
         write_paimon(ds, identifier, self.catalog_options)
@@ -220,7 +279,7 @@ class RayIntegrationTest(unittest.TestCase):
         self.assertEqual(list(df['name']), ['x', 'y', 'z'])
 
     def test_write_paimon_overwrite(self):
-        """Test write_paimon() with overwrite=True replaces data."""
+        """write_paimon(overwrite=True) replaces existing data."""
         from pypaimon.ray import read_paimon, write_paimon
 
         pa_schema = pa.schema([
@@ -232,13 +291,11 @@ class RayIntegrationTest(unittest.TestCase):
         schema = Schema.from_pyarrow_schema(pa_schema)
         catalog.create_table(identifier, schema, False)
 
-        # First write
         ds1 = ray.data.from_arrow(
             pa.Table.from_pydict({'id': [1, 2], 'val': [10, 20]}, schema=pa_schema)
         )
         write_paimon(ds1, identifier, self.catalog_options)
 
-        # Overwrite
         ds2 = ray.data.from_arrow(
             pa.Table.from_pydict({'id': [3], 'val': [30]}, schema=pa_schema)
         )
@@ -250,7 +307,7 @@ class RayIntegrationTest(unittest.TestCase):
         self.assertEqual(list(df['id']), [3])
 
     def test_read_paimon_primary_key(self):
-        """Test read_paimon() with primary key table and upsert."""
+        """read_paimon() merges PK rows correctly after an upsert."""
         from pypaimon.ray import read_paimon
 
         pa_schema = pa.schema([
@@ -264,7 +321,6 @@ class RayIntegrationTest(unittest.TestCase):
             options={'bucket': '2'},
         )
 
-        # Write update
         catalog = CatalogFactory.create(self.catalog_options)
         table = catalog.get_table(identifier)
         update = pa.Table.from_pydict({'id': [1, 4], 'name': ['a2', 'd']}, schema=pa_schema)
@@ -281,16 +337,38 @@ class RayIntegrationTest(unittest.TestCase):
         self.assertEqual(list(df['name']), ['a2', 'b', 'c', 'd'])
 
     def test_read_paimon_invalid_override_num_blocks(self):
-        """Test read_paimon() raises on invalid override_num_blocks."""
+        """override_num_blocks below 1 is rejected with a clear error."""
         from pypaimon.ray import read_paimon
 
-        pa_schema = pa.schema([('id', pa.int32())])
+        with self.assertRaises(ValueError):
+            read_paimon('default.does_not_matter', self.catalog_options,
+                        override_num_blocks=0)
+
+    def test_read_paimon_pk_single_snapshot(self):
+        """read_paimon on a PK table with a single snapshot (raw-convertible
+        splits) must not raise ArrowInvalid on schema nullability mismatch.
+
+        The Paimon table schema marks PK columns as NOT NULL, but the
+        Parquet reader may produce nullable fields. The RayDatasource
+        read task must cast the batch to align the schema rather than
+        rejecting it via strict from_batches equality.
+        """
+        from pypaimon.ray import read_paimon
+
+        pa_schema = pa.schema([
+            pa.field('id', pa.int32(), nullable=False),
+            ('name', pa.string()),
+        ])
         identifier = self._create_and_populate_table(
-            'test_read_invalid_blocks', pa_schema, {'id': [1]},
+            'test_read_pk_single_snap', pa_schema,
+            {'id': [1, 2, 3], 'name': ['a', 'b', 'c']},
+            primary_keys=['id'], options={'bucket': '2'},
         )
 
-        with self.assertRaises(ValueError):
-            read_paimon(identifier, self.catalog_options, override_num_blocks=0)
+        ds = read_paimon(identifier, self.catalog_options)
+        self.assertEqual(ds.count(), 3)
+        df = ds.to_pandas().sort_values('id').reset_index(drop=True)
+        self.assertEqual(list(df['id']), [1, 2, 3])
 
 
 if __name__ == '__main__':

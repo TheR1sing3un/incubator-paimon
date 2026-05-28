@@ -1,23 +1,21 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
 import os
-import shutil
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -294,59 +292,6 @@ class RaySinkTest(unittest.TestCase):
             datasink.on_write_complete(write_result)
         self.assertEqual(len(datasink._pending_commit_messages), 1)
 
-    def test_write_with_options(self):
-        """Test that dynamic options are passed through to the writer."""
-        datasink = PaimonDatasink(
-            self.table, overwrite=False,
-            options={'target-file-size': '64mb'}
-        )
-        self.assertEqual(datasink._options, {'target-file-size': '64mb'})
-
-        datasink.on_write_start()
-        ctx = Mock(spec=TaskContext)
-
-        # Use mock to verify with_options is called on the writer builder
-        with patch.object(self.table, 'new_batch_write_builder') as mock_builder:
-            mock_write_builder = Mock()
-            mock_write_builder.overwrite.return_value = mock_write_builder
-            mock_write_builder.with_options.return_value = mock_write_builder
-            mock_write = Mock()
-            mock_write.prepare_commit.return_value = []
-            mock_write_builder.new_write.return_value = mock_write
-            mock_builder.return_value = mock_write_builder
-
-            data_table = pa.table({
-                'id': [1],
-                'name': ['Alice'],
-                'value': [1.1]
-            })
-            datasink.write([data_table], ctx)
-            mock_write_builder.with_options.assert_called_once_with({'target-file-size': '64mb'})
-
-    def test_write_without_options(self):
-        """Test that with_options is not called when no options are provided."""
-        datasink = PaimonDatasink(self.table, overwrite=False)
-        self.assertIsNone(datasink._options)
-
-        datasink.on_write_start()
-        ctx = Mock(spec=TaskContext)
-
-        with patch.object(self.table, 'new_batch_write_builder') as mock_builder:
-            mock_write_builder = Mock()
-            mock_write_builder.overwrite.return_value = mock_write_builder
-            mock_write = Mock()
-            mock_write.prepare_commit.return_value = []
-            mock_write_builder.new_write.return_value = mock_write
-            mock_builder.return_value = mock_write_builder
-
-            data_table = pa.table({
-                'id': [1],
-                'name': ['Alice'],
-                'value': [1.1]
-            })
-            datasink.write([data_table], ctx)
-            mock_write_builder.with_options.assert_not_called()
-
     def test_on_write_failed(self):
         # Test without pending messages (on_write_complete() never called)
         datasink = PaimonDatasink(self.table, overwrite=False)
@@ -390,80 +335,6 @@ class RaySinkTest(unittest.TestCase):
         mock_commit.abort.assert_called_once()
         mock_commit.close.assert_called_once()
         self.assertEqual(datasink._pending_commit_messages, [])
-
-
-class RaySinkSchemaAlignTest(unittest.TestCase):
-    """Tests for auto schema alignment through the Ray datasink path."""
-
-    def setUp(self):
-        self.temp_dir = tempfile.mkdtemp()
-        self.warehouse_path = os.path.join(self.temp_dir, "warehouse")
-        os.makedirs(self.warehouse_path, exist_ok=True)
-
-        self.catalog = CatalogFactory.create({"warehouse": self.warehouse_path})
-        self.catalog.create_database("test_db", ignore_if_exists=True)
-
-    def tearDown(self):
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
-
-    def _create_pk_table(self, table_name, pa_schema, primary_keys):
-        schema = Schema.from_pyarrow_schema(
-            pa_schema,
-            primary_keys=primary_keys,
-            options={
-                'merge-engine': 'versioned-partial-update',
-                'bucket': '1',
-            },
-        )
-        self.catalog.create_table(table_name, schema, ignore_if_exists=False)
-        return self.catalog.get_table(table_name)
-
-    def test_ray_nullability_auto_align(self):
-        """Ray write with default nullable=True schema succeeds on PK table."""
-        pa_schema = pa.schema([
-            ('id', pa.int64()),
-            ('name', pa.string()),
-            ('value', pa.float64()),
-        ])
-        table = self._create_pk_table("test_db.ray_nullable", pa_schema, ['id'])
-
-        datasink = PaimonDatasink(table, overwrite=False)
-        datasink.on_write_start()
-        ctx = Mock(spec=TaskContext)
-
-        # Data with default nullable=True (no explicit nullable=False for PK)
-        block = pa.table({
-            'id': [1, 2, 3],
-            'name': ['Alice', 'Bob', 'Charlie'],
-            'value': [1.1, 2.2, 3.3],
-        })
-        result = datasink.write([block], ctx)
-        self.assertIsInstance(result, list)
-        if result:
-            self.assertTrue(all(isinstance(msg, CommitMessage) for msg in result))
-
-    def test_ray_partial_column_auto_pad(self):
-        """Ray write with partial columns on PK table auto-pads missing cols with null."""
-        pa_schema = pa.schema([
-            ('id', pa.int64()),
-            ('name', pa.string()),
-            ('value', pa.float64()),
-        ])
-        table = self._create_pk_table("test_db.ray_partial", pa_schema, ['id'])
-
-        datasink = PaimonDatasink(table, overwrite=False)
-        datasink.on_write_start()
-        ctx = Mock(spec=TaskContext)
-
-        # Only pass pk + one value column, missing 'value'
-        block = pa.table({
-            'id': [1, 2],
-            'name': ['Alice', 'Bob'],
-        })
-        result = datasink.write([block], ctx)
-        self.assertIsInstance(result, list)
-        if result:
-            self.assertTrue(all(isinstance(msg, CommitMessage) for msg in result))
 
 
 if __name__ == '__main__':

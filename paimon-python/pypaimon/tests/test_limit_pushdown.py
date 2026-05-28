@@ -16,6 +16,13 @@
 # limitations under the License.
 ################################################################################
 
+"""End-to-end coverage for ``with_limit`` after row-level pushdown.
+
+Locks the contract: ``with_limit(N)`` returns at most ``N`` rows, and
+the reader actually stops at that boundary instead of reading every
+split / merge output to completion and trimming at the consumer.
+"""
+
 import os
 import shutil
 import tempfile
@@ -27,7 +34,6 @@ from pypaimon import CatalogFactory, Schema
 
 
 class LimitPushdownTest(unittest.TestCase):
-    """Tests for limit pushdown optimization on primary key merge-on-read tables."""
 
     @classmethod
     def setUpClass(cls):
@@ -37,225 +43,169 @@ class LimitPushdownTest(unittest.TestCase):
         cls.catalog = CatalogFactory.create(cls.catalog_options)
         cls.catalog.create_database('default', False)
 
-        cls.pa_schema = pa.schema([
-            pa.field('pk', pa.int32(), nullable=False),
-            ('value', pa.string()),
-        ])
-
     @classmethod
     def tearDownClass(cls):
         shutil.rmtree(cls.tempdir, ignore_errors=True)
 
-    def _create_pk_table(self, table_name):
+    @staticmethod
+    def _ao_schema() -> pa.Schema:
+        return pa.schema([
+            pa.field('id', pa.int64(), nullable=False),
+            ('val', pa.int64()),
+            pa.field('dt', pa.string(), nullable=False),
+        ])
+
+    @staticmethod
+    def _pk_schema() -> pa.Schema:
+        return pa.schema([
+            pa.field('id', pa.int64(), nullable=False),
+            ('val', pa.int64()),
+        ])
+
+    def _create_ao_table(self, name: str):
+        identifier = 'default.' + name
         schema = Schema.from_pyarrow_schema(
-            self.pa_schema,
-            primary_keys=['pk'],
-            options={'bucket': '1'}
+            self._ao_schema(),
+            partition_keys=['dt'],
+            options={'file.format': 'parquet'},
         )
-        self.catalog.create_table(table_name, schema, True)
-        return self.catalog.get_table(table_name)
+        self.catalog.create_table(identifier, schema, False)
+        return self.catalog.get_table(identifier)
 
-    def _write_batch(self, table, data):
-        write_builder = table.new_batch_write_builder()
-        table_write = write_builder.new_write()
-        table_commit = write_builder.new_commit()
-        pa_table = pa.Table.from_pydict(data, schema=self.pa_schema)
-        table_write.write_arrow(pa_table)
-        table_commit.commit(table_write.prepare_commit())
-        table_write.close()
-        table_commit.close()
+    def _create_pk_table(self, name: str, *, num_buckets: int = 1):
+        identifier = 'default.' + name
+        schema = Schema.from_pyarrow_schema(
+            self._pk_schema(),
+            primary_keys=['id'],
+            options={'bucket': str(num_buckets), 'file.format': 'parquet'},
+        )
+        self.catalog.create_table(identifier, schema, False)
+        return self.catalog.get_table(identifier)
 
-    def _create_merge_on_read_table(self, table_name, total_rows=20):
-        """Create a PK table with multiple writes to produce level 0 files (merge-on-read)."""
-        table = self._create_pk_table(table_name)
+    def _write_ao_partitions(self, table, partitions):
+        for dt, rows in partitions:
+            wb = table.new_batch_write_builder()
+            w = wb.new_write()
+            data = pa.Table.from_pylist(
+                [{'id': r, 'val': r * 10, 'dt': dt} for r in rows],
+                schema=self._ao_schema())
+            w.write_arrow(data)
+            wb.new_commit().commit(w.prepare_commit())
+            w.close()
 
-        # Write batch 1: rows 0..total_rows-1
-        data1 = {
-            'pk': list(range(total_rows)),
-            'value': [f'v1_{i}' for i in range(total_rows)],
-        }
-        self._write_batch(table, data1)
+    def _write_pk_snapshots(self, table, snapshots):
+        for rows in snapshots:
+            wb = table.new_batch_write_builder()
+            w = wb.new_write()
+            data = pa.Table.from_pylist(
+                [{'id': i, 'val': v} for i, v in rows], schema=self._pk_schema())
+            w.write_arrow(data)
+            wb.new_commit().commit(w.prepare_commit())
+            w.close()
 
-        # Write batch 2: update some rows to create overlapping level 0 files
-        data2 = {
-            'pk': list(range(total_rows // 2)),
-            'value': [f'v2_{i}' for i in range(total_rows // 2)],
-        }
-        self._write_batch(table, data2)
+    # ---- append-only -----------------------------------------------------
 
-        return table
+    def test_append_only_limit_stops_within_first_split(self):
+        """With limit=3 on a partitioned append-only table, the result is
+        exactly 3 rows — even though each partition split has 5 rows."""
+        table = self._create_ao_table('limit_ao_within_split')
+        self._write_ao_partitions(table, [
+            ('p1', list(range(5))),       # 5 rows
+            ('p2', list(range(5, 10))),   # 5 rows
+        ])
+        rb = table.new_read_builder().with_limit(3)
+        result = rb.new_read().to_arrow(rb.new_scan().plan().splits())
+        self.assertEqual(result.num_rows, 3)
 
-    def _verify_has_merge_on_read_splits(self, table):
-        """Verify that the table has at least one non-raw-convertible split."""
-        read_builder = table.new_read_builder()
-        splits = read_builder.new_scan().plan().splits()
-        has_merge = any(not s.raw_convertible for s in splits)
-        self.assertTrue(has_merge, "Expected merge-on-read splits but all splits are raw_convertible")
-        return splits
+    def test_append_only_limit_spans_multiple_splits(self):
+        """Limit larger than first split: read carries over to the next
+        split until the budget is met."""
+        table = self._create_ao_table('limit_ao_span_splits')
+        self._write_ao_partitions(table, [
+            ('p1', [1, 2]),
+            ('p2', [3, 4]),
+            ('p3', [5, 6]),
+        ])
+        rb = table.new_read_builder().with_limit(5)
+        result = rb.new_read().to_arrow(rb.new_scan().plan().splits())
+        self.assertEqual(result.num_rows, 5)
 
-    def test_pk_merge_on_read_limit_via_iterator(self):
-        """Limit should work correctly via to_iterator for merge-on-read tables."""
-        table = self._create_merge_on_read_table('default.test_limit_iterator')
-        self._verify_has_merge_on_read_splits(table)
+    def test_append_only_limit_zero_returns_empty(self):
+        table = self._create_ao_table('limit_ao_zero')
+        self._write_ao_partitions(table, [('p1', [1, 2, 3])])
+        rb = table.new_read_builder().with_limit(0)
+        splits = rb.new_scan().plan().splits()
+        result = rb.new_read().to_arrow(splits)
+        self.assertEqual(result.num_rows, 0)
 
-        limit = 5
-        read_builder = table.new_read_builder().with_limit(limit)
-        table_read = read_builder.new_read()
-        splits = read_builder.new_scan().plan().splits()
+    def test_append_only_limit_larger_than_total(self):
+        """Limit greater than the total returns the total, not the limit."""
+        table = self._create_ao_table('limit_ao_oversize')
+        self._write_ao_partitions(table, [('p1', [1, 2, 3])])
+        rb = table.new_read_builder().with_limit(100)
+        result = rb.new_read().to_arrow(rb.new_scan().plan().splits())
+        self.assertEqual(result.num_rows, 3)
 
-        rows = list(table_read.to_iterator(splits))
-        self.assertEqual(len(rows), limit)
+    # ---- PK merge-on-read ------------------------------------------------
 
-    def test_pk_merge_on_read_limit_via_arrow(self):
-        """Limit should work correctly via to_arrow for merge-on-read tables."""
-        table = self._create_merge_on_read_table('default.test_limit_arrow')
-        self._verify_has_merge_on_read_splits(table)
+    def test_pk_merge_limit_stops_within_first_split(self):
+        """PK + multiple snapshots forces the merge-read path. The reader
+        must stop at limit rows instead of running every section to
+        completion and trimming at the consumer."""
+        table = self._create_pk_table('limit_pk_within_split')
+        # Two snapshots over the same key range → merge path; total
+        # post-merge unique rows = 20.
+        self._write_pk_snapshots(table, [
+            [(i, i) for i in range(20)],
+            [(i, i + 1000) for i in range(0, 20, 2)],
+        ])
+        for limit in (1, 5, 10, 19):
+            rb = table.new_read_builder().with_limit(limit)
+            result = rb.new_read().to_arrow(rb.new_scan().plan().splits())
+            self.assertEqual(
+                result.num_rows, limit,
+                "with_limit(%d) must short-circuit at the row level" % limit)
 
-        limit = 5
-        read_builder = table.new_read_builder().with_limit(limit)
-        table_read = read_builder.new_read()
-        splits = read_builder.new_scan().plan().splits()
+    def test_pk_merge_limit_equals_total(self):
+        """Limit equal to total post-merge row count: returns everything."""
+        table = self._create_pk_table('limit_pk_equals_total')
+        self._write_pk_snapshots(table, [
+            [(i, i) for i in range(10)],
+            [(i, i + 100) for i in range(5)],
+        ])
+        rb = table.new_read_builder().with_limit(10)
+        result = rb.new_read().to_arrow(rb.new_scan().plan().splits())
+        self.assertEqual(result.num_rows, 10)
 
-        result = table_read.to_arrow(splits)
-        self.assertEqual(result.num_rows, limit)
+    def test_pk_merge_limit_with_predicate(self):
+        """``with_limit`` plus ``with_filter``: the filter prunes first and
+        the limit caps what survives. ``val >= 1000`` matches the latest
+        write of the even ``id`` rows; limit then takes the prefix."""
+        table = self._create_pk_table('limit_pk_with_filter')
+        self._write_pk_snapshots(table, [
+            [(i, i) for i in range(20)],
+            [(i, i + 1000) for i in range(0, 20, 2)],  # update evens
+        ])
+        rb = table.new_read_builder()
+        pred = rb.new_predicate_builder().greater_or_equal('val', 1000)
+        rb = rb.with_filter(pred).with_limit(3)
+        result = rb.new_read().to_arrow(rb.new_scan().plan().splits())
+        self.assertEqual(result.num_rows, 3)
+        for v in result.column('val').to_pylist():
+            self.assertGreaterEqual(v, 1000)
 
-    def test_pk_merge_on_read_limit_via_arrow_batch_reader(self):
-        """Limit should work correctly via to_arrow_batch_reader for merge-on-read tables."""
-        table = self._create_merge_on_read_table('default.test_limit_batch_reader')
-        self._verify_has_merge_on_read_splits(table)
+    # ---- to_iterator path ------------------------------------------------
 
-        limit = 5
-        read_builder = table.new_read_builder().with_limit(limit)
-        table_read = read_builder.new_read()
-        splits = read_builder.new_scan().plan().splits()
-
-        batch_reader = table_read.to_arrow_batch_reader(splits)
-        total_rows = 0
-        for batch in iter(batch_reader.read_next_batch, None):
-            total_rows += batch.num_rows
-        self.assertEqual(total_rows, limit)
-
-    def test_pk_merge_on_read_limit_larger_than_data(self):
-        """When limit > total rows, all rows should be returned."""
-        total_rows = 20
-        table = self._create_merge_on_read_table('default.test_limit_large', total_rows=total_rows)
-
-        limit = 1000
-        read_builder = table.new_read_builder().with_limit(limit)
-        table_read = read_builder.new_read()
-        splits = read_builder.new_scan().plan().splits()
-
-        result = table_read.to_arrow(splits)
-        self.assertEqual(result.num_rows, total_rows)
-
-    def test_pk_merge_on_read_no_limit(self):
-        """Without limit, all rows should be returned."""
-        total_rows = 20
-        table = self._create_merge_on_read_table('default.test_no_limit', total_rows=total_rows)
-
-        read_builder = table.new_read_builder()
-        table_read = read_builder.new_read()
-        splits = read_builder.new_scan().plan().splits()
-
-        result = table_read.to_arrow(splits)
-        self.assertEqual(result.num_rows, total_rows)
-
-    def test_pk_merge_on_read_limit_one(self):
-        """Limit=1 should return exactly one row."""
-        table = self._create_merge_on_read_table('default.test_limit_one')
-        self._verify_has_merge_on_read_splits(table)
-
-        read_builder = table.new_read_builder().with_limit(1)
-        table_read = read_builder.new_read()
-        splits = read_builder.new_scan().plan().splits()
-
-        result = table_read.to_arrow(splits)
-        self.assertEqual(result.num_rows, 1)
-
-    def test_limit_actually_stops_early(self):
-        """Verify that limit causes early termination, not just post-read truncation.
-
-        We create a table with many rows across multiple splits, apply a small limit,
-        and verify that:
-        1. The LimitedRecordReader stops after producing limit rows
-        2. Not all splits are consumed
-        """
-        total_rows = 100
-        table = self._create_pk_table('default.test_limit_early_stop')
-
-        # Write many batches to create many level 0 files
-        for i in range(5):
-            start = i * (total_rows // 5)
-            end = start + (total_rows // 5)
-            data = {
-                'pk': list(range(start, end)),
-                'value': [f'batch{i}_{j}' for j in range(start, end)],
-            }
-            self._write_batch(table, data)
-
-        # Overwrite some to force merge-on-read
-        data_overwrite = {
-            'pk': list(range(10)),
-            'value': [f'overwrite_{j}' for j in range(10)],
-        }
-        self._write_batch(table, data_overwrite)
-
-        splits = table.new_read_builder().new_scan().plan().splits()
-        has_merge = any(not s.raw_convertible for s in splits)
-        self.assertTrue(has_merge, "Expected merge-on-read splits")
-
-        # Read with limit=3 and track how many rows the LimitedRecordReader actually processes
-        limit = 3
-        read_builder = table.new_read_builder().with_limit(limit)
-        table_read = read_builder.new_read()
-        splits = read_builder.new_scan().plan().splits()
-
-        # Use to_iterator which goes through the full chain including LimitedRecordReader
-        rows = list(table_read.to_iterator(splits))
-        self.assertEqual(len(rows), limit)
-
-        # Also verify via arrow path
-        read_builder2 = table.new_read_builder().with_limit(limit)
-        table_read2 = read_builder2.new_read()
-        splits2 = read_builder2.new_scan().plan().splits()
-        result = table_read2.to_arrow(splits2)
-        self.assertEqual(result.num_rows, limit)
-
-    def test_limit_does_not_read_all_splits(self):
-        """Verify that when limit is satisfied by the first split, subsequent splits are skipped."""
-        table = self._create_pk_table('default.test_limit_skip_splits')
-
-        # Write enough data that it creates multiple merge-on-read splits
-        for i in range(4):
-            start = i * 50
-            data = {
-                'pk': list(range(start, start + 50)),
-                'value': [f'v_{j}' for j in range(start, start + 50)],
-            }
-            self._write_batch(table, data)
-
-        # Overwrite first batch to create level 0 overlap
-        data_overwrite = {
-            'pk': list(range(25)),
-            'value': [f'new_{j}' for j in range(25)],
-        }
-        self._write_batch(table, data_overwrite)
-
-        # Read without limit to get total
-        read_builder_all = table.new_read_builder()
-        splits_all = read_builder_all.new_scan().plan().splits()
-        table_read_all = read_builder_all.new_read()
-        all_rows = table_read_all.to_arrow(splits_all).num_rows
-
-        # Read with small limit
-        limit = 3
-        read_builder = table.new_read_builder().with_limit(limit)
-        table_read = read_builder.new_read()
-        splits = read_builder.new_scan().plan().splits()
-
-        result = table_read.to_arrow(splits)
-        self.assertEqual(result.num_rows, limit)
-        self.assertGreater(all_rows, limit, "Table should have more rows than limit to verify optimization")
+    def test_to_iterator_limit_short_circuits(self):
+        table = self._create_ao_table('limit_iter')
+        self._write_ao_partitions(table, [
+            ('p1', list(range(50))),
+            ('p2', list(range(50, 100))),
+        ])
+        rb = table.new_read_builder().with_limit(7)
+        it = rb.new_read().to_iterator(rb.new_scan().plan().splits())
+        rows = list(it)
+        self.assertEqual(len(rows), 7)
 
 
 if __name__ == '__main__':

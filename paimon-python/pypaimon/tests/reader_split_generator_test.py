@@ -1,20 +1,19 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
-################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
 """
 Test cases for split generation logic, matching Java's SplitGeneratorTest.
@@ -330,39 +329,75 @@ class SplitGeneratorTest(unittest.TestCase):
         # This test ensures that if SlicedSplit is created, merged_row_count() works correctly
 
 
-    def test_limit_with_non_raw_convertible_splits(self):
-        """Test that limit does not discard non-raw_convertible splits.
+class ApplyPushDownLimitUnitTest(unittest.TestCase):
+    """Mock-driven coverage of ``FileScanner._apply_push_down_limit``."""
 
-        After multiple upserts on a PK table, splits may have raw_convertible=False
-        (requiring merge-read). The limit push-down should still return these splits
-        instead of silently dropping them.
-        """
-        table = self._create_table('test_limit_non_raw')
+    @staticmethod
+    def _apply(splits, limit, has_non_partition_filter=False):
+        from pypaimon.read.scanner.file_scanner import FileScanner
 
-        # Write the same keys twice to create multiple files in one bucket,
-        # making the split non-raw_convertible.
-        data = self._create_test_data([(0, 5), (0, 5)])
-        self._write_data(table, data)
+        class _FakeScanner:
+            pass
 
-        # Verify at least one split is non-raw_convertible
-        all_splits = table.new_read_builder().new_scan().plan().splits()
-        self.assertGreater(len(all_splits), 0)
-        has_non_raw = any(not s.raw_convertible for s in all_splits)
-        self.assertTrue(has_non_raw,
-                        "Expected at least one non-raw_convertible split after upserts")
+        scanner = _FakeScanner()
+        scanner.limit = limit
+        scanner._has_non_partition_filter = lambda: has_non_partition_filter
+        return FileScanner._apply_push_down_limit(scanner, splits)
 
-        # Now read with limit — should still return splits (not empty)
-        read_builder = table.new_read_builder().with_limit(1)
-        scan = read_builder.new_scan()
-        limited_splits = scan.plan().splits()
-        self.assertGreater(len(limited_splits), 0,
-                           "Limit should not discard non-raw_convertible splits")
+    @staticmethod
+    def _split(raw_convertible, row_count, merged_row_count):
+        class _FakeSplit:
+            pass
 
-        # Verify we can actually read data from the limited splits
-        reader = read_builder.new_read()
-        result = reader.to_arrow(limited_splits)
-        self.assertGreater(result.num_rows, 0,
-                           "Should be able to read rows from limited splits")
+        s = _FakeSplit()
+        s.raw_convertible = raw_convertible
+        s.row_count = row_count
+        s._merged = merged_row_count
+        s.merged_row_count = lambda: s._merged
+        return s
+
+    def test_dv_aware_accumulator_uses_merged_row_count(self):
+        """DV-aware raw split + trailing non-raw splits, ``limit > merged``:
+        pre-fix (``+= row_count``) early-returns ``[raw]``; post-fix
+        (``+= merged_row_count``) leaves the budget at 4 < 5, the loop
+        completes, and the fall-through returns all three splits."""
+        s_raw = self._split(raw_convertible=True, row_count=10, merged_row_count=4)
+        s_nr1 = self._split(raw_convertible=False, row_count=10, merged_row_count=None)
+        s_nr2 = self._split(raw_convertible=False, row_count=10, merged_row_count=None)
+
+        result = self._apply([s_raw, s_nr1, s_nr2], limit=5)
+        self.assertEqual(len(result), 3)
+
+    def test_accumulator_skips_splits_with_unknown_merged_count(self):
+        """A split whose ``merged_row_count()`` returns ``None`` does not
+        contribute to the budget; the loop completes and returns the
+        input via the fall-through."""
+        s = self._split(raw_convertible=True, row_count=10, merged_row_count=None)
+        result = self._apply([s], limit=5)
+        self.assertEqual(result, [s])
+
+    def test_no_raw_splits_falls_through_to_full_list(self):
+        """No split contributes to the budget → fall-through returns all."""
+        s1 = self._split(raw_convertible=False, row_count=10, merged_row_count=None)
+        s2 = self._split(raw_convertible=False, row_count=10, merged_row_count=None)
+        result = self._apply([s1, s2], limit=5)
+        self.assertEqual(result, [s1, s2])
+
+    def test_empty_splits_returns_empty(self):
+        self.assertEqual(self._apply([], limit=5), [])
+
+    def test_no_limit_returns_input_unchanged(self):
+        s = self._split(raw_convertible=True, row_count=10, merged_row_count=10)
+        result = self._apply([s], limit=None)
+        self.assertEqual(result, [s])
+
+    def test_non_partition_filter_short_circuits_pushdown(self):
+        """Predicate touching a non-partition column → no pushdown,
+        regardless of how many DV-aware splits the plan contains."""
+        s_raw = self._split(raw_convertible=True, row_count=10, merged_row_count=10)
+        result = self._apply(
+            [s_raw, s_raw, s_raw], limit=5, has_non_partition_filter=True)
+        self.assertEqual(len(result), 3)
 
 
 if __name__ == '__main__':

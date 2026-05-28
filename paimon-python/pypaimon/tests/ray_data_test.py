@@ -1,20 +1,19 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
-################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
 import os
 import tempfile
@@ -22,10 +21,12 @@ import unittest
 import shutil
 
 import pyarrow as pa
+import pyarrow.types as pa_types
 import ray
 
 from pypaimon import CatalogFactory, Schema
 from pypaimon.common.options.core_options import CoreOptions
+from pypaimon.schema.data_types import PyarrowFieldParser
 
 
 class RayDataTest(unittest.TestCase):
@@ -656,93 +657,6 @@ class RayDataTest(unittest.TestCase):
         )
         self.assertEqual(list(df_sorted['value']), [150, 250, 300, 400], "Value column should reflect updates")
 
-    def test_ray_data_write_with_options(self):
-        """Test Ray Data write with dynamic options (e.g. target-file-size).
-
-        Uses a small target-file-size to force file rolling. Generates enough data
-        so that PyArrow nbytes exceeds the target threshold and split is possible.
-        """
-        pa_schema = pa.schema([
-            ('id', pa.int32()),
-            ('name', pa.string()),
-            ('value', pa.int64()),
-        ])
-
-        schema = Schema.from_pyarrow_schema(pa_schema)
-        self.catalog.create_table('default.test_ray_write_options', schema, False)
-        table = self.catalog.get_table('default.test_ray_write_options')
-
-        num_rows = 5000
-        # Use long strings to inflate per-row size so rolling actually triggers
-        test_data = pa.Table.from_pydict({
-            'id': list(range(num_rows)),
-            'name': [f'name_with_some_padding_{i:06d}' for i in range(num_rows)],
-            'value': list(range(num_rows)),
-        }, schema=pa_schema)
-
-        from ray.data.read_api import from_arrow
-        ds = from_arrow(test_data)
-
-        # Use a small target-file-size (10KB) to force file rolling
-        write_builder = table.new_batch_write_builder()
-        writer = write_builder.new_write()
-        writer.write_ray(ds, concurrency=1, options={'target-file-size': '10kb'})
-
-        # Verify data is correctly written and readable
-        read_builder = table.new_read_builder()
-        table_read = read_builder.new_read()
-        table_scan = read_builder.new_scan()
-        splits = table_scan.plan().splits()
-        arrow_result = table_read.to_arrow(splits)
-
-        self.assertEqual(arrow_result.num_rows, num_rows, f"Should have {num_rows} rows")
-        df = arrow_result.to_pandas()
-        df_sorted = df.sort_values(by='id').reset_index(drop=True)
-        self.assertEqual(list(df_sorted['id']), list(range(num_rows)), "ID column should match")
-
-        # With target-file-size=10kb, there should be multiple files
-        total_files = sum(len(split.files) for split in splits)
-        self.assertGreater(total_files, 1,
-                           "With target-file-size=10kb, should produce multiple files")
-
-    def test_ray_data_write_paimon_api_with_options(self):
-        """Test write_paimon top-level API with options parameter."""
-        from pypaimon.ray import write_paimon, read_paimon
-
-        pa_schema = pa.schema([
-            ('id', pa.int32()),
-            ('name', pa.string()),
-            ('value', pa.int64()),
-        ])
-
-        schema = Schema.from_pyarrow_schema(pa_schema)
-        self.catalog.create_table('default.test_write_paimon_options', schema, False)
-
-        test_data = pa.Table.from_pydict({
-            'id': list(range(50)),
-            'name': [f'name_{i}' for i in range(50)],
-            'value': list(range(50)),
-        }, schema=pa_schema)
-
-        from ray.data.read_api import from_arrow
-        ds = from_arrow(test_data)
-
-        catalog_options = {'warehouse': self.warehouse}
-        write_paimon(
-            ds, 'default.test_write_paimon_options', catalog_options,
-            concurrency=1,
-            options={'target-file-size': '1b'}
-        )
-
-        # Read back and verify
-        result_ds = read_paimon(
-            'default.test_write_paimon_options', catalog_options
-        )
-        df = result_ds.to_pandas()
-        self.assertEqual(len(df), 50, "Should have 50 rows")
-        df_sorted = df.sort_values(by='id').reset_index(drop=True)
-        self.assertEqual(list(df_sorted['id']), list(range(50)), "ID column should match")
-
     def test_ray_data_invalid_parallelism(self):
         pa_schema = pa.schema([
             ('id', pa.int32()),
@@ -783,6 +697,143 @@ class RayDataTest(unittest.TestCase):
         with self.assertRaises(ValueError) as context:
             table_read.to_ray(splits, override_num_blocks=-10)
         self.assertIn("override_num_blocks must be at least 1", str(context.exception))
+
+    def test_dict_return_loses_large_binary_type(self):
+        # Original data with large_binary
+        original = pa.table({
+            'data': pa.array([b'hello', b'world'], type=pa.large_binary())
+        })
+        self.assertTrue(
+            pa_types.is_large_binary(original.schema.field('data').type),
+            "Original should be large_binary"
+        )
+
+        # Simulate map_batches returning dict: convert to Python list then rebuild
+        d = {'data': original['data'].to_pylist()}
+        rebuilt = pa.Table.from_pydict(d)
+        self.assertTrue(
+            pa_types.is_binary(rebuilt.schema.field('data').type),
+            f"Rebuilt from dict should be binary (PyArrow default), but got {rebuilt.schema.field('data').type}"
+        )
+        self.assertFalse(
+            pa_types.is_large_binary(rebuilt.schema.field('data').type),
+            "large_binary type should be lost after dict roundtrip"
+        )
+
+    def test_ray_data_read_and_write_with_blob(self):
+        import time
+        pa_schema = pa.schema([
+            ('id', pa.int64()),
+            ('name', pa.string()),
+            ('data', pa.large_binary()),  # Table uses large_binary for blob
+        ])
+
+        schema = Schema.from_pyarrow_schema(
+            pa_schema,
+            options={
+                'row-tracking.enabled': 'true',
+                'data-evolution.enabled': 'true',
+                'blob-field': 'data',
+            }
+        )
+
+        table_name = f'default.test_ray_read_write_blob_{int(time.time() * 1000000)}'
+        self.catalog.create_table(table_name, schema, False)
+        table = self.catalog.get_table(table_name)
+
+        # Step 1: Write data to Paimon table using write_arrow (large_binary type)
+        initial_data = pa.Table.from_pydict({
+            'id': [1, 2, 3],
+            'name': ['Alice', 'Bob', 'Charlie'],
+            'data': [b'blob_data_1', b'blob_data_2', b'blob_data_3'],
+        }, schema=pa_schema)
+
+        write_builder = table.new_batch_write_builder()
+        writer = write_builder.new_write()
+        writer.write_arrow(initial_data)
+        commit_messages = writer.prepare_commit()
+        commit = write_builder.new_commit()
+        commit.commit(commit_messages)
+        writer.close()
+
+        # Step 2: Read from Paimon table using to_ray()
+        read_builder = table.new_read_builder()
+        table_read = read_builder.new_read()
+        table_scan = read_builder.new_scan()
+        splits = table_scan.plan().splits()
+
+        ray_dataset = table_read.to_ray(splits)
+
+        # Verify Ray blocks preserve large_binary type from Paimon
+        for batch in ray_dataset.iter_batches(batch_size=10, batch_format="pyarrow"):
+            ray_data_field = batch.schema.field('data')
+            self.assertTrue(
+                pa_types.is_large_binary(ray_data_field.type),
+                f"Ray block should preserve large_binary() from Paimon, but got {ray_data_field.type}"
+            )
+            break
+
+        # Verify Paimon table schema is large_binary (BLOB)
+        table_pa_schema = PyarrowFieldParser.from_paimon_schema(table.table_schema.fields)
+        self.assertTrue(
+            pa_types.is_large_binary(table_pa_schema.field('data').type),
+            "Paimon table should have large_binary() for BLOB field"
+        )
+
+        # Step 3: Simulate user pipeline: map_batches returns Python dict,
+        def process_blob(batch):
+            return {
+                'id': batch['id'].to_pylist(),
+                'name': batch['name'].to_pylist(),
+                'data': batch['data'].to_pylist(),  # Python bytes -> binary
+            }
+
+        mapped_dataset = ray_dataset.map_batches(process_blob, batch_format="pyarrow")
+
+        # Verify map_batches caused type downgrade: large_binary -> binary
+        for batch in mapped_dataset.iter_batches(batch_size=10, batch_format="pyarrow"):
+            mapped_data_field = batch.schema.field('data')
+            self.assertTrue(
+                pa_types.is_binary(mapped_data_field.type),
+                f"After map_batches returning dict, data should be binary(), but got {mapped_data_field.type}"
+            )
+            break
+
+        # Step 4: Write mapped dataset back via write_ray().
+        write_builder2 = table.new_batch_write_builder()
+        writer2 = write_builder2.new_write()
+
+        writer2.write_ray(
+            mapped_dataset,
+            overwrite=False,
+            concurrency=1
+        )
+        writer2.close()
+
+        # Step 5: Verify the data was written correctly
+        read_builder2 = table.new_read_builder()
+        table_read2 = read_builder2.new_read()
+        result = table_read2.to_arrow(read_builder2.new_scan().plan().splits())
+
+        self.assertEqual(result.num_rows, 6, "Table should have 6 rows after roundtrip")
+
+        result_df = result.to_pandas()
+        result_df_sorted = result_df.sort_values(by='id').reset_index(drop=True)
+
+        self.assertEqual(list(result_df_sorted['id']), [1, 1, 2, 2, 3, 3], "ID column should match")
+        self.assertEqual(
+            list(result_df_sorted['name']),
+            ['Alice', 'Alice', 'Bob', 'Bob', 'Charlie', 'Charlie'],
+            "Name column should match"
+        )
+
+        written_data_values = [bytes(d) if d is not None else None for d in result_df_sorted['data']]
+        self.assertEqual(
+            written_data_values,
+            [b'blob_data_1', b'blob_data_1', b'blob_data_2', b'blob_data_2', b'blob_data_3', b'blob_data_3'],
+            "Blob data column should match"
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

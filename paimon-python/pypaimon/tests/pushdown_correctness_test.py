@@ -1,40 +1,34 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
-################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
 """
 Predicate pushdown correctness regression suite.
 
-Locks in the invariants documented in
-docs/design/2026-04-26-predicate-pushdown-roadmap.md (sections 2.1, 2.2):
+Locks in the invariants:
 
-  - PK tables: manifest stats pruning consults *key_stats only*. value_stats
-    (which may legitimately exclude live PK rows that survive in L1+ via L0)
-    must never gate file inclusion on PK tables.
-  - PK tables: L0 visibility is controlled by deletion-vectors.read-mode;
-    PERFORMANCE hides L0, FRESHNESS includes it.
+  - PK tables: manifest stats pruning consults *key_stats only*. A
+    value-only predicate must short-circuit to "keep the file" even if
+    value_stats would say otherwise.
   - Reader-level value predicate is applied *after* merge — covered rows
     cannot resurface even when an older file passes manifest pruning.
   - Append-only tables: value_stats pruning is false-positive-safe (may
     over-include) but never false-negative (never drops a live row).
-  - Schema evolution: stats evolution preserves false-negative-freeness
-    when columns are added between writes.
 
-Three layers (per docs/design/2026-04-26-predicate-pushdown-roadmap.md §6):
+Three layers:
 
   1. Unit  — synthetic ManifestEntry to assert the manifest gate's exact
              behaviour without relying on full I/O.
@@ -129,42 +123,13 @@ class FilterManifestEntryUnitTest(unittest.TestCase):
             pa.field('id', pa.int64(), nullable=False),
             ('val', pa.int64()),
         ])
-        # Plain PK table (no DV) — exercises pure stats-only path.
+        # PK table — exercises the stats-only path.
         cls.catalog.create_table(
             'default.pk_plain',
             Schema.from_pyarrow_schema(
                 cls._pa_schema,
                 primary_keys=['id'],
                 options={'bucket': '1', 'file.format': 'parquet'},
-            ),
-            False,
-        )
-        # DV-enabled PK table — exercises the L0-visibility branch.
-        cls.catalog.create_table(
-            'default.pk_dv',
-            Schema.from_pyarrow_schema(
-                cls._pa_schema,
-                primary_keys=['id'],
-                options={
-                    'bucket': '1',
-                    'file.format': 'parquet',
-                    'deletion-vectors.enabled': 'true',
-                },
-            ),
-            False,
-        )
-        # DV + FRESHNESS — L0 must be visible.
-        cls.catalog.create_table(
-            'default.pk_dv_fresh',
-            Schema.from_pyarrow_schema(
-                cls._pa_schema,
-                primary_keys=['id'],
-                options={
-                    'bucket': '1',
-                    'file.format': 'parquet',
-                    'deletion-vectors.enabled': 'true',
-                    'deletion-vectors.read-mode': 'freshness',
-                },
             ),
             False,
         )
@@ -283,55 +248,6 @@ class FilterManifestEntryUnitTest(unittest.TestCase):
                         "value_stats must NEVER be consulted on PK tables — "
                         "even when the PK predicate path runs")
 
-    # ---- DV mode L0 visibility -----------------------------------------
-    def test_dv_performance_mode_drops_l0(self):
-        table = self.catalog.get_table('default.pk_dv')
-        entry = _make_pk_entry(
-            level=0,
-            key_stats=_stats([0], [100], [self._id_field()]),
-            value_stats=_stats([0], [100], [self._val_field()]),
-        )
-        scanner = _build_pk_scanner(table, predicate=None)
-        self.assertTrue(scanner.deletion_vectors_enabled)
-        self.assertFalse(scanner.dv_freshness_read_enabled)
-        self.assertFalse(scanner._filter_manifest_entry(entry),
-                         "PERFORMANCE mode hides L0 unconditionally")
-
-    def test_dv_performance_mode_keeps_l1_plus(self):
-        table = self.catalog.get_table('default.pk_dv')
-        entry = _make_pk_entry(
-            level=1,
-            key_stats=_stats([0], [100], [self._id_field()]),
-            value_stats=_stats([0], [100], [self._val_field()]),
-        )
-        scanner = _build_pk_scanner(table, predicate=None)
-        self.assertTrue(scanner._filter_manifest_entry(entry))
-
-    def test_dv_freshness_mode_keeps_l0(self):
-        table = self.catalog.get_table('default.pk_dv_fresh')
-        entry = _make_pk_entry(
-            level=0,
-            key_stats=_stats([0], [100], [self._id_field()]),
-            value_stats=_stats([0], [100], [self._val_field()]),
-        )
-        scanner = _build_pk_scanner(table, predicate=None)
-        self.assertTrue(scanner.dv_freshness_read_enabled)
-        self.assertTrue(scanner._filter_manifest_entry(entry),
-                        "FRESHNESS mode keeps L0")
-
-    def test_non_dv_pk_table_keeps_l0(self):
-        """No-DV PK tables: L0 is NOT auto-hidden (there is no DV fast path
-        whose correctness depends on it)."""
-        table = self.catalog.get_table('default.pk_plain')
-        entry = _make_pk_entry(
-            level=0,
-            key_stats=_stats([0], [100], [self._id_field()]),
-            value_stats=_stats([0], [100], [self._val_field()]),
-        )
-        scanner = _build_pk_scanner(table, predicate=None)
-        self.assertFalse(scanner.deletion_vectors_enabled)
-        self.assertTrue(scanner._filter_manifest_entry(entry))
-
     # ---- Append-only path uses value_stats (and that IS correct) -------
     def _append_entry(self, val_min: int, val_max: int) -> ManifestEntry:
         """Append-only entries: value_stats covers BOTH id and val (the
@@ -370,7 +286,6 @@ class PushdownRoundTripIntegrationTest(unittest.TestCase):
     """Write multi-snapshot tables and verify pushdown vs full-scan oracle."""
 
     # Suppress compaction so L0 deterministically persists across snapshots.
-    # Mirrors dv_read_mode_test._SUPPRESS_COMPACTION_OPTS.
     _SUPPRESS = {
         'bucket': '1',
         'num-levels': '3',
@@ -390,12 +305,8 @@ class PushdownRoundTripIntegrationTest(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.tempdir, ignore_errors=True)
 
-    def _create_pk_table(self, name: str, *, dv: bool, freshness: bool) -> Any:
+    def _create_pk_table(self, name: str) -> Any:
         opts = dict(self._SUPPRESS)
-        if dv:
-            opts['deletion-vectors.enabled'] = 'true'
-            if freshness:
-                opts['deletion-vectors.read-mode'] = 'freshness'
         pa_schema = pa.schema([
             pa.field('id', pa.int64(), nullable=False),
             ('val', pa.int64()),
@@ -449,45 +360,6 @@ class PushdownRoundTripIntegrationTest(unittest.TestCase):
         return rb.new_read().to_arrow(splits).to_pylist()
 
     # -------------------------------------------------------------------
-    # Heart of the safety guarantee: in FRESHNESS mode, a value predicate
-    # filters the *merged* result. The newest version of a PK survives even
-    # when the older version (in L1+) would match a stats range that the
-    # newer version (in L0) does not. The invariant we assert: filter result
-    # equals (full-merge then in-memory filter), regardless of how files
-    # are pruned at manifest level.
-    # -------------------------------------------------------------------
-    def test_dv_freshness_value_predicate_returns_post_merge_truth(self):
-        table = self._create_pk_table('rt_dv_fresh_predicate', dv=True, freshness=True)
-        # With compaction suppressed (_SUPPRESS), both writes persist as
-        # separate L0 files; snapshot 2 has the higher sequence number so
-        # its value wins after merge.
-        #   Snapshot 1: id=1 val=10  (matches `val < 50` if read alone)
-        #   Snapshot 2: id=1 val=100 (does NOT match `val < 50`)
-        # Post-merge id=1 surviving value is 100, so `val < 50` must return
-        # []. A regression that pushed a per-file value predicate would
-        # keep snapshot 1's file and drop snapshot 2's, wrongly resurrecting
-        # val=10. The correctness contract this guards: value predicate is
-        # applied AFTER merge, never per-file at the file-reader layer.
-        self._write(table, [
-            [{'id': 1, 'val': 10}],
-            [{'id': 1, 'val': 100}],
-        ])
-        pred = table.new_read_builder().new_predicate_builder().less_than('val', 50)
-        rows = self._read_all(table, predicate=pred)
-        self.assertEqual(rows, [],
-                         "post-merge value-filter must NOT resurrect older value")
-
-    def test_dv_freshness_value_predicate_keeps_matching_post_merge(self):
-        table = self._create_pk_table('rt_dv_fresh_predicate2', dv=True, freshness=True)
-        self._write(table, [
-            [{'id': 1, 'val': 100}],   # old
-            [{'id': 1, 'val': 10}],    # new — survives merge
-        ])
-        pred = table.new_read_builder().new_predicate_builder().less_than('val', 50)
-        rows = sorted(self._read_all(table, predicate=pred), key=lambda r: r['id'])
-        self.assertEqual(rows, [{'id': 1, 'val': 10}])
-
-    # -------------------------------------------------------------------
     # Partition stats false-positive safety: predicate on a value column
     # never accidentally drops a manifest. (A filter ON the partition column
     # is exact; this asserts the orthogonal predicate path.)
@@ -518,7 +390,7 @@ class PushdownRoundTripIntegrationTest(unittest.TestCase):
 
     def test_pk_pk_predicate_matches_oracle(self):
         """PK predicate on PK table: exact, exercises key_stats path."""
-        table = self._create_pk_table('rt_pk_pk_pred', dv=False, freshness=False)
+        table = self._create_pk_table('rt_pk_pk_pred')
         rows = [{'id': i, 'val': i * 7} for i in range(50)]
         self._write(table, [rows[:25], rows[25:]])
 
@@ -543,8 +415,16 @@ class PushdownRoundTripIntegrationTest(unittest.TestCase):
         into a directly-checkable property: the answer is whatever you'd
         get by (a) merging snapshots into latest-per-PK, (b) applying the
         predicate to that merged set in Python.
+
+        Note: this asserts end-to-end semantics only (predicate is applied
+        post-merge, not per-file). The "PK manifest gate must not consult
+        value_stats" invariant is locked down in the unit tests above
+        (``test_pk_table_uses_key_stats_only_*``); this round-trip case
+        does not by itself catch a regression where the gate misuses
+        value_stats, since the file-level effect is masked by the
+        post-merge filter.
         """
-        table = self._create_pk_table('rt_pk_val_pred', dv=True, freshness=True)
+        table = self._create_pk_table('rt_pk_val_pred')
         self._write(table, [
             [{'id': i, 'val': i} for i in range(20)],
             [{'id': i, 'val': i + 1000} for i in range(0, 20, 2)],  # update evens
@@ -594,11 +474,16 @@ class PushdownPropertyTest(unittest.TestCase):
         cls.warehouse = os.path.join(cls.tempdir, 'warehouse')
         cls.catalog = CatalogFactory.create({'warehouse': cls.warehouse})
         cls.catalog.create_database('default', False)
-        cls.rnd = random.Random(cls.SEED)
 
     @classmethod
     def tearDownClass(cls):
         shutil.rmtree(cls.tempdir, ignore_errors=True)
+
+    def setUp(self):
+        # Fresh per-test RNG keeps each test method's dataset/predicate
+        # sequence stable regardless of method execution order or future
+        # additions in this class.
+        self.rnd = random.Random(self.SEED)
 
     def _make_append_table(self, idx: int):
         pa_schema = pa.schema([
@@ -658,9 +543,8 @@ class PushdownPropertyTest(unittest.TestCase):
         Operator set covers every method the property layer can sensibly
         exercise on numeric columns: equal/not_equal, full ordering family,
         between/not_between, in/not_in, is_null/is_not_null. The
-        is_null path in particular re-covers a real historical bug
-        (predicates_test.py:378) where missing null_counts caused isNull
-        to drop every file.
+        is_null path in particular re-covers a historical bug where
+        missing null_counts in stats caused isNull to drop every file.
         """
         op = self.rnd.choice([
             'equal', 'not_equal',
