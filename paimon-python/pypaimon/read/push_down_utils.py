@@ -1,20 +1,19 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
 from typing import Dict, List, Optional, Set
 
@@ -73,18 +72,18 @@ def rewrite_predicate_indices(
     input_predicate: Optional[Predicate],
     read_fields: List[DataField],
 ) -> Optional[Predicate]:
-    """Rewrite predicate leaf indices to match positions in `read_fields`.
+    """Rewrite predicate leaf indices to match positions in ``read_fields``.
 
-    Predicates are built against the original table schema (via
-    PredicateBuilder), so their `index` field encodes that schema's column
-    order. When the same predicate is then evaluated row-by-row against a
-    projected scan (read_type narrower or reordered), the indices no longer
+    Predicate leaves are built against the original table schema (via
+    PredicateBuilder), so their ``index`` field encodes that schema's column
+    order. When the same predicate is later evaluated row-by-row against a
+    projected scan (read_type narrower or reordered), those indices no longer
     match the OffsetRow layout the reader hands to FilterRecordReader, and
-    `OffsetRow.get_field(idx)` raises IndexError.
+    ``OffsetRow.get_field(idx)`` raises IndexError.
 
-    This helper returns a new predicate where every leaf's `index` is
-    rebound to its column's position in `read_fields`. Caller must ensure
-    every leaf field is present in `read_fields`.
+    Returns a new predicate where every leaf's ``index`` is rebound to its
+    column's position in ``read_fields``. The caller is responsible for
+    ensuring that every leaf field is present in ``read_fields``.
     """
     if input_predicate is None:
         return None
@@ -99,9 +98,9 @@ def _rewrite_by_name(p: Predicate, name_to_pos: Dict[str, int]) -> Predicate:
         )
     if p.field is None or p.field not in name_to_pos:
         raise ValueError(
-            f"Cannot rewrite predicate index for leaf {p!r}: field "
-            f"{p.field!r} is not in read fields {list(name_to_pos)}. "
-            f"The caller must ensure all referenced columns are projected."
+            "Cannot rewrite predicate index for leaf {!r}: field {!r} is not "
+            "in read fields {}. The caller must ensure all referenced columns "
+            "are projected.".format(p, p.field, list(name_to_pos))
         )
     return p.new_index(name_to_pos[p.field])
 

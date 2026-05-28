@@ -1,27 +1,27 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
-from concurrent.futures import ThreadPoolExecutor
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, Iterator, List, Optional
 
 import pandas
 import pyarrow
 
-from pypaimon.common.options.core_options import CoreOptions
 from pypaimon.common.predicate import Predicate
 from pypaimon.read.reader.iface.record_batch_reader import RecordBatchReader
 from pypaimon.read.split import Split
@@ -34,6 +34,41 @@ from pypaimon.table.row.offset_row import OffsetRow
 ROW_KIND_COLUMN = "_row_kind"
 
 
+class _RemainingRows:
+    """Thread-safe remaining-rows counter for parallel reads.
+
+    Row quota is pre-debited under a single lock so that any rows that
+    threads commit to emit are guaranteed not to overshoot the limit, even
+    if individual readers keep decoding one extra batch after the quota is
+    exhausted.
+
+    When ``limit`` is None the counter is unbounded and ``try_consume``
+    always returns the requested row count.
+    """
+
+    def __init__(self, limit: Optional[int]):
+        self._lock = threading.Lock()
+        self._remaining = limit  # None == unlimited
+
+    def try_consume(self, requested: int) -> int:
+        if self._remaining is None:
+            return requested
+        if requested <= 0:
+            return 0
+        with self._lock:
+            if self._remaining <= 0:
+                return 0
+            allowed = min(requested, self._remaining)
+            self._remaining -= allowed
+            return allowed
+
+    def exhausted(self) -> bool:
+        if self._remaining is None:
+            return False
+        with self._lock:
+            return self._remaining <= 0
+
+
 class TableRead:
     """Implementation of TableRead for native Python reading."""
 
@@ -43,22 +78,26 @@ class TableRead:
         predicate: Optional[Predicate],
         read_type: List[DataField],
         include_row_kind: bool = False,
-        limit: Optional[int] = None,
         nested_name_paths: Optional[List[List[str]]] = None,
+        limit: Optional[int] = None,
     ):
+        from pypaimon.read.merge_engine_support import check_supported
         from pypaimon.table.file_store_table import FileStoreTable
+
+        # Validate merge-engine support before any split-level dispatch.
+        # Raw-convertible splits skip MergeFileSplitRead, so this guard
+        # has to live at the read-builder level — otherwise unsupported
+        # options (e.g. partial-update.remove-record-on-delete) get
+        # silently ignored on fresh single-snapshot tables.
+        check_supported(table)
 
         self.table: FileStoreTable = table
         self.predicate = predicate
         self.read_type = read_type
         self.include_row_kind = include_row_kind
-        self.limit = limit
-        # Parallel to read_type: nested_name_paths[i] is the chain of field
-        # names walked to reach the i-th projected field. Length-1 paths are
-        # plain top-level. Used by format readers (Parquet/ORC via PyArrow)
-        # to push nested column reads down to the file. None when no nested
-        # projection is in play.
         self.nested_name_paths = nested_name_paths
+        self.limit = limit
+        self._read_parallelism = self.table.options.read_parallelism()
 
     def to_iterator(self, splits: List[Split]) -> Iterator:
         limit = self.limit
@@ -66,15 +105,16 @@ class TableRead:
         def _record_generator():
             count = 0
             for split in splits:
+                if limit is not None and count >= limit:
+                    return
                 reader = self._create_split_read(split).create_reader()
                 try:
                     for batch in iter(reader.read_batch, None):
                         for row in iter(batch.next, None):
                             yield row
-                            if limit is not None:
-                                count += 1
-                                if count >= limit:
-                                    return
+                            count += 1
+                            if limit is not None and count >= limit:
+                                return
                 finally:
                     reader.close()
 
@@ -113,30 +153,30 @@ class TableRead:
     def to_arrow(
         self,
         splits: List[Split],
-        *,
-        max_workers: Optional[int] = None,
+        parallelism: Optional[int] = None,
     ) -> Optional[pyarrow.Table]:
-        """Materialize splits into a single Arrow Table.
+        """Read ``splits`` into a single arrow ``Table``.
 
-        max_workers:
-            None or 1 (default) — read splits sequentially (original behavior).
-            >1 — read splits in parallel with a ThreadPoolExecutor. Splits are
-            submitted at once and consumed in original order, so the resulting
-            Table preserves split/file ordering. When ``self.limit`` is set,
-            already-started workers may read past the limit (wasted IO bounded
-            by ``max_workers - 1`` splits); not-yet-started workers are
-            cancelled.
+        Args:
+            splits: scan-plan splits returned from a ``TableScan``.
+            parallelism: optional runtime override of the
+                ``read.parallelism`` table option. ``None`` (default) falls
+                back to the table option; a non-None value temporarily
+                overrides it for this call. ``1`` keeps reads serial;
+                ``>= 2`` enables a thread pool that reads splits
+                concurrently and assembles the final table in input order.
+                Must be ``>= 1``.
         """
-        if not max_workers or max_workers <= 1 or len(splits) <= 1:
-            return self._to_arrow_sequential(splits)
-        return self._to_arrow_parallel(splits, max_workers)
-
-    def _to_arrow_sequential(self, splits: List[Split]) -> Optional[pyarrow.Table]:
-        batch_reader = self.to_arrow_batch_reader(splits)
-
+        # TODO: default read.parallelism to min(splits, cpu_count()) once stable
+        effective = self._resolve_parallelism(parallelism)
         schema = PyarrowFieldParser.from_paimon_schema(self.read_type)
         if self.include_row_kind:
             schema = self._add_row_kind_to_schema(schema)
+
+        if self._should_run_parallel(splits, effective):
+            return self._to_arrow_parallel(splits, schema, effective)
+
+        batch_reader = self.to_arrow_batch_reader(splits)
 
         table_list = []
         for batch in iter(batch_reader.read_next_batch, None):
@@ -147,157 +187,12 @@ class TableRead:
         if not table_list:
             return pyarrow.Table.from_arrays([pyarrow.array([], type=field.type) for field in schema], schema=schema)
         else:
-            table = pyarrow.Table.from_batches(table_list)
-            return self._convert_descriptor_stored_fields_for_read(table)
-
-    def _to_arrow_parallel(
-        self, splits: List[Split], max_workers: int
-    ) -> Optional[pyarrow.Table]:
-        schema = PyarrowFieldParser.from_paimon_schema(self.read_type)
-        if self.include_row_kind:
-            schema = self._add_row_kind_to_schema(schema)
-
-        def _read_one_split(split: Split) -> List[pyarrow.RecordBatch]:
-            reader = self._create_split_read(split).create_reader()
-            out: List[pyarrow.RecordBatch] = []
-            try:
-                for batch in self._iter_split_as_arrow_batches(reader, schema):
-                    if batch.num_rows == 0:
-                        continue
-                    out.append(self._try_to_pad_batch_by_schema(batch, schema))
-            finally:
-                reader.close()
-            return out
-
-        pool = ThreadPoolExecutor(
-            max_workers=min(max_workers, len(splits)),
-            thread_name_prefix="paimon-to-arrow",
-        )
-        all_batches: List[pyarrow.RecordBatch] = []
-        try:
-            futures = [pool.submit(_read_one_split, s) for s in splits]
-
-            remaining = self.limit
-            for i, fut in enumerate(futures):
-                if remaining is not None and remaining <= 0:
-                    for f in futures[i:]:
-                        f.cancel()
-                    break
-                split_batches = fut.result()
-                limit_hit = False
-                for batch in split_batches:
-                    if remaining is None:
-                        all_batches.append(batch)
-                        continue
-                    if batch.num_rows >= remaining:
-                        all_batches.append(batch.slice(0, remaining))
-                        remaining = 0
-                        limit_hit = True
-                        break
-                    all_batches.append(batch)
-                    remaining -= batch.num_rows
-                if limit_hit:
-                    for f in futures[i + 1:]:
-                        f.cancel()
-                    break
-        finally:
-            pool.shutdown(wait=True)
-
-        if not all_batches:
-            return pyarrow.Table.from_arrays(
-                [pyarrow.array([], type=field.type) for field in schema], schema=schema
-            )
-        table = pyarrow.Table.from_batches(all_batches)
-        return self._convert_descriptor_stored_fields_for_read(table)
-
-    def _iter_split_as_arrow_batches(
-        self, reader, schema: pyarrow.Schema,
-    ) -> Iterator[pyarrow.RecordBatch]:
-        """Yield Arrow batches from a single split's reader.
-
-        Unified path for both RecordBatchReader (Arrow-native) and the
-        row-based reader. Does NOT honor ``self.limit`` — limit is enforced by
-        the caller while accumulating batches across splits so that parallel
-        consumers can early-cancel sibling futures deterministically.
-        """
-        if isinstance(reader, RecordBatchReader):
-            for batch in iter(reader.read_arrow_batch, None):
-                if self.include_row_kind:
-                    batch = self._add_row_kind_column_to_batch(batch, "+I")
-                yield batch
-            return
-
-        chunk_size = 65536
-        row_tuple_chunk: List[tuple] = []
-        row_kind_chunk: List[str] = []
-        for row_iterator in iter(reader.read_batch, None):
-            for row in iter(row_iterator.next, None):
-                if not isinstance(row, OffsetRow):
-                    raise TypeError(f"Expected OffsetRow, but got {type(row).__name__}")
-                row_tuple_chunk.append(row.row_tuple[row.offset: row.offset + row.arity])
-                if self.include_row_kind:
-                    row_kind_chunk.append(row.get_row_kind().to_string())
-                if len(row_tuple_chunk) >= chunk_size:
-                    yield self._convert_rows_to_arrow_batch_with_row_kind(
-                        row_tuple_chunk, row_kind_chunk, schema
-                    )
-                    row_tuple_chunk = []
-                    row_kind_chunk = []
-        if row_tuple_chunk:
-            yield self._convert_rows_to_arrow_batch_with_row_kind(
-                row_tuple_chunk, row_kind_chunk, schema
-            )
-
-    def _convert_descriptor_stored_fields_for_read(self, table: pyarrow.Table) -> pyarrow.Table:
-        if CoreOptions.blob_as_descriptor(self.table.options):
-            return table
-
-        descriptor_fields = CoreOptions.blob_descriptor_fields(self.table.options)
-        if not descriptor_fields:
-            return table
-
-        from pypaimon.table.row.blob import Blob, BlobDescriptor
-
-        result = table
-        for field_name in descriptor_fields:
-            if field_name not in result.column_names:
-                continue
-            values = result.column(field_name).to_pylist()
-            converted_values = []
-            for value in values:
-                if value is None:
-                    converted_values.append(None)
-                    continue
-                if hasattr(value, 'as_py'):
-                    value = value.as_py()
-                if isinstance(value, str):
-                    value = value.encode('utf-8')
-                if isinstance(value, bytearray):
-                    value = bytes(value)
-                if not isinstance(value, bytes):
-                    converted_values.append(value)
-                    continue
-
-                try:
-                    descriptor = BlobDescriptor.deserialize(value)
-                    if descriptor.serialize() != value:
-                        converted_values.append(value)
-                        continue
-                    uri_reader = self.table.file_io.uri_reader_factory.create(descriptor.uri)
-                    converted_values.append(Blob.from_descriptor(uri_reader, descriptor).to_data())
-                except Exception:
-                    converted_values.append(value)
-
-            column_idx = result.column_names.index(field_name)
-            result = result.set_column(
-                column_idx,
-                pyarrow.field(field_name, pyarrow.large_binary(), nullable=True),
-                pyarrow.array(converted_values, type=pyarrow.large_binary()),
-            )
-        return result
+            return pyarrow.Table.from_batches(table_list)
 
     def _arrow_batch_generator(self, splits: List[Split], schema: pyarrow.Schema) -> Iterator[pyarrow.RecordBatch]:
         chunk_size = 65536
+        # ``remaining`` tracks how many rows we are still allowed to emit
+        # across all splits. ``None`` means unlimited.
         remaining = self.limit
 
         for split in splits:
@@ -307,20 +202,23 @@ class TableRead:
             try:
                 if isinstance(reader, RecordBatchReader):
                     for batch in iter(reader.read_arrow_batch, None):
+                        if remaining is not None and batch.num_rows > remaining:
+                            batch = batch.slice(0, remaining)
                         if self.include_row_kind:
                             batch = self._add_row_kind_column_to_batch(batch, "+I")
-                        if remaining is not None:
-                            if batch.num_rows >= remaining:
-                                yield batch.slice(0, remaining)
-                                remaining = 0
-                                break
-                            remaining -= batch.num_rows
                         yield batch
+                        if remaining is not None:
+                            remaining -= batch.num_rows
+                            if remaining <= 0:
+                                break
                 else:
                     row_tuple_chunk = []
                     row_kind_chunk = []
-                    limit_reached = False
-                    for row_iterator in iter(reader.read_batch, None):
+                    while True:
+                        row_iterator = reader.read_batch()
+                        if row_iterator is None:
+                            break
+                        stop = False
                         for row in iter(row_iterator.next, None):
                             if not isinstance(row, OffsetRow):
                                 raise TypeError(f"Expected OffsetRow, but got {type(row).__name__}")
@@ -331,7 +229,7 @@ class TableRead:
                             if remaining is not None:
                                 remaining -= 1
                                 if remaining <= 0:
-                                    limit_reached = True
+                                    stop = True
                                     break
 
                             if len(row_tuple_chunk) >= chunk_size:
@@ -341,8 +239,7 @@ class TableRead:
                                 yield batch
                                 row_tuple_chunk = []
                                 row_kind_chunk = []
-
-                        if limit_reached:
+                        if stop:
                             break
 
                     if row_tuple_chunk:
@@ -352,6 +249,146 @@ class TableRead:
                         yield batch
             finally:
                 reader.close()
+
+    def _resolve_parallelism(self, runtime: Optional[int]) -> int:
+        """Pick the effective parallelism and reject illegal values.
+
+        Priority: explicit ``parallelism`` argument > ``read.parallelism``
+        table option > built-in default of 1. The validation message names
+        whichever source produced the offending value, so users know where
+        to fix it.
+        """
+        if runtime is not None:
+            value = runtime
+            source = "parallelism"
+        else:
+            value = self._read_parallelism
+            source = "read.parallelism"
+        if value < 1:
+            raise ValueError(f"{source} must be >= 1, got {value}")
+        return value
+
+    def _should_run_parallel(
+        self,
+        splits: List[Split],
+        effective: int,
+    ) -> bool:
+        """Decide whether to take the parallel read path.
+
+        ``effective == 1`` falls back to the serial path (no thread pool
+        overhead, no behavior change). A single split is never
+        parallelized since there is nothing to fan out across.
+        """
+        return effective >= 2 and len(splits) >= 2
+
+    def _to_arrow_parallel(
+        self,
+        splits: List[Split],
+        schema: pyarrow.Schema,
+        effective: int,
+    ) -> pyarrow.Table:
+        """Read ``splits`` concurrently and assemble the result in input order.
+
+        Each split is read in its own worker thread; row quota for ``limit``
+        is shared through :class:`_RemainingRows` so the combined output
+        never exceeds ``self.limit`` rows. Per-split batches are collected
+        by submission index, so the merged table preserves the order of the
+        input ``splits`` list.
+        """
+        remaining_state = _RemainingRows(self.limit)
+        results: List[Optional[List[pyarrow.RecordBatch]]] = [None] * len(splits)
+        workers = min(effective, len(splits))
+        with ThreadPoolExecutor(
+            max_workers=workers,
+            thread_name_prefix="pypaimon-read",
+        ) as executor:
+            futures = {
+                executor.submit(
+                    self._read_one_split_to_batches,
+                    split,
+                    schema,
+                    remaining_state,
+                ): idx
+                for idx, split in enumerate(splits)
+            }
+            for fut in as_completed(futures):
+                results[futures[fut]] = fut.result()
+
+        table_list: List[pyarrow.RecordBatch] = []
+        for split_batches in results:
+            if split_batches is None:
+                continue
+            for batch in split_batches:
+                if batch.num_rows == 0:
+                    continue
+                table_list.append(self._try_to_pad_batch_by_schema(batch, schema))
+
+        if not table_list:
+            return pyarrow.Table.from_arrays(
+                [pyarrow.array([], type=field.type) for field in schema],
+                schema=schema,
+            )
+        return pyarrow.Table.from_batches(table_list)
+
+    def _read_one_split_to_batches(
+        self,
+        split: Split,
+        schema: pyarrow.Schema,
+        remaining_state: _RemainingRows,
+    ) -> List[pyarrow.RecordBatch]:
+        """Read a single split into arrow batches under soft-stop control.
+
+        Row quota is debited against the shared ``remaining_state``; once a
+        request returns 0, the worker stops emitting further batches. The
+        reader is always closed via ``finally``.
+        """
+        chunk_size = 65536
+        out: List[pyarrow.RecordBatch] = []
+        reader = self._create_split_read(split).create_reader()
+        try:
+            if isinstance(reader, RecordBatchReader):
+                for batch in iter(reader.read_arrow_batch, None):
+                    allowed = remaining_state.try_consume(batch.num_rows)
+                    if allowed == 0:
+                        break
+                    if allowed < batch.num_rows:
+                        batch = batch.slice(0, allowed)
+                    if self.include_row_kind:
+                        batch = self._add_row_kind_column_to_batch(batch, "+I")
+                    out.append(batch)
+                    if remaining_state.exhausted():
+                        break
+            else:
+                row_tuple_chunk: List[tuple] = []
+                row_kind_chunk: List[str] = []
+                stop = False
+                while not stop:
+                    row_iterator = reader.read_batch()
+                    if row_iterator is None:
+                        break
+                    for row in iter(row_iterator.next, None):
+                        if not isinstance(row, OffsetRow):
+                            raise TypeError(
+                                f"Expected OffsetRow, but got {type(row).__name__}")
+                        if remaining_state.try_consume(1) == 0:
+                            stop = True
+                            break
+                        row_tuple_chunk.append(
+                            row.row_tuple[row.offset: row.offset + row.arity])
+                        if self.include_row_kind:
+                            row_kind_chunk.append(row.get_row_kind().to_string())
+
+                        if len(row_tuple_chunk) >= chunk_size:
+                            out.append(self._convert_rows_to_arrow_batch_with_row_kind(
+                                row_tuple_chunk, row_kind_chunk, schema))
+                            row_tuple_chunk = []
+                            row_kind_chunk = []
+                if row_tuple_chunk:
+                    out.append(self._convert_rows_to_arrow_batch_with_row_kind(
+                        row_tuple_chunk, row_kind_chunk, schema))
+        finally:
+            reader.close()
+        return out
 
     def _convert_rows_to_arrow_batch_with_row_kind(
         self,
@@ -389,16 +426,13 @@ class TableRead:
     def to_pandas(
         self,
         splits: List[Split],
-        *,
-        max_workers: Optional[int] = None,
+        parallelism: Optional[int] = None,
     ) -> pandas.DataFrame:
-        """Materialize splits into a pandas DataFrame.
+        """Read ``splits`` into a pandas ``DataFrame``.
 
-        max_workers:
-            None or 1 (default) — sequential read (original behavior).
-            >1 — read splits in parallel; row order is preserved.
+        See :meth:`to_arrow` for the semantics of ``parallelism``.
         """
-        arrow_table = self.to_arrow(splits, max_workers=max_workers)
+        arrow_table = self.to_arrow(splits, parallelism=parallelism)
         return arrow_table.to_pandas()
 
     def to_duckdb(self, splits: List[Split], table_name: str,
@@ -406,7 +440,7 @@ class TableRead:
         import duckdb
 
         con = connection or duckdb.connect(database=":memory:")
-        con.register(table_name, self.to_arrow_batch_reader(splits))
+        con.register(table_name, self.to_arrow(splits))
         return con
 
     def to_ray(
@@ -447,14 +481,30 @@ class TableRead:
             raise ValueError(f"override_num_blocks must be at least 1, got {override_num_blocks}")
 
         from pypaimon.read.datasource.ray_datasource import RayDatasource
-        datasource = RayDatasource._from_table_read(self, splits)
-        return ray.data.read_datasource(
+        from pypaimon.read.datasource.split_provider import PreResolvedSplitProvider
+
+        datasource = RayDatasource(
+            PreResolvedSplitProvider(
+                table=self.table,
+                splits=splits,
+                read_type=self.read_type,
+                predicate=self.predicate,
+                limit=self.limit,
+            )
+        )
+        ds = ray.data.read_datasource(
             datasource,
             ray_remote_args=ray_remote_args,
             concurrency=concurrency,
             override_num_blocks=override_num_blocks,
             **read_args
         )
+        # Each Ray worker applies the per-task limit independently, so N
+        # workers can collectively yield up to N * limit rows. Cap the
+        # final dataset to the user-visible limit on top.
+        if self.limit is not None:
+            ds = ds.limit(self.limit)
+        return ds
 
     def to_torch(
         self,
@@ -474,16 +524,29 @@ class TableRead:
 
     def _create_split_read(self, split: Split) -> SplitRead:
         if self.table.is_primary_key_table and not split.raw_convertible:
+            inner_read_type = self.read_type
+            outer_extract_name_paths: Optional[List[List[str]]] = None
+            if self.nested_name_paths and any(
+                    len(p) > 1 for p in self.nested_name_paths):
+                # Inner: full ROW for the merge function. Outer: extract
+                # the requested sub-paths back to the user's flat schema.
+                inner_read_type = self._widen_to_top_level_for_merge()
+                outer_extract_name_paths = self.nested_name_paths
             return MergeFileSplitRead(
                 table=self.table,
                 predicate=self.predicate,
-                read_type=self.read_type,
+                read_type=inner_read_type,
                 split=split,
                 row_tracking_enabled=False,
+                outer_extract_name_paths=outer_extract_name_paths,
                 limit=self.limit,
-                nested_name_paths=self.nested_name_paths,
             )
         elif self.table.options.data_evolution_enabled():
+            if self.nested_name_paths and any(
+                    len(p) > 1 for p in self.nested_name_paths):
+                raise NotImplementedError(
+                    "Nested-field projection on data-evolution tables is "
+                    "not yet supported")
             return DataEvolutionSplitRead(
                 table=self.table,
                 predicate=self.predicate,
@@ -501,6 +564,24 @@ class TableRead:
                 row_tracking_enabled=self.table.options.row_tracking_enabled(),
                 nested_name_paths=self.nested_name_paths,
             )
+
+    def _widen_to_top_level_for_merge(self) -> List[DataField]:
+        """Unique top-level fields from ``self.nested_name_paths``, in path order."""
+        table_fields_by_name = {f.name: f for f in self.table.fields}
+        seen = set()
+        widened: List[DataField] = []
+        for path in self.nested_name_paths or []:
+            top_name = path[0]
+            if top_name in seen:
+                continue
+            seen.add(top_name)
+            field = table_fields_by_name.get(top_name)
+            if field is None:
+                raise ValueError(
+                    "Nested projection top-level field %r not found in "
+                    "table schema" % (top_name,))
+            widened.append(field)
+        return widened
 
     @staticmethod
     def convert_rows_to_arrow_batch(row_tuples: List[tuple], schema: pyarrow.Schema) -> pyarrow.RecordBatch:
