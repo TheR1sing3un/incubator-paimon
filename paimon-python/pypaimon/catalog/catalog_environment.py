@@ -1,20 +1,19 @@
-"""
-Licensed to the Apache Software Foundation (ASF) under one
-or more contributor license agreements.  See the NOTICE file
-distributed with this work for additional information
-regarding copyright ownership.  The ASF licenses this file
-to you under the Apache License, Version 2.0 (the
-"License"); you may not use this file except in compliance
-with the License.  You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-"""
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
 from typing import Optional
 
@@ -52,13 +51,16 @@ class CatalogEnvironment:
         """
         if self.catalog_loader is not None and self.supports_version_management:
             # Use catalog-based snapshot commit when catalog loader is available
-            # and version management is supported. Provide a filesystem-based
-            # fallback for REST servers whose underlying catalog (e.g. FileSystemCatalog)
-            # does not support commitSnapshot (returns 501).
+            # and version management is supported. Carry a RenamingSnapshotCommit
+            # as fallback so the REST server can transparently fall back to a
+            # filesystem-based commit when its underlying catalog answers 501
+            # on commitSnapshot.
             catalog = self.catalog_loader.load()
             fallback = RenamingSnapshotCommit(snapshot_manager)
-            return CatalogSnapshotCommit(catalog, self.identifier, self.uuid,
-                                         fallback_commit=fallback)
+            return CatalogSnapshotCommit(
+                catalog, self.identifier, self.uuid,
+                fallback_commit=fallback,
+            )
         else:
             # Use file renaming-based snapshot commit
             return RenamingSnapshotCommit(snapshot_manager)
