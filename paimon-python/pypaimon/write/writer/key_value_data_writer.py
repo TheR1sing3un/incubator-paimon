@@ -1,20 +1,19 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -34,7 +33,7 @@ class KeyValueDataWriter(DataWriter):
         return self._sort_by_primary_key(combined)
 
     def _add_system_fields(self, data: pa.RecordBatch) -> pa.RecordBatch:
-        """Add system fields: _KEY_{pk_key}, _SEQUENCE_NUMBER, _VALUE_KIND, _COMMIT_SNAPSHOT_ID."""
+        """Add system fields: _KEY_{pk_key}, _SEQUENCE_NUMBER, _VALUE_KIND."""
         num_rows = data.num_rows
 
         new_arrays = []
@@ -55,15 +54,6 @@ class KeyValueDataWriter(DataWriter):
         value_kind_column = pa.array([0] * num_rows, type=pa.int8())
         new_arrays.append(value_kind_column)
         new_fields.append(pa.field('_VALUE_KIND', pa.int8(), nullable=False))
-
-        # _COMMIT_SNAPSHOT_ID: always materialized but NULL for L0 writes — pypaimon does not do
-        # local compaction, so the real snapshot id is only known at commit time and lives on
-        # DataFileMeta.commit_snapshot_id. This mirrors Java KeyValueSerializer.toRow, which
-        # writes NULL whenever snapshotId is unknown or equals Long.MAX_VALUE. Compaction
-        # rewriters (Java side) overwrite this column with per-row ids to defeat hitchhiking.
-        commit_snapshot_id_column = pa.nulls(num_rows, type=pa.int64())
-        new_arrays.append(commit_snapshot_id_column)
-        new_fields.append(pa.field('_COMMIT_SNAPSHOT_ID', pa.int64(), nullable=True))
 
         for i in range(data.num_columns):
             new_arrays.append(data.column(i))
