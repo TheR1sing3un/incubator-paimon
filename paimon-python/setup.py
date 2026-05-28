@@ -17,7 +17,7 @@
 ##########################################################################
 from setuptools import find_packages, setup
 
-VERSION = "1.4.907"
+VERSION = "1.4.910"
 
 PACKAGES = find_packages(include=["pypaimon*"])
 
@@ -59,6 +59,11 @@ setup(
     version=VERSION,
     packages=PACKAGES,
     include_package_data=True,
+    package_data={
+        # Ship the kwai-internal Hadoop fallback xml so a host without
+        # HADOOP_CONF_DIR can still bring up HdfsNativeFileIO.
+        "pypaimon.filesystem._kwai_default_hadoop_conf": ["*.xml"],
+    },
     install_requires=install_requires,
     entry_points={
         'console_scripts': [

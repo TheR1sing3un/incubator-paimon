@@ -200,7 +200,11 @@ class HdfsNativeFileIO(FileIO):
             self.properties.get(HdfsOptions.HDFS_CONF_DIR)
             or os.environ.get("HADOOP_CONF_DIR")
         )
-        hadoop_xml = self._load_hadoop_xml(config_dir)
+
+        if config_dir:
+            hadoop_xml = self._load_hadoop_xml(config_dir)
+        else:
+            hadoop_xml = self._load_default_hadoop_xml()
 
         config = self._build_config_dict()
         self._maybe_inject_viewfs_fallback(scheme, netloc, config, hadoop_xml)
@@ -212,12 +216,19 @@ class HdfsNativeFileIO(FileIO):
         self._config_dir = config_dir
         self._filesystem = None
 
+        # With a real config_dir: hdfs-native reads xml itself, `config`
+        # only carries catalog-options overrides. Without one (we're using
+        # the bundled fallback): fold hadoop_xml into the config dict so
+        # hdfs-native actually sees nameservices / mount table / NN list.
+        # Catalog options still win.
+        client_config = config if config_dir else {**hadoop_xml, **config}
+
         client_kwargs = {}
         url = self._build_url(scheme, netloc)
         if url:
             client_kwargs["url"] = url
-        if config:
-            client_kwargs["config"] = config
+        if client_config:
+            client_kwargs["config"] = client_config
         if config_dir:
             client_kwargs["config_dir"] = config_dir
 
@@ -314,6 +325,26 @@ class HdfsNativeFileIO(FileIO):
                 )
                 result[name_el.text.strip()] = value
         return result
+
+    @staticmethod
+    def _load_default_hadoop_xml() -> Dict[str, str]:
+        """Return a vendor-shipped baseline Hadoop config if the build
+        includes one; empty dict otherwise.
+
+        Used as the fallback when HADOOP_CONF_DIR / hdfs.conf-dir are unset.
+        Catalog options always override these baseline values.
+        """
+        try:
+            from pypaimon.filesystem import (
+                _kwai_default_hadoop_conf as fallback,
+            )
+        except ImportError:
+            return {}
+        try:
+            return fallback.load()
+        except Exception:
+            # A malformed bundled xml should never block client startup.
+            return {}
 
     @staticmethod
     def _maybe_inject_viewfs_fallback(

@@ -169,7 +169,8 @@ class HdfsNativeFileIOInitTest(unittest.TestCase):
         self._client_cls.assert_called_once()
         _, kwargs = self._client_cls.call_args
         self.assertEqual(kwargs.get("url"), "hdfs://ns1")
-        self.assertNotIn("config", kwargs)
+        # `config` may carry the bundled fallback xml (folded in when no
+        # config_dir is available); only assert url here.
 
     def test_viewfs_scheme_passes_through(self):
         self._make("viewfs://cluster1/")
@@ -726,6 +727,97 @@ class PickleTest(unittest.TestCase):
         # The pickled blob should reference the constructor inputs only;
         # specifically it should not embed the literal mock _client.
         self.assertNotIn(b"_client", blob)
+
+
+class DefaultHadoopFallbackTest(unittest.TestCase):
+    """Cover the bundled-xml fallback used when HADOOP_CONF_DIR is unset."""
+
+    def setUp(self):
+        _install_fake_hdfs_native()
+        self._client_cls = sys.modules["hdfs_native"].Client
+
+    def tearDown(self):
+        _uninstall_fake_hdfs_native()
+
+    def _make(self, path, props=None, env=None):
+        from pypaimon.filesystem.hdfs_native_file_io import HdfsNativeFileIO
+        env_dict = env if env is not None else {}
+        with patch.dict(os.environ, env_dict, clear=True):
+            return HdfsNativeFileIO(path, Options(props or {}))
+
+    def test_bundled_xml_loaded(self):
+        from pypaimon.filesystem.hdfs_native_file_io import HdfsNativeFileIO
+        cfg = HdfsNativeFileIO._load_default_hadoop_xml()
+        # Spot-check well-known keys from the kwai bundled xml.
+        self.assertEqual(cfg.get("fs.defaultFS"), "viewfs://hadoop-lt-cluster")
+        self.assertEqual(cfg.get("dfs.nameservices"), "lt-router.sy")
+        self.assertEqual(
+            cfg.get("fs.viewfs.mounttable.hadoop-lt-cluster.link./home"),
+            "hdfs://lt-router.sy/home",
+        )
+        # One NN address picked from the 15-entry HA list.
+        self.assertEqual(
+            cfg.get("dfs.namenode.rpc-address.lt-router.sy.domain1"),
+            "hdfs-offline-router-r1.internal:8888",
+        )
+
+    def test_init_uses_fallback_when_no_config_dir(self):
+        self._make("viewfs://hadoop-lt-cluster/home/x")
+        _, kwargs = self._client_cls.call_args
+        cfg = kwargs.get("config", {})
+        # Folded xml shows up in the config dict.
+        self.assertEqual(cfg.get("dfs.nameservices"), "lt-router.sy")
+        # No config_dir was passed (we have nothing on disk to point at).
+        self.assertNotIn("config_dir", kwargs)
+
+    def test_catalog_options_override_fallback(self):
+        self._make("viewfs://hadoop-lt-cluster/home/x", props={
+            "dfs.nameservices": "user-ns",
+        })
+        _, kwargs = self._client_cls.call_args
+        cfg = kwargs.get("config", {})
+        self.assertEqual(cfg.get("dfs.nameservices"), "user-ns")
+
+    def test_real_config_dir_skips_fallback(self):
+        from pypaimon.filesystem.hdfs_native_file_io import HdfsNativeFileIO
+        with tempfile.TemporaryDirectory() as d:
+            _write_hadoop_xml(
+                os.path.join(d, "hdfs-site.xml"),
+                {"dfs.nameservices": "user-ns"},
+            )
+            with patch.object(
+                HdfsNativeFileIO, "_load_default_hadoop_xml",
+                return_value={"BUNDLED_SENTINEL": "BAD"},
+            ) as patched:
+                self._make(
+                    "hdfs://user-ns/foo",
+                    props={"hdfs.conf-dir": d},
+                )
+                patched.assert_not_called()
+        _, kwargs = self._client_cls.call_args
+        self.assertEqual(kwargs.get("config_dir"), d)
+        self.assertNotIn("BUNDLED_SENTINEL", kwargs.get("config", {}))
+
+    def test_viewfs_link_fallback_auto_injected_against_bundled_xml(self):
+        self._make("viewfs://hadoop-lt-cluster/home/x")
+        _, kwargs = self._client_cls.call_args
+        cfg = kwargs.get("config", {})
+        # _maybe_inject_viewfs_fallback should pick a nameservice from one
+        # of the bundled link.* targets (hdfs://lt-router.sy/...) and inject
+        # the matching linkFallback into the overrides.
+        self.assertEqual(
+            cfg.get("fs.viewfs.mounttable.hadoop-lt-cluster.linkFallback"),
+            "hdfs://lt-router.sy/",
+        )
+
+    def test_missing_subpackage_returns_empty(self):
+        from pypaimon.filesystem.hdfs_native_file_io import HdfsNativeFileIO
+        with patch.dict(
+            sys.modules,
+            {"pypaimon.filesystem._kwai_default_hadoop_conf": None},
+        ):
+            self.assertEqual(
+                HdfsNativeFileIO._load_default_hadoop_xml(), {})
 
 
 if __name__ == "__main__":
