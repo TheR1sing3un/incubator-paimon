@@ -16,6 +16,14 @@
 # limitations under the License.
 ################################################################################
 
+"""Row-level limit wrapper for any ``RecordReader`` chain.
+
+Currently used at the outermost stage of the PK merge-on-read pipeline
+so the merge output is short-circuited at the row level instead of
+running to completion, but the wrapper itself is generic and may be
+reused on other reader chains.
+"""
+
 from typing import Optional
 
 from pypaimon.read.reader.iface.record_iterator import RecordIterator
@@ -23,40 +31,40 @@ from pypaimon.read.reader.iface.record_reader import RecordReader
 
 
 class LimitedRecordReader(RecordReader):
-    """Wraps a RecordReader and stops producing records after the limit is reached."""
+    """Stop emitting rows once ``limit`` rows have been delivered."""
 
-    def __init__(self, reader: RecordReader, limit: int):
-        self.reader = reader
-        self.limit = limit
+    def __init__(self, inner: RecordReader, limit: int):
+        if limit < 0:
+            raise ValueError("limit must be non-negative, got %d" % limit)
+        self._inner = inner
+        self._limit = limit
+        # Public so the iterator can read/write the shared counter without
+        # going through accessor calls per row.
         self.count = 0
 
     def read_batch(self) -> Optional[RecordIterator]:
-        if self.count >= self.limit:
+        if self.count >= self._limit:
             return None
-        batch = self.reader.read_batch()
+        batch = self._inner.read_batch()
         if batch is None:
             return None
-        return LimitedRecordIterator(batch, self)
+        return _LimitedRecordIterator(batch, self)
 
-    def close(self):
-        self.reader.close()
+    def close(self) -> None:
+        self._inner.close()
 
 
-class LimitedRecordIterator(RecordIterator):
-    """Wraps a RecordIterator and stops producing records after the limiter's limit is reached."""
+class _LimitedRecordIterator(RecordIterator):
 
-    def __init__(self, iterator: RecordIterator, limiter: LimitedRecordReader):
-        self.iterator = iterator
-        self.limiter = limiter
+    def __init__(self, inner: RecordIterator, limiter: LimitedRecordReader):
+        self._inner = inner
+        self._limiter = limiter
 
     def next(self):
-        if self.limiter.count >= self.limiter.limit:
+        if self._limiter.count >= self._limiter._limit:
             return None
-        result = self.iterator.next()
-        if result is not None:
-            self.limiter.count += 1
-        return result
-
-    def release_batch(self):
-        if hasattr(self.iterator, 'release_batch'):
-            self.iterator.release_batch()
+        row = self._inner.next()
+        if row is None:
+            return None
+        self._limiter.count += 1
+        return row

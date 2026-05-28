@@ -1,20 +1,19 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
 from typing import List, Optional, Any
 
@@ -32,12 +31,6 @@ class FormatAvroReader(RecordBatchReader):
     """
     An ArrowBatchReader for reading Avro files using fastavro, filters records based on the
     provided predicate and projection, and converts Avro records to RecordBatch format.
-
-    Nested projection is supported via ``nested_name_paths`` (parallel to
-    ``read_fields``). fastavro does not push nested column reads to the
-    file, so this is a Python-side fallback: we read the full top-level
-    record and walk each path through the resulting dict to extract the
-    leaf value. Output columns use the flat user-facing names.
     """
 
     def __init__(self, file_io: FileIO, file_path: str, read_fields: List[str], full_fields: List[DataField],
@@ -54,26 +47,25 @@ class FormatAvroReader(RecordBatchReader):
         projected_data_fields = [full_fields_map[name] for name in read_fields]
         self._schema = PyarrowFieldParser.from_paimon_schema(projected_data_fields)
 
-        # Default each field to a length-1 path of its own name (top-level
-        # extraction); override with the supplied paths for any nested
-        # field. This keeps the per-record extraction loop uniform.
-        if nested_name_paths is not None:
-            if len(nested_name_paths) != len(read_fields):
-                raise ValueError(
-                    "nested_name_paths must be parallel to read_fields "
-                    "(got %d paths for %d fields)"
-                    % (len(nested_name_paths), len(read_fields)))
-            self._paths = [list(p) for p in nested_name_paths]
-        else:
-            self._paths = [[name] for name in read_fields]
+        if nested_name_paths is not None and len(nested_name_paths) != len(read_fields):
+            raise ValueError(
+                "nested_name_paths length {} does not match read_fields length {}".format(
+                    len(nested_name_paths), len(read_fields)))
+        self._nested_name_paths = nested_name_paths
+        self._has_nested = bool(
+            nested_name_paths and any(len(p) > 1 for p in nested_name_paths))
 
     def read_arrow_batch(self) -> Optional[RecordBatch]:
         pydict_data = {name: [] for name in self._fields}
         records_in_batch = 0
 
         for record in self._avro_reader:
-            for col_name, path in zip(self._fields, self._paths):
-                pydict_data[col_name].append(_walk_avro_record(record, path))
+            if self._has_nested:
+                for col_name, path in zip(self._fields, self._nested_name_paths):
+                    pydict_data[col_name].append(_walk_avro_record(record, path))
+            else:
+                for col_name in self._fields:
+                    pydict_data[col_name].append(record.get(col_name))
             records_in_batch += 1
             if records_in_batch >= self._batch_size:
                 break
@@ -98,17 +90,16 @@ class FormatAvroReader(RecordBatchReader):
             self._file = None
 
 
-def _walk_avro_record(record, path):
-    """Walk ``path`` (a list of field names) through a fastavro record
-    (a dict) and return the leaf value, or None if any segment is
-    missing. Mirrors the schema-evolution-tolerant lookup used by
-    FormatPyArrowReader for nested PyArrow expressions.
+def _walk_avro_record(record, path: List[str]):
+    """Walk field names through a nested avro record dict, returning the
+    leaf value or ``None`` if any segment is missing.
     """
     current = record
     for name in path:
-        if not isinstance(current, dict):
-            return None
-        current = current.get(name)
         if current is None:
             return None
+        if isinstance(current, dict):
+            current = current.get(name)
+            continue
+        return None
     return current
