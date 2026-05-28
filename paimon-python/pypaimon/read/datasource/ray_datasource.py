@@ -1,34 +1,36 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 """
 Module to read a Paimon table into a Ray Dataset, by using the Ray Datasource API.
 """
+import heapq
 import itertools
 import logging
 from functools import partial
-from typing import Dict, List, Optional
+from typing import Iterable, List, Optional
 
 import pyarrow
 from packaging.version import parse
 import ray
 from ray.data.datasource import Datasource
 
-from pypaimon.read.datasource._split_balance import distribute_splits_into_equal_chunks
+from pypaimon.read.datasource.split_provider import SplitProvider
+from pypaimon.read.split import Split
 from pypaimon.schema.data_types import PyarrowFieldParser
 
 logger = logging.getLogger(__name__)
@@ -38,151 +40,73 @@ RAY_VERSION_SCHEMA_IN_READ_TASK = "2.48.0"  # Schema moved from BlockMetadata to
 RAY_VERSION_PER_TASK_ROW_LIMIT = "2.52.0"  # per_task_row_limit parameter introduced
 
 
-def _paimon_read_task(splits, table, predicate, read_type, schema, limit=None):
-    """Module-level read function that yields Arrow tables per batch.
-
-    Using a generator avoids loading all data into memory at once —
-    memory usage is proportional to batch size rather than entire split group.
-    """
-    from pypaimon.read.table_read import TableRead
-    worker_table_read = TableRead(table, predicate, read_type, limit=limit)
-    batch_reader = worker_table_read.to_arrow_batch_reader(splits)
-
-    has_yielded = False
-    for batch in iter(batch_reader.read_next_batch, None):
-        if batch.num_rows > 0:
-            padded = TableRead._try_to_pad_batch_by_schema(batch, schema)
-            yield pyarrow.Table.from_batches([padded])
-            has_yielded = True
-
-    if not has_yielded:
-        yield pyarrow.Table.from_arrays(
-            [pyarrow.array([], type=f.type) for f in schema], schema=schema
-        )
-
-
 class RayDatasource(Datasource):
-    """
-    Ray Data Datasource implementation for reading Paimon tables.
+    """Ray Data ``Datasource`` implementation for reading Paimon tables.
 
-    This datasource is fully self-contained: it only requires a table identifier
-    and catalog options, and lazily creates the catalog, loads the table, and
-    plans splits internally — similar to Iceberg's ``IcebergDatasource``.
+    Holds a :class:`SplitProvider` that supplies the four planning artefacts
+    needed to build read tasks (table, splits, read_type, predicate). Two
+    provider implementations exist today:
+
+    * :class:`CatalogSplitProvider` — resolves a fully-qualified table
+      identifier through the catalog and runs the ``ReadBuilder`` plan.
+      Used by the public :func:`pypaimon.ray.read_paimon` facade.
+    * :class:`PreResolvedSplitProvider` — wraps an already-resolved
+      ``(table, splits, read_type, predicate)`` tuple. Used by the legacy
+      ``TableRead.to_ray()`` bridge to skip a second catalog round-trip.
+
+    Both providers are cheap to instantiate; they defer the catalog
+    round-trip and split planning until the first read.
     """
 
-    def __init__(
-        self,
-        table_identifier: str,
-        catalog_options: Dict[str, str],
-        predicate=None,
-        projection: Optional[List[str]] = None,
-        limit: Optional[int] = None,
-        snapshot_id: Optional[int] = None,
-        tag_name: Optional[str] = None,
-        dv_read_mode: Optional[str] = None,
-    ):
-        """
-        Initialize RayDatasource.
+    def __init__(self, split_provider: SplitProvider):
+        """Initialize a RayDatasource.
 
         Args:
-            table_identifier: Fully qualified table name, e.g. "db_name.table_name".
-            catalog_options: Options passed to ``CatalogFactory.create()``.
-            predicate: Optional predicate for filtering.
-            projection: Optional list of column names to read.
-            limit: Optional row limit for the scan.
-            snapshot_id: Optional snapshot id to read from a specific snapshot.
-            tag_name: Optional tag name to read from a specific tagged snapshot.
-            dv_read_mode: Optional override for ``deletion-vectors.read-mode``
-                (``"performance"`` / ``"freshness"``). When ``None`` the table
-                / catalog property default is honored.
+            split_provider: The :class:`SplitProvider` that supplies the
+                table, splits, read_type, and predicate. Construct one with
+                :class:`CatalogSplitProvider` (from a table identifier +
+                catalog options) or :class:`PreResolvedSplitProvider` (from
+                an already-resolved ``TableRead``).
         """
-        self.table_identifier = table_identifier
-        self.catalog_options = catalog_options
-        self.predicate = predicate
-        self.projection = projection
-        self.limit = limit
-        self.snapshot_id = snapshot_id
-        self.tag_name = tag_name
-        self.dv_read_mode = dv_read_mode
-        self._table = None
-        self._splits = None
-        self._read_type = None
+        self._split_provider = split_provider
         self._schema = None
 
-    @property
-    def table(self):
-        """Lazily load the table from the catalog."""
-        if self._table is None:
-            from pypaimon.catalog.catalog_factory import CatalogFactory
-            catalog = CatalogFactory.create(self.catalog_options)
-            table = catalog.get_table(self.table_identifier)
-            copy_options = {}
-            if self.snapshot_id is not None:
-                copy_options["scan.snapshot-id"] = str(self.snapshot_id)
-            if self.tag_name is not None:
-                copy_options["scan.tag-name"] = self.tag_name
-            if self.dv_read_mode is not None:
-                copy_options["deletion-vectors.read-mode"] = self.dv_read_mode
-            if copy_options:
-                table = table.copy(copy_options)
-            self._table = table
-        return self._table
-
-    @property
-    def splits(self):
-        """Lazily plan splits from the table."""
-        if self._splits is None:
-            self._plan()
-        return self._splits
-
-    @property
-    def read_type(self):
-        """Lazily resolve the read type (schema fields) from the table."""
-        if self._read_type is None:
-            self._plan()
-        return self._read_type
-
-    def _plan(self):
-        """Lazily plan splits from table + filter/projection/limit."""
-        from pypaimon.read.read_builder import ReadBuilder
-        rb = ReadBuilder(self.table)
-        if self.predicate is not None:
-            rb = rb.with_filter(self.predicate)
-        if self.projection is not None:
-            rb = rb.with_projection(self.projection)
-        if self.limit is not None:
-            rb = rb.with_limit(self.limit)
-        self._read_type = rb.read_type()
-        self._splits = rb.new_scan().plan().splits()
-
-    @classmethod
-    def _from_table_read(cls, table_read, splits):
-        """Internal: bridge for TableRead.to_ray() backward compatibility."""
-        ds = cls.__new__(cls)
-        ds.table_identifier = None
-        ds.catalog_options = None
-        ds.predicate = table_read.predicate
-        ds.projection = None
-        ds.limit = table_read.limit
-        ds._table = table_read.table
-        ds._splits = splits
-        ds._read_type = table_read.read_type
-        ds._schema = None
-        return ds
-
     def get_name(self) -> str:
-        if self.table_identifier:
-            return f"PaimonTable({self.table_identifier})"
-        identifier = self.table.identifier
-        table_name = identifier.get_full_name() if hasattr(identifier, 'get_full_name') else str(identifier)
-        return f"PaimonTable({table_name})"
+        return f"PaimonTable({self._split_provider.display_name()})"
 
     def estimate_inmemory_data_size(self) -> Optional[int]:
-        if not self.splits:
+        splits = self._split_provider.splits()
+        if not splits:
             return 0
 
-        total_size = sum(split.file_size for split in self.splits)
+        total_size = sum(split.file_size for split in splits)
         return total_size if total_size > 0 else None
+
+    @staticmethod
+    def _distribute_splits_into_equal_chunks(
+            splits: Iterable[Split], n_chunks: int
+    ) -> List[List[Split]]:
+        """
+        Implement a greedy knapsack algorithm to distribute the splits across tasks,
+        based on their file size, as evenly as possible.
+        """
+        chunks = [list() for _ in range(n_chunks)]
+        chunk_sizes = [(0, chunk_id) for chunk_id in range(n_chunks)]
+        heapq.heapify(chunk_sizes)
+
+        # From largest to smallest, add the splits to the smallest chunk one at a time
+        for split in sorted(
+                splits, key=lambda s: s.file_size if hasattr(s, 'file_size') and s.file_size > 0 else 0, reverse=True
+        ):
+            smallest_chunk = heapq.heappop(chunk_sizes)
+            chunks[smallest_chunk[1]].append(split)
+            split_size = split.file_size if hasattr(split, 'file_size') and split.file_size > 0 else 0
+            heapq.heappush(
+                chunk_sizes,
+                (smallest_chunk[0] + split_size, smallest_chunk[1]),
+            )
+
+        return chunks
 
     def get_read_tasks(self, parallelism: int, **kwargs) -> List:
         """Return a list of read tasks that can be executed in parallel."""
@@ -194,12 +118,20 @@ class RayDatasource(Datasource):
         if parallelism < 1:
             raise ValueError(f"parallelism must be at least 1, got {parallelism}")
 
-        splits = self.splits
+        # Pull provider state into locals once: avoids capturing self in the
+        # ReadTask closure (see ray-project/ray#49107) and amortises the
+        # provider-method dispatch over all chunks.
+        table = self._split_provider.table()
+        predicate = self._split_provider.predicate()
+        read_type = self._split_provider.read_type()
+        splits = self._split_provider.splits()
+        limit = self._split_provider.limit()
         if not splits:
             return []
 
         if self._schema is None:
-            self._schema = PyarrowFieldParser.from_paimon_schema(self.read_type)
+            self._schema = PyarrowFieldParser.from_paimon_schema(read_type)
+        schema = self._schema
 
         if parallelism > len(splits):
             parallelism = len(splits)
@@ -207,15 +139,52 @@ class RayDatasource(Datasource):
                 f"Reducing the parallelism to {parallelism}, as that is the number of splits"
             )
 
-        table = self.table
-        predicate = self.predicate
-        read_type = self.read_type
-        schema = self._schema
+        # Create a partial function to avoid capturing self in closure
+        # This reduces serialization overhead (see https://github.com/ray-project/ray/issues/49107)
+        def _get_read_task(
+                splits: List[Split],
+                table=table,
+                predicate=predicate,
+                read_type=read_type,
+                schema=schema,
+                limit=limit,
+        ) -> Iterable[pyarrow.Table]:
+            """Read function that will be executed by Ray workers."""
+            from pypaimon.read.table_read import TableRead
+            worker_table_read = TableRead(
+                table, predicate, read_type, limit=limit)
+
+            batch_reader = worker_table_read.to_arrow_batch_reader(splits)
+            has_data = False
+            for batch in iter(batch_reader.read_next_batch, None):
+                if batch.num_rows == 0:
+                    continue
+                has_data = True
+                table = pyarrow.Table.from_batches([batch])
+                if table.schema != schema:
+                    table = table.cast(schema)
+                yield table
+
+            if not has_data:
+                yield pyarrow.Table.from_arrays(
+                    [pyarrow.array([], type=field.type) for field in schema],
+                    schema=schema
+                )
+
+        # Use partial to create read function without capturing self
+        get_read_task = partial(
+            _get_read_task,
+            table=table,
+            predicate=predicate,
+            read_type=read_type,
+            schema=schema,
+            limit=limit,
+        )
 
         read_tasks = []
 
         # Distribute splits across tasks using load balancing algorithm
-        for chunk_splits in distribute_splits_into_equal_chunks(splits, parallelism):
+        for chunk_splits in self._distribute_splits_into_equal_chunks(splits, parallelism):
             if not chunk_splits:
                 continue
 
@@ -226,14 +195,9 @@ class RayDatasource(Datasource):
             for split in chunk_splits:
                 if predicate is None:
                     # Only estimate rows if no predicate (predicate filtering changes row count)
-                    row_count = None
-                    if hasattr(split, 'merged_row_count'):
-                        merged_count = split.merged_row_count()
-                        if merged_count is not None:
-                            row_count = merged_count
-                    if row_count is None and hasattr(split, 'row_count') and split.row_count > 0:
-                        row_count = split.row_count
-                    if row_count is not None and row_count > 0:
+                    merged = split.merged_row_count()
+                    row_count = merged if merged is not None else split.row_count
+                    if row_count > 0:
                         total_rows += row_count
                 if hasattr(split, 'file_size') and split.file_size > 0:
                     total_size += split.file_size
@@ -265,15 +229,7 @@ class RayDatasource(Datasource):
 
             metadata = BlockMetadata(**metadata_kwargs)
 
-            read_fn = partial(
-                _paimon_read_task,
-                chunk_splits,
-                table=table,
-                predicate=predicate,
-                read_type=read_type,
-                schema=schema,
-                limit=self.limit,
-            )
+            read_fn = partial(get_read_task, chunk_splits)
             read_task_kwargs = {
                 'read_fn': read_fn,
                 'metadata': metadata,
