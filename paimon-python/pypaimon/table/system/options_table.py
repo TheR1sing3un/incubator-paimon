@@ -1,49 +1,54 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+"""The ``$options`` system table — every option from the latest schema."""
+
+from typing import List
 
 import pyarrow
 
-from pypaimon.table.system.system_table_base import SystemTableBase
+from pypaimon.schema.data_types import AtomicType, DataField, RowType
+from pypaimon.table.system.system_table import SystemTable
 
 
-OPTIONS_NAME = "options"
+TABLE_TYPE = RowType(False, [
+    DataField(0, "key", AtomicType("STRING", nullable=False)),
+    DataField(1, "value", AtomicType("STRING", nullable=False)),
+])
 
 
-class OptionsTable(SystemTableBase):
-    """A system table exposing every option (key/value) of a table.
+class OptionsTable(SystemTable):
+    """The ``$options`` system table: one (key, value) row per option."""
 
-    Mirrors Java's ``org.apache.paimon.table.system.OptionsTable``.
-    """
+    def system_table_name(self) -> str:
+        return "options"
 
-    _SCHEMA = pyarrow.schema([
-        pyarrow.field("key", pyarrow.string()),
-        pyarrow.field("value", pyarrow.string()),
-    ])
+    def row_type(self) -> RowType:
+        return TABLE_TYPE
 
-    def schema(self) -> pyarrow.Schema:
-        return self._SCHEMA
+    def primary_keys(self) -> List[str]:
+        return ["key"]
 
-    def build_arrow_table(self) -> pyarrow.Table:
-        raw = dict(self.origin.table_schema.options or {})
-        keys = sorted(raw.keys())
-        values = [str(raw[k]) if raw[k] is not None else None for k in keys]
-        return pyarrow.Table.from_arrays(
-            [pyarrow.array(keys, type=pyarrow.string()),
-             pyarrow.array(values, type=pyarrow.string())],
-            schema=self._SCHEMA,
-        )
+    def _build_arrow_table(self) -> pyarrow.Table:
+        schema = self.base_table.schema_manager.latest()
+        options = schema.options if schema is not None else {}
+        keys: List[str] = []
+        values: List[str] = []
+        for key, value in options.items():
+            keys.append(str(key))
+            values.append("" if value is None else str(value))
+        return pyarrow.table({"key": keys, "value": values})
