@@ -138,6 +138,15 @@ public interface SnapshotReader {
      * cache is filter-agnostic and can be reused across queries with different predicates.
      */
     default PlanCache buildPlanCache() {
+        return buildPlanCache(true);
+    }
+
+    /**
+     * Build a {@link PlanCache} with control over AccelerateIndex metadata loading.
+     *
+     * @param includeAccelerateIndex if false, skip index meta and pkmap sidecar loading
+     */
+    default PlanCache buildPlanCache(boolean includeAccelerateIndex) {
         throw new UnsupportedOperationException("PlanCache not supported by this reader");
     }
 

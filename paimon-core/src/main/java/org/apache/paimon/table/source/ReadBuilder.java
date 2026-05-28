@@ -214,6 +214,17 @@ public interface ReadBuilder extends Serializable {
      * <p>The cache is snapshot-scoped: rebuild it when the table's latest snapshot changes.
      */
     default PlanCache buildPlanCache() {
+        return buildPlanCache(true);
+    }
+
+    /**
+     * Build a {@link PlanCache} with control over AccelerateIndex metadata loading.
+     *
+     * @param includeAccelerateIndex if {@code false}, skip AccelerateIndex meta and pkmap sidecar
+     *     loading (saves ~100ms per bucket of HDFS I/O). ANN search via {@link
+     *     #planAccelerateIndexSearch} will degrade to brute-force scan.
+     */
+    default PlanCache buildPlanCache(boolean includeAccelerateIndex) {
         throw new UnsupportedOperationException("PlanCache not supported by this ReadBuilder");
     }
 

@@ -477,6 +477,25 @@ public class PlanCacheTest {
         return result;
     }
 
+    @Test
+    public void testBuildPlanCacheSkipAccelerateIndex() throws Exception {
+        writeRows(GenericRow.of(1, 1, 100), GenericRow.of(1, 2, 200), GenericRow.of(2, 3, 300));
+
+        ReadBuilder rb = table.newReadBuilder();
+        PlanCache full = rb.buildPlanCache(true);
+        PlanCache skip = rb.buildPlanCache(false);
+
+        assertThat(skip.snapshotId()).isEqualTo(full.snapshotId());
+        assertThat(skip.resolvedEntries().size()).isEqualTo(full.resolvedEntries().size());
+
+        assertThat(skip.indexMetas()).isEmpty();
+        assertThat(skip.vectorPkmapPaths()).isEmpty();
+
+        List<Split> fullSplits = rb.planWithCache(full);
+        List<Split> skipSplits = rb.planWithCache(skip);
+        assertThat(extractFileNames(skipSplits)).isEqualTo(extractFileNames(fullSplits));
+    }
+
     private Set<String> extractFileNames(List<Split> splits) {
         Set<String> files = new HashSet<>();
         for (Split split : splits) {

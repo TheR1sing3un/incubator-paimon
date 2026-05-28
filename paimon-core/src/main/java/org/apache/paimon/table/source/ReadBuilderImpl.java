@@ -197,10 +197,10 @@ public class ReadBuilderImpl implements ReadBuilder {
     }
 
     @Override
-    public PlanCache buildPlanCache() {
+    public PlanCache buildPlanCache(boolean includeAccelerateIndex) {
         org.apache.paimon.table.FileStoreTable fst = (org.apache.paimon.table.FileStoreTable) table;
         org.apache.paimon.table.source.snapshot.SnapshotReader reader = fst.newSnapshotReader();
-        return reader.buildPlanCache();
+        return reader.buildPlanCache(includeAccelerateIndex);
     }
 
     @Override

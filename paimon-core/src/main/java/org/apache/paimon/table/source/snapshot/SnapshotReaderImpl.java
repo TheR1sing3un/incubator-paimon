@@ -390,7 +390,7 @@ public class SnapshotReaderImpl implements SnapshotReader {
     }
 
     @Override
-    public PlanCache buildPlanCache() {
+    public PlanCache buildPlanCache(boolean includeAccelerateIndex) {
         Snapshot snapshot = snapshotManager.latestSnapshot();
         if (snapshot == null) {
             return PlanCache.empty();
@@ -411,40 +411,78 @@ public class SnapshotReaderImpl implements SnapshotReader {
         Map<Pair<BinaryRow, Integer>, Map<String, DeletionFile>> dvIdx =
                 deletionVectors ? scanDvIndex(snapshot, allBuckets) : Collections.emptyMap();
 
-        Map<String, AccelerateIndexMeta> idxMetas = new HashMap<>();
-        FileIO fileIO = snapshotManager.fileIO();
-        for (String bp : new LinkedHashSet<>(bucketPathMap.values())) {
-            try {
-                Path metaPath = new Path(bp, AccelerateIndexConstants.META_FILE_NAME);
-                idxMetas.put(bp, AccelerateIndexMetaIO.readOrEmpty(fileIO, metaPath));
-            } catch (java.io.IOException e) {
-                LOG.warn("Failed to read accelerate index meta at {}, using empty", bp, e);
-                idxMetas.put(bp, AccelerateIndexMeta.empty());
-            }
-        }
+        Map<String, AccelerateIndexMeta> idxMetas;
+        Map<String, String> vectorPkmapPaths;
 
-        // Resolve pkmap sidecar paths for vector CF files
-        Map<String, String> vectorPkmapPaths = new HashMap<>();
-        for (ManifestEntry entry : entries) {
-            if (entry.file().isVectorCFFile()) {
-                String vectorFileName = entry.file().fileName();
-                if (!vectorPkmapPaths.containsKey(vectorFileName)) {
-                    Pair<BinaryRow, Integer> pb = Pair.of(entry.partition(), entry.bucket());
-                    String bp = bucketPathMap.get(pb);
-                    if (bp != null) {
-                        String sidecarName =
-                                AccelerateIndexConstants.pkmapSidecarName(vectorFileName);
-                        Path sidecarPath = new Path(bp, sidecarName);
-                        try {
-                            if (fileIO.exists(sidecarPath)) {
-                                vectorPkmapPaths.put(vectorFileName, sidecarPath.toString());
+        if (includeAccelerateIndex) {
+            FileIO fileIO = snapshotManager.fileIO();
+            Set<String> uniqueBucketPaths = new LinkedHashSet<>(bucketPathMap.values());
+
+            java.util.concurrent.ThreadPoolExecutor ioPool =
+                    org.apache.paimon.utils.ThreadPoolUtils.createCachedThreadPool(
+                            Math.min(20, Math.max(1, uniqueBucketPaths.size())), "plan-cache-io");
+            try {
+                // Phase 1: parallel AccelerateIndex meta reads
+                java.util.concurrent.ConcurrentHashMap<String, AccelerateIndexMeta>
+                        concurrentMetas = new java.util.concurrent.ConcurrentHashMap<>();
+                org.apache.paimon.utils.ThreadPoolUtils.randomlyOnlyExecute(
+                        ioPool,
+                        bp -> {
+                            try {
+                                Path metaPath =
+                                        new Path(bp, AccelerateIndexConstants.META_FILE_NAME);
+                                concurrentMetas.put(
+                                        bp, AccelerateIndexMetaIO.readOrEmpty(fileIO, metaPath));
+                            } catch (java.io.IOException e) {
+                                LOG.warn("Failed to read accelerate index meta at {}", bp, e);
+                                concurrentMetas.put(bp, AccelerateIndexMeta.empty());
                             }
-                        } catch (java.io.IOException e) {
-                            LOG.debug("Error checking pkmap sidecar for {}", vectorFileName, e);
+                        },
+                        uniqueBucketPaths);
+                idxMetas = new HashMap<>(concurrentMetas);
+
+                // Phase 2: collect pkmap sidecar checks (no I/O), then parallel exists
+                Map<String, Path> sidecarChecks = new LinkedHashMap<>();
+                for (ManifestEntry entry : entries) {
+                    if (entry.file().isVectorCFFile()) {
+                        String vectorFileName = entry.file().fileName();
+                        if (!sidecarChecks.containsKey(vectorFileName)) {
+                            Pair<BinaryRow, Integer> pb =
+                                    Pair.of(entry.partition(), entry.bucket());
+                            String bp = bucketPathMap.get(pb);
+                            if (bp != null) {
+                                String sidecarName =
+                                        AccelerateIndexConstants.pkmapSidecarName(vectorFileName);
+                                sidecarChecks.put(vectorFileName, new Path(bp, sidecarName));
+                            }
                         }
                     }
                 }
+
+                java.util.concurrent.ConcurrentHashMap<String, String> concurrentPkmaps =
+                        new java.util.concurrent.ConcurrentHashMap<>();
+                if (!sidecarChecks.isEmpty()) {
+                    org.apache.paimon.utils.ThreadPoolUtils.randomlyOnlyExecute(
+                            ioPool,
+                            e -> {
+                                try {
+                                    if (fileIO.exists(e.getValue())) {
+                                        concurrentPkmaps.put(e.getKey(), e.getValue().toString());
+                                    }
+                                } catch (java.io.IOException ex) {
+                                    LOG.debug(
+                                            "Error checking pkmap sidecar for {}", e.getKey(), ex);
+                                }
+                            },
+                            sidecarChecks.entrySet());
+                }
+                vectorPkmapPaths = new HashMap<>(concurrentPkmaps);
+            } finally {
+                ioPool.shutdown();
             }
+        } else {
+            idxMetas = Collections.emptyMap();
+            vectorPkmapPaths = Collections.emptyMap();
         }
 
         // Load vector file mapping for VCF, grouped by bucket
