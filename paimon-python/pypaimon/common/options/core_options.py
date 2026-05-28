@@ -1,20 +1,20 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 import sys
 from enum import Enum
 from typing import Dict, Optional
@@ -58,11 +58,7 @@ class MergeEngine(str, Enum):
 
 
 class DvReadMode(str, Enum):
-    """
-    Read mode for deletion vector tables.
-
-    Mirrors Java CoreOptions.DvReadMode in commit d5ddcfda6.
-    """
+    """Read mode for deletion vector tables."""
     PERFORMANCE = "performance"
     FRESHNESS = "freshness"
 
@@ -75,6 +71,7 @@ class CoreOptions:
     FILE_FORMAT_PARQUET: str = "parquet"
     FILE_FORMAT_BLOB: str = "blob"
     FILE_FORMAT_LANCE: str = "lance"
+    FILE_FORMAT_VORTEX: str = "vortex"
 
     # Basic options
     AUTO_CREATE: ConfigOption[bool] = (
@@ -267,6 +264,7 @@ class CoreOptions:
         .default_value(MemorySize.of_mebi_bytes(128))
         .with_description("Target size of one .vector.bin file before rollover.")
     )
+
     DATA_FILE_PREFIX: ConfigOption[str] = (
         ConfigOptions.key("data-file.prefix")
         .string_type()
@@ -297,9 +295,42 @@ class CoreOptions:
 
     SCAN_SNAPSHOT_ID: ConfigOption[int] = (
         ConfigOptions.key("scan.snapshot-id")
-        .int_type()
+        .long_type()
         .no_default_value()
-        .with_description("Optional snapshot id used for reading a specific snapshot.")
+        .with_description(
+            "Optional snapshot id used in case of 'from-snapshot' or "
+            "'from-snapshot-full' scan mode."
+        )
+    )
+
+    SCAN_TIMESTAMP_MILLIS: ConfigOption[int] = (
+        ConfigOptions.key("scan.timestamp-millis")
+        .long_type()
+        .no_default_value()
+        .with_description(
+            "Optional timestamp in milliseconds used for time travel to the "
+            "latest snapshot equal to or earlier than the given timestamp."
+        )
+    )
+
+    SCAN_TIMESTAMP: ConfigOption[str] = (
+        ConfigOptions.key("scan.timestamp")
+        .string_type()
+        .no_default_value()
+        .with_description(
+            "Optional timestamp string (e.g. '2023-12-01 12:00:00') used for "
+            "time travel. Will be converted to milliseconds internally."
+        )
+    )
+
+    SCAN_WATERMARK: ConfigOption[int] = (
+        ConfigOptions.key("scan.watermark")
+        .long_type()
+        .no_default_value()
+        .with_description(
+            "Optional watermark used for time travel to the first snapshot "
+            "with watermark greater than or equal to the given value."
+        )
     )
 
     SOURCE_SPLIT_TARGET_SIZE: ConfigOption[MemorySize] = (
@@ -333,8 +364,7 @@ class CoreOptions:
             "Read mode for deletion vector tables. "
             "PERFORMANCE: only read compacted data (level >= 1), best read performance. "
             "FRESHNESS: read all levels including level-0 for better data freshness, "
-            "level-0 files will be merged on read with deletion vector pre-filtering. "
-            "For LOOKUP streaming reads, this mainly affects the initial full snapshot."
+            "level-0 files will be merged on read with deletion vector pre-filtering."
         )
     )
 
@@ -380,10 +410,8 @@ class CoreOptions:
             "When enabled, the table must have lookup capability.")
     )
 
-    # Field-level aggregation options (mirror Java CoreOptions.FIELDS_DEFAULT_AGG_FUNC
-    # and the dynamic ``fields.<field>.*`` keys). The dynamic keys are read directly
-    # from the underlying option map by helper methods below — no static ConfigOption
-    # is needed per field.
+    # Field-level aggregation options. Per-field keys ``fields.<field>.*`` are
+    # read directly from the option map by helper methods below.
     FIELDS_DEFAULT_AGG_FUNC: ConfigOption[str] = (
         ConfigOptions.key("fields.default-aggregate-function")
         .string_type()
@@ -392,11 +420,11 @@ class CoreOptions:
             "Default aggregate function for partial-update, "
             "versioned-partial-update and aggregate merge functions.")
     )
-
     FIELDS_PREFIX = "fields"
     AGG_FUNCTION_SUFFIX = "aggregate-function"
     DISTINCT_SUFFIX = "distinct"
     LIST_AGG_DELIMITER_SUFFIX = "list-agg-delimiter"
+
     # Commit options
     COMMIT_USER_PREFIX: ConfigOption[str] = (
         ConfigOptions.key("commit.user-prefix")
@@ -513,6 +541,126 @@ class CoreOptions:
         )
     )
 
+    LOCAL_CACHE_ENABLED: ConfigOption[bool] = (
+        ConfigOptions.key("local-cache.enabled")
+        .boolean_type()
+        .default_value(False)
+        .with_description(
+            "Whether to enable local block cache for file reads. "
+            "If local-cache.dir is configured, disk cache is used; otherwise memory cache is used."
+        )
+    )
+
+    LOCAL_CACHE_DIR: ConfigOption[str] = (
+        ConfigOptions.key("local-cache.dir")
+        .string_type()
+        .no_default_value()
+        .with_description(
+            "Directory for local block cache on disk. "
+            "If not configured, memory cache is used instead."
+        )
+    )
+
+    LOCAL_CACHE_MAX_SIZE: ConfigOption[MemorySize] = (
+        ConfigOptions.key("local-cache.max-size")
+        .memory_type()
+        .no_default_value()
+        .with_description("Maximum total size of the local block cache. Unlimited by default.")
+    )
+
+    LOCAL_CACHE_BLOCK_SIZE: ConfigOption[MemorySize] = (
+        ConfigOptions.key("local-cache.block-size")
+        .memory_type()
+        .default_value(MemorySize.of_mebi_bytes(1))
+        .with_description("Block size for local cache.")
+    )
+
+    LOCAL_CACHE_WHITELIST: ConfigOption[str] = (
+        ConfigOptions.key("local-cache.whitelist")
+        .string_type()
+        .default_value("meta,global-index")
+        .with_description(
+            "Comma-separated list of file types to cache. "
+            "Supported values: meta, global-index, bucket-index, data, file-index."
+        )
+    )
+
+    READ_BATCH_SIZE: ConfigOption[int] = (
+        ConfigOptions.key("read.batch-size")
+        .int_type()
+        .default_value(1024)
+        .with_description("Read batch size for any file format if it supports.")
+    )
+
+    READ_PARALLELISM: ConfigOption[int] = (
+        ConfigOptions.key("read.parallelism")
+        .int_type()
+        .default_value(1)
+        .with_description(
+            "Parallelism for reading splits within a single TableRead call. "
+            "The value 1 (default) keeps reads serial. Values >= 2 enable a "
+            "thread pool that reads splits concurrently and assembles the "
+            "result in input order. Has no effect when fewer than 2 splits "
+            "are passed.")
+    )
+
+    ADD_COLUMN_BEFORE_PARTITION: ConfigOption[bool] = (
+        ConfigOptions.key("add-column-before-partition")
+        .boolean_type()
+        .default_value(False)
+        .with_description(
+            "When adding a new column, if the table has partition keys, "
+            "insert the new column before the first partition column by default."
+        )
+    )
+
+    VARIANT_SHREDDING_ENABLED: ConfigOption[bool] = (
+        ConfigOptions.key("variant.shredding.enabled")
+        .boolean_type()
+        .default_value(True)
+        .with_description(
+            "Whether to enable VARIANT shredding. When True (default), writes apply the "
+            "shredding schema configured via 'variant.shreddingSchema', and reads "
+            "automatically reassemble shredded columns back to the standard "
+            "struct<value, metadata> form. Set to False to bypass both behaviours."
+        )
+    )
+
+    VARIANT_SHREDDING_SCHEMA: ConfigOption[str] = (
+        ConfigOptions.key("variant.shreddingSchema")
+        .string_type()
+        .no_default_value()
+        .with_description(
+            "JSON-encoded ROW type specifying which VARIANT sub-fields to shred when "
+            "writing Parquet (static shredding mode). The top-level fields map VARIANT "
+            "column names to their sub-field schemas. "
+            "Alias: 'parquet.variant.shreddingSchema'. "
+            "Example: '{\"type\":\"ROW\",\"fields\":[{\"id\":0,\"name\":\"payload\","
+            "\"type\":{\"type\":\"ROW\",\"fields\":[{\"id\":0,\"name\":\"age\","
+            "\"type\":\"BIGINT\"}]}}]}'"
+        )
+    )
+
+    PARTITION_DEFAULT_NAME: ConfigOption[str] = (
+        ConfigOptions.key("partition.default-name")
+        .string_type()
+        .default_value("__DEFAULT_PARTITION__")
+        .with_description(
+            "The default partition name in case the dynamic partition"
+            " column value is null/empty string."
+        )
+    )
+
+    DYNAMIC_PARTITION_OVERWRITE: ConfigOption[bool] = (
+        ConfigOptions.key("dynamic-partition-overwrite")
+        .boolean_type()
+        .default_value(True)
+        .with_description(
+            "Whether only overwrite dynamic partition when overwriting a partitioned table "
+            "with dynamic partition columns. Works only when the table has partition keys."
+        )
+    )
+
     # FAISS Vector Index options
     VECTOR_DIM: ConfigOption[int] = (
         ConfigOptions.key("vector.dim")
@@ -601,23 +749,6 @@ class CoreOptions:
         )
     )
 
-    READ_BATCH_SIZE: ConfigOption[int] = (
-        ConfigOptions.key("read.batch-size")
-        .int_type()
-        .default_value(1024)
-        .with_description("Read batch size for any file format if it supports.")
-    )
-
-    ADD_COLUMN_BEFORE_PARTITION: ConfigOption[bool] = (
-        ConfigOptions.key("add-column-before-partition")
-        .boolean_type()
-        .default_value(False)
-        .with_description(
-            "When adding a new column, if the table has partition keys, "
-            "insert the new column before the first partition column by default."
-        )
-    )
-
     def __init__(self, options: Options):
         self.options = options
 
@@ -683,6 +814,16 @@ class CoreOptions:
     def blob_as_descriptor(self, default=None):
         return self.options.get(CoreOptions.BLOB_AS_DESCRIPTOR, default)
 
+    def variant_shredding_enabled(self) -> bool:
+        return self.options.get(CoreOptions.VARIANT_SHREDDING_ENABLED, True)
+
+    def variant_shredding_schema(self) -> Optional[str]:
+        val = self.options.get(CoreOptions.VARIANT_SHREDDING_SCHEMA)
+        if val is None:
+            # Support alias used by Java: parquet.variant.shreddingSchema
+            val = self.options.data.get("parquet.variant.shreddingSchema")
+        return val
+
     def blob_descriptor_fields(self, default=None):
         value = self.options.get(CoreOptions.BLOB_DESCRIPTOR_FIELD, default)
         if value is None:
@@ -695,27 +836,9 @@ class CoreOptions:
 
     def target_file_size(self, has_primary_key, default=None):
         return self.options.get(CoreOptions.TARGET_FILE_SIZE,
-                                MemorySize.of_mebi_bytes(2048) if default is None else MemorySize.parse(
+                                MemorySize.of_mebi_bytes(
+                                    128 if has_primary_key else 256) if default is None else MemorySize.parse(
                                     default)).get_bytes()
-
-    def vector_column_family_enabled(self, default=None):
-        return self.options.get(CoreOptions.VECTOR_COLUMN_FAMILY_ENABLED, default)
-
-    def vector_column_family_columns(self, default=None):
-        raw = self.options.get(CoreOptions.VECTOR_COLUMN_FAMILY_COLUMNS, default)
-        if raw is None:
-            return []
-        if isinstance(raw, str):
-            return [c.strip() for c in raw.split(",") if c.strip()]
-        if isinstance(raw, (list, set, tuple)):
-            return [str(c).strip() for c in raw if str(c).strip()]
-        return []
-
-    def vector_column_family_target_file_size(self, default=None):
-        value = self.options.get(CoreOptions.VECTOR_COLUMN_FAMILY_TARGET_FILE_SIZE, default)
-        if value is None:
-            return MemorySize.of_mebi_bytes(128).get_bytes()
-        return value.get_bytes()
 
     def blob_target_file_size(self, default=None):
         """
@@ -745,6 +868,15 @@ class CoreOptions:
     def scan_snapshot_id(self, default=None):
         return self.options.get(CoreOptions.SCAN_SNAPSHOT_ID, default)
 
+    def scan_timestamp_millis(self, default=None):
+        return self.options.get(CoreOptions.SCAN_TIMESTAMP_MILLIS, default)
+
+    def scan_timestamp(self, default=None):
+        return self.options.get(CoreOptions.SCAN_TIMESTAMP, default)
+
+    def scan_watermark(self, default=None):
+        return self.options.get(CoreOptions.SCAN_WATERMARK, default)
+
     def source_split_target_size(self, default=None):
         return self.options.get(CoreOptions.SOURCE_SPLIT_TARGET_SIZE, default).get_bytes()
 
@@ -754,17 +886,8 @@ class CoreOptions:
     def commit_user_prefix(self, default=None):
         return self.options.get(CoreOptions.COMMIT_USER_PREFIX, default)
 
-    def commit_committer(self, default=None):
-        return self.options.get(CoreOptions.COMMIT_COMMITTER, default)
-
-    def commit_message(self, default=None):
-        return self.options.get(CoreOptions.COMMIT_MESSAGE, default)
-
     def row_tracking_enabled(self, default=None):
         return self.options.get(CoreOptions.ROW_TRACKING_ENABLED, default)
-
-    def snapshot_sequence_ordering(self, default=None):
-        return self.options.get(CoreOptions.SNAPSHOT_SEQUENCE_ORDERING, default)
 
     def data_evolution_enabled(self, default=None):
         return self.options.get(CoreOptions.DATA_EVOLUTION_ENABLED, default)
@@ -772,57 +895,11 @@ class CoreOptions:
     def deletion_vectors_enabled(self, default=None):
         return self.options.get(CoreOptions.DELETION_VECTORS_ENABLED, default)
 
-    def dv_read_mode(self, default=None):
-        return self.options.get(CoreOptions.DELETION_VECTORS_READ_MODE, default)
-
-    def dv_freshness_read_enabled(self) -> bool:
-        # Mirror Java CoreOptions.dvFreshnessReadEnabled(): True only when DV is enabled
-        # AND read-mode is FRESHNESS. Non-DV tables ignore the read-mode setting.
-        return self.deletion_vectors_enabled() and self.dv_read_mode() == DvReadMode.FRESHNESS
-
     def changelog_producer(self, default=None):
         return self.options.get(CoreOptions.CHANGELOG_PRODUCER, default)
 
     def merge_engine(self, default=None):
         return self.options.get(CoreOptions.MERGE_ENGINE, default)
-
-    def ignore_delete(self, default=None):
-        return self.options.get(CoreOptions.IGNORE_DELETE, default)
-
-    def versioned_partial_update_merge_mode(self, default=None):
-        return self.options.get(CoreOptions.VERSIONED_PARTIAL_UPDATE_MERGE_MODE, default)
-
-    def versioned_partial_update_ignore_mode_enabled(self, default=None):
-        return self.options.get(CoreOptions.VERSIONED_PARTIAL_UPDATE_IGNORE_MODE_ENABLED, default)
-
-    # ---- Field-level aggregation helpers ---------------------------------
-    # Mirrors Java CoreOptions.fieldsDefaultFunc / fieldAggFunc /
-    # fieldCollectAggDistinct / fieldListAggDelimiter / definedAggFunc.
-
-    def fields_default_agg_func(self, default=None) -> Optional[str]:
-        return self.options.get(CoreOptions.FIELDS_DEFAULT_AGG_FUNC, default)
-
-    def field_agg_func(self, field_name: str) -> Optional[str]:
-        key = "fields.%s.aggregate-function" % field_name
-        return self.options.to_map().get(key)
-
-    def field_collect_agg_distinct(self, field_name: str) -> bool:
-        key = "fields.%s.distinct" % field_name
-        raw = self.options.to_map().get(key)
-        return raw is True or (isinstance(raw, str) and raw.lower() == "true")
-
-    def field_list_agg_delimiter(self, field_name: str) -> str:
-        key = "fields.%s.list-agg-delimiter" % field_name
-        raw = self.options.to_map().get(key)
-        return raw if raw is not None else ","
-
-    def defined_agg_func(self) -> bool:
-        if self.options.contains(CoreOptions.FIELDS_DEFAULT_AGG_FUNC):
-            return True
-        for k in self.options.to_map().keys():
-            if k.startswith("fields.") and k.endswith(".aggregate-function"):
-                return True
-        return False
 
     def data_file_external_paths(self, default=None):
         external_paths_str = self.options.get(CoreOptions.DATA_FILE_EXTERNAL_PATHS, default)
@@ -859,6 +936,107 @@ class CoreOptions:
     def global_index_thread_num(self) -> Optional[int]:
         return self.options.get(CoreOptions.GLOBAL_INDEX_THREAD_NUM)
 
+    def local_cache_enabled(self) -> bool:
+        return self.options.get(CoreOptions.LOCAL_CACHE_ENABLED)
+
+    def local_cache_dir(self) -> Optional[str]:
+        return self.options.get(CoreOptions.LOCAL_CACHE_DIR)
+
+    def local_cache_max_size(self) -> Optional[MemorySize]:
+        return self.options.get(CoreOptions.LOCAL_CACHE_MAX_SIZE)
+
+    def local_cache_block_size(self) -> MemorySize:
+        return self.options.get(CoreOptions.LOCAL_CACHE_BLOCK_SIZE)
+
+    def local_cache_whitelist(self) -> str:
+        return self.options.get(CoreOptions.LOCAL_CACHE_WHITELIST)
+
+    def read_batch_size(self, default=None) -> int:
+        return self.options.get(CoreOptions.READ_BATCH_SIZE, default or 1024)
+
+    def read_parallelism(self, default=None) -> int:
+        return self.options.get(CoreOptions.READ_PARALLELISM, default)
+
+    def add_column_before_partition(self) -> bool:
+        return self.options.get(CoreOptions.ADD_COLUMN_BEFORE_PARTITION, False)
+
+    def dynamic_partition_overwrite(self) -> bool:
+        return self.options.get(CoreOptions.DYNAMIC_PARTITION_OVERWRITE)
+
+    # Vector column family accessors
+    def vector_column_family_enabled(self, default=None):
+        return self.options.get(CoreOptions.VECTOR_COLUMN_FAMILY_ENABLED, default)
+
+    def vector_column_family_columns(self, default=None):
+        raw = self.options.get(CoreOptions.VECTOR_COLUMN_FAMILY_COLUMNS, default)
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            return [c.strip() for c in raw.split(",") if c.strip()]
+        if isinstance(raw, (list, set, tuple)):
+            return [str(c).strip() for c in raw if str(c).strip()]
+        return []
+
+    def vector_column_family_target_file_size(self, default=None):
+        value = self.options.get(CoreOptions.VECTOR_COLUMN_FAMILY_TARGET_FILE_SIZE, default)
+        if value is None:
+            return MemorySize.of_mebi_bytes(128).get_bytes()
+        return value.get_bytes()
+
+    # Commit message / committer / metadata accessors
+    def commit_committer(self, default=None):
+        return self.options.get(CoreOptions.COMMIT_COMMITTER, default)
+
+    def commit_message(self, default=None):
+        return self.options.get(CoreOptions.COMMIT_MESSAGE, default)
+
+    def snapshot_sequence_ordering(self, default=None):
+        return self.options.get(CoreOptions.SNAPSHOT_SEQUENCE_ORDERING, default)
+
+    # Deletion vector read mode accessors
+    def dv_read_mode(self, default=None):
+        return self.options.get(CoreOptions.DELETION_VECTORS_READ_MODE, default)
+
+    def dv_freshness_read_enabled(self) -> bool:
+        return self.deletion_vectors_enabled() and self.dv_read_mode() == DvReadMode.FRESHNESS
+
+    # Versioned partial-update / ignore-delete accessors
+    def ignore_delete(self, default=None):
+        return self.options.get(CoreOptions.IGNORE_DELETE, default)
+
+    def versioned_partial_update_merge_mode(self, default=None):
+        return self.options.get(CoreOptions.VERSIONED_PARTIAL_UPDATE_MERGE_MODE, default)
+
+    def versioned_partial_update_ignore_mode_enabled(self, default=None):
+        return self.options.get(CoreOptions.VERSIONED_PARTIAL_UPDATE_IGNORE_MODE_ENABLED, default)
+
+    # Field-level aggregation helpers (per-field keys read directly from option map)
+    def fields_default_agg_func(self, default=None) -> Optional[str]:
+        return self.options.get(CoreOptions.FIELDS_DEFAULT_AGG_FUNC, default)
+
+    def field_agg_func(self, field_name: str) -> Optional[str]:
+        key = "fields.%s.aggregate-function" % field_name
+        return self.options.to_map().get(key)
+
+    def field_collect_agg_distinct(self, field_name: str) -> bool:
+        key = "fields.%s.distinct" % field_name
+        raw = self.options.to_map().get(key)
+        return raw is True or (isinstance(raw, str) and raw.lower() == "true")
+
+    def field_list_agg_delimiter(self, field_name: str) -> str:
+        key = "fields.%s.list-agg-delimiter" % field_name
+        raw = self.options.to_map().get(key)
+        return raw if raw is not None else ","
+
+    def defined_agg_func(self) -> bool:
+        if self.options.contains(CoreOptions.FIELDS_DEFAULT_AGG_FUNC):
+            return True
+        for k in self.options.to_map().keys():
+            if k.startswith("fields.") and k.endswith(".aggregate-function"):
+                return True
+        return False
+
+    # FAISS vector index accessors
     def vector_dim(self, default=None):
         return self.options.get(CoreOptions.VECTOR_DIM, default)
 
@@ -894,9 +1072,3 @@ class CoreOptions:
 
     def max_rows_per_file(self, default=None) -> Optional[int]:
         return self.options.get(CoreOptions.MAX_ROWS_PER_FILE, default)
-
-    def read_batch_size(self, default=None) -> int:
-        return self.options.get(CoreOptions.READ_BATCH_SIZE, default or 1024)
-
-    def add_column_before_partition(self) -> bool:
-        return self.options.get(CoreOptions.ADD_COLUMN_BEFORE_PARTITION, False)
