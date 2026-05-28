@@ -15,22 +15,9 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Consumer management for tracking streaming read progress."""
+"""
+Acceptance tests for pypaimon.
 
-from pypaimon.consumer.consumer import Consumer
-from pypaimon.consumer.consumer_manager import (
-    DEFAULT_MAIN_BRANCH,
-    ConsumerManager,
-    _branch_path,
-    _is_main_branch,
-    _normalize_branch,
-)
-
-__all__ = [
-    'Consumer',
-    'ConsumerManager',
-    'DEFAULT_MAIN_BRANCH',
-    '_branch_path',
-    '_is_main_branch',
-    '_normalize_branch',
-]
+These tests use real file I/O with local temp filesystem to verify
+end-to-end behavior, as opposed to unit tests which use mocks.
+"""

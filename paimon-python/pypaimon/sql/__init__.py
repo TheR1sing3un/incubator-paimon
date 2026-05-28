@@ -15,22 +15,11 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Consumer management for tracking streaming read progress."""
+__all__ = ['SQLContext']
 
-from pypaimon.consumer.consumer import Consumer
-from pypaimon.consumer.consumer_manager import (
-    DEFAULT_MAIN_BRANCH,
-    ConsumerManager,
-    _branch_path,
-    _is_main_branch,
-    _normalize_branch,
-)
 
-__all__ = [
-    'Consumer',
-    'ConsumerManager',
-    'DEFAULT_MAIN_BRANCH',
-    '_branch_path',
-    '_is_main_branch',
-    '_normalize_branch',
-]
+def __getattr__(name):
+    if name == "SQLContext":
+        from pypaimon_rust.datafusion import SQLContext
+        return SQLContext
+    raise AttributeError("module 'pypaimon.sql' has no attribute {}".format(name))
