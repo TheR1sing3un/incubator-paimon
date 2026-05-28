@@ -458,6 +458,7 @@ class FileIOTest(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+
 class HdfsFileIOTest(unittest.TestCase):
     """Test cases for HDFS and ViewFS initialization in PyArrowFileIO."""
 
@@ -477,6 +478,7 @@ class HdfsFileIOTest(unittest.TestCase):
         env = self._make_hdfs_env({})
         with patch.dict(os.environ, env, clear=True):
             file_io = PyArrowFileIO.__new__(PyArrowFileIO)
+            file_io.properties = Options({})
             file_io._initialize_hdfs_fs('viewfs', 'clusterName')
         mock_hadoop_fs.assert_called_once_with(host='default', port=0, user='hadoop')
 
@@ -488,6 +490,7 @@ class HdfsFileIOTest(unittest.TestCase):
         env = self._make_hdfs_env({})
         with patch.dict(os.environ, env, clear=True):
             file_io = PyArrowFileIO.__new__(PyArrowFileIO)
+            file_io.properties = Options({})
             file_io._initialize_hdfs_fs('hdfs', 'namenode:8020')
         mock_hadoop_fs.assert_called_once_with(host='namenode', port=8020, user='hadoop')
 
@@ -499,6 +502,7 @@ class HdfsFileIOTest(unittest.TestCase):
         env = self._make_hdfs_env({})
         with patch.dict(os.environ, env, clear=True):
             file_io = PyArrowFileIO.__new__(PyArrowFileIO)
+            file_io.properties = Options({})
             file_io._initialize_hdfs_fs('hdfs', 'nameservice1')
         mock_hadoop_fs.assert_called_once_with(host='default', port=0, user='hadoop')
 

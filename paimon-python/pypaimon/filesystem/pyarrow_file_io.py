@@ -32,7 +32,7 @@ from pyarrow._fs import FileSystem
 
 from pypaimon.common.file_io import FileIO
 from pypaimon.common.options import Options
-from pypaimon.common.options.config import OssOptions, S3Options
+from pypaimon.common.options.config import OssOptions, S3Options, SecurityOptions
 from pypaimon.common.uri_reader import UriReaderFactory
 from pypaimon.schema.data_types import (AtomicType, DataField,
                                         PyarrowFieldParser)
@@ -170,21 +170,59 @@ class PyArrowFileIO(FileIO):
         )
         os.environ['CLASSPATH'] = class_paths.stdout.strip()
 
-        user = (self.properties.get('security.hadoop.username')
+        user = (self.properties.to_map().get('security.hadoop.username')
                 or os.environ.get('HADOOP_USER_NAME', 'hadoop'))
 
-        # ViewFS: always delegate to Hadoop configuration for mount table resolution
-        if scheme == 'viewfs':
-            return pafs.HadoopFileSystem(host='default', port=0, user=user)
+        principal = (self.properties.get(SecurityOptions.KERBEROS_PRINCIPAL)
+                     or self.properties.to_map().get("security.principal"))
+        keytab = (self.properties.get(SecurityOptions.KERBEROS_KEYTAB)
+                  or self.properties.to_map().get("security.keytab"))
+        use_ticket_cache = self.properties.get(SecurityOptions.KERBEROS_USE_TICKET_CACHE)
 
-        # HDFS: check for an explicit port
-        if netloc:
-            host, port_str = splitport(netloc)
-            if port_str is not None:
-                return pafs.HadoopFileSystem(host=host, port=int(port_str), user=user)
+        if bool(principal) != bool(keytab):
+            raise ValueError(
+                "security.kerberos.login.principal and security.kerberos.login.keytab "
+                "must be both set or both unset")
 
-        # HDFS without port (HA nameservice) or without netloc — use Hadoop configuration
-        return pafs.HadoopFileSystem(host='default', port=0, user=user)
+        # Resolve (host, port). viewfs URIs and HDFS HA nameservices (no port)
+        # delegate to fs.defaultFS via host='default' so libhdfs reads the mount
+        # table / HA group from core-site.xml / hdfs-site.xml.
+        if scheme == 'viewfs' or not netloc:
+            host, port = 'default', 0
+        else:
+            parsed_host, port_str = splitport(netloc)
+            if port_str is None:
+                host, port = 'default', 0
+            else:
+                host, port = parsed_host, int(port_str)
+
+        kerb_ticket = None
+        if principal and keytab:
+            self._kerberos_login_from_keytab(principal, keytab)
+            kerb_ticket = self._get_ticket_cache_path()
+            if not kerb_ticket:
+                raise RuntimeError(
+                    "kinit succeeded but no ticket cache path could be determined. "
+                    "Set the KRB5CCNAME environment variable to specify the cache location.")
+        elif use_ticket_cache:
+            cache_path = self._get_ticket_cache_path()
+            if cache_path and os.path.exists(cache_path):
+                kerb_ticket = cache_path
+
+        if kerb_ticket:
+            return pafs.HadoopFileSystem(host=host, port=port, kerb_ticket=kerb_ticket)
+        else:
+            return pafs.HadoopFileSystem(host=host, port=port, user=user)
+
+    @staticmethod
+    def _kerberos_login_from_keytab(principal: str, keytab: str):
+        from pypaimon.filesystem import _kerberos
+        _kerberos.kerberos_login_from_keytab(principal, keytab)
+
+    @staticmethod
+    def _get_ticket_cache_path() -> Optional[str]:
+        from pypaimon.filesystem import _kerberos
+        return _kerberos.get_ticket_cache_path()
 
     def new_input_stream(self, path: str):
         path_str = self.to_filesystem_path(path)

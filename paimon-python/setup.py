@@ -95,6 +95,9 @@ setup(
             'faiss-cpu==1.7.4; python_version >= "3.7" and python_version < "3.12"',
             'faiss-cpu>=1.10,<2; python_version >= "3.12"',
         ],
+        'hdfs': [
+            'hdfs-native>=0.13,<1; platform_system!="Windows"',
+        ],
     },
     description="Apache Paimon Python API",
     long_description=long_description,

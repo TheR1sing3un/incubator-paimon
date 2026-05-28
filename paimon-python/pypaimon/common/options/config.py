@@ -93,3 +93,94 @@ class CatalogOptions:
     HTTP_KEEP_ALIVE = ConfigOptions.key("http.keep-alive").boolean_type() \
         .default_value(True).with_description("Enable HTTP keep-alive")
     BLOB_FILE_IO_DEFAULT_CACHE_SIZE = 2 ** 31 - 1
+
+
+class HdfsOptions:
+    HDFS_CLIENT_IMPL = (
+        ConfigOptions.key("hdfs.client.impl")
+        .string_type()
+        .default_value("native")
+        .with_description(
+            "HDFS FileIO backend. Supported values: 'native' (default, uses "
+            "hdfs-native protocol client, no Hadoop install required), "
+            "'pyarrow' (legacy, requires HADOOP_HOME / libhdfs / JVM)."
+        )
+    )
+    HDFS_CLIENT_FALLBACK_TO_PYARROW = (
+        ConfigOptions.key("hdfs.client.fallback-to-pyarrow")
+        .boolean_type()
+        .default_value(True)
+        .with_description(
+            "When the native backend fails to initialise (e.g. missing wheel "
+            "or unsupported platform), fall back to the pyarrow backend "
+            "instead of raising."
+        )
+    )
+    HDFS_CONF_DIR = (
+        ConfigOptions.key("hdfs.conf-dir")
+        .string_type()
+        .no_default_value()
+        .with_description(
+            "Directory containing core-site.xml / hdfs-site.xml that the "
+            "native client should load. Defaults to $HADOOP_CONF_DIR."
+        )
+    )
+
+    HDFS_CONFIG_PREFIX = "hdfs.config."
+    HDFS_NATIVE_CONFIG_KEY_PREFIXES = ("dfs.", "fs.", "hadoop.", "ipc.", "io.")
+
+
+class SecurityOptions:
+    KERBEROS_PRINCIPAL = (
+        ConfigOptions.key("security.kerberos.login.principal")
+        .string_type()
+        .no_default_value()
+        .with_description("Kerberos principal name associated with the keytab")
+    )
+    KERBEROS_KEYTAB = (
+        ConfigOptions.key("security.kerberos.login.keytab")
+        .string_type()
+        .no_default_value()
+        .with_description("Absolute path to a Kerberos keytab file that contains the user credentials")
+    )
+    KERBEROS_USE_TICKET_CACHE = (
+        ConfigOptions.key("security.kerberos.login.use-ticket-cache")
+        .boolean_type()
+        .default_value(True)
+        .with_description("Whether to read from the Kerberos ticket cache")
+    )
+
+
+class FuseOptions:
+    """FUSE configuration options."""
+
+    FUSE_ENABLED = (
+        ConfigOptions.key("fuse.enabled")
+        .boolean_type()
+        .default_value(False)
+        .with_description("Whether to enable FUSE local path mapping")
+    )
+
+    FUSE_ROOT = (
+        ConfigOptions.key("fuse.root")
+        .string_type()
+        .no_default_value()
+        .with_description("FUSE mounted local root path, e.g., /mnt/fuse/warehouse")
+    )
+
+    FUSE_VALIDATION_MODE = (
+        ConfigOptions.key("fuse.validation-mode")
+        .string_type()
+        .default_value("strict")
+        .with_description("Validation mode: strict, warn, or none")
+    )
+
+    FUSE_MODE = (
+        ConfigOptions.key("fuse.mode")
+        .string_type()
+        .default_value("pvfs")
+        .with_description(
+            "FUSE path mode: 'pvfs' uses database/table logical names, "
+            "'raw' uses URI path segments directly"
+        )
+    )
