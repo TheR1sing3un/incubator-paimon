@@ -39,7 +39,7 @@ class VectorFileWriterTest(unittest.TestCase):
         return os.path.join(self.tmp, "data-{}.vector.bin".format(idx))
 
     def _field(self, dim=3, elem="FLOAT"):
-        return DataField(1, "embed", VectorType(True, dim, AtomicType(elem)))
+        return DataField(1, "embed", VectorType(True, AtomicType(elem), dim))
 
     def test_single_vector_roundtrip(self):
         writer = VectorFileWriter(self.file_io, self._field(),
