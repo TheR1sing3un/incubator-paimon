@@ -1,27 +1,25 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
 import heapq
 from typing import Any, Callable, List, Optional
 
 from pypaimon.read.reader.iface.record_iterator import RecordIterator
 from pypaimon.read.reader.iface.record_reader import RecordReader
-from pypaimon.read.reader.merge_function import MergeFunction
 from pypaimon.schema.data_types import DataField, Keyword
 from pypaimon.schema.table_schema import TableSchema
 from pypaimon.table.row.internal_row import InternalRow
@@ -32,8 +30,13 @@ class SortMergeReaderWithMinHeap(RecordReader):
     """SortMergeReader implemented with min-heap."""
 
     def __init__(self, readers: List[RecordReader[KeyValue]], schema: TableSchema,
-                 merge_function=None):
+                 merge_function: Optional[Any] = None):
         self.next_batch_readers = list(readers)
+        # Default to dedupe so callers that don't pass a merge_function
+        # keep their old behaviour. The merge engine dispatch lives in
+        # ``MergeFileSplitRead.section_reader_supplier`` for the read
+        # path; tests or other ad-hoc callers can pass a different
+        # implementation here.
         self.merge_function = merge_function if merge_function is not None else DeduplicateMergeFunction()
 
         if schema.partition_keys:
@@ -126,7 +129,7 @@ class SortMergeIterator(RecordIterator):
         return True
 
 
-class DeduplicateMergeFunction(MergeFunction):
+class DeduplicateMergeFunction:
     """A MergeFunction where key is primary key (unique) and value is the full record, only keep the latest one."""
 
     def __init__(self):
@@ -176,18 +179,6 @@ class HeapEntry:
             return True
         elif result > 0:
             return False
-
-        # Merge ordering aligns with Java SortMergeReaderWithMinHeap: whenever the two sides carry
-        # different commit_snapshot_id values, snapshot id wins — a later commit's records always
-        # beat earlier ones, even when per-worker sequence_number restarts from 0. Legacy files
-        # predating sequence.snapshot-ordering read back with UNKNOWN_SNAPSHOT_ID (-1) and naturally
-        # lose to any file carrying a real snapshot id, which is what we want when the option is
-        # turned on mid-life. Only when both sides share the same snapshot id (including the
-        # all-legacy case where both are -1) do we fall back to sequence_number.
-        self_sid = self.element.kv.commit_snapshot_id
-        other_sid = other.element.kv.commit_snapshot_id
-        if self_sid != other_sid:
-            return self_sid < other_sid
 
         return self.element.kv.sequence_number < other.element.kv.sequence_number
 

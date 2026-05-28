@@ -17,9 +17,6 @@
 ################################################################################
 
 from abc import ABC, abstractmethod
-from typing import Optional
-
-from pypaimon.table.row.key_value import KeyValue
 
 
 class MergeFunction(ABC):

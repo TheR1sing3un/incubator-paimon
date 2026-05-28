@@ -1,28 +1,34 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pyarrow as pa
 import pyarrow.dataset as ds
 from pyarrow import RecordBatch
 
 from pypaimon.common.file_io import FileIO
+from pypaimon.common.options.core_options import CoreOptions
+from pypaimon.data.variant_shredding import (
+    VariantSchema,
+    assemble_shredded_column,
+    build_variant_schema,
+    is_shredded_variant,
+)
 from pypaimon.data.vector_ref import resolve_vector_descriptors
 from pypaimon.read.reader.iface.record_batch_reader import RecordBatchReader
 from pypaimon.schema.data_types import DataField, PyarrowFieldParser, VectorType
@@ -34,61 +40,76 @@ class FormatPyArrowReader(RecordBatchReader):
     A Format Reader that reads record batch from a Parquet or ORC file using PyArrow,
     and filters it based on the provided predicate and projection.
 
-    When ``nested_name_paths`` is supplied (parallel to ``read_fields``,
-    where each entry is the chain of source field names walked to reach
-    the corresponding output field), the scanner is constructed in
-    dict-of-expressions form so PyArrow truly pushes nested column reads
-    down to the file. Top-level paths (length 1) interleave seamlessly
-    with truly-nested paths in the same dict.
+    When a VARIANT column is stored in the shredded Parquet format (a struct with
+    ``metadata``, ``value``, and ``typed_value`` fields), this reader transparently
+    reconstructs the standard ``struct<value: binary, metadata: binary>`` representation.
     """
 
     def __init__(self, file_io: FileIO, file_format: str, file_path: str,
                  read_fields: List[DataField],
                  push_down_predicate: Any, batch_size: int = 1024,
+                 options: CoreOptions = None,
                  nested_name_paths: Optional[List[List[str]]] = None):
         file_path_for_pyarrow = file_io.to_filesystem_path(file_path)
+        self._file_io = file_io
         self.dataset = ds.dataset(file_path_for_pyarrow, format=file_format, filesystem=file_io.filesystem)
         self._file_format = file_format
-        self._file_io = file_io
         self.read_fields = read_fields
         self._read_field_names = [f.name for f in read_fields]
+
+        # Vector-column-family resolution: a VECTOR column may surface as a
+        # native fixed_size_list (inline), a variable-length list cast to
+        # fixed_size, or a BINARY VectorDescriptor pointing into a sibling
+        # .vector.bin file. We materialize the dense fixed_size_list shape on
+        # the way out of read_arrow_batch().
         self._vector_fields = {
             f.name: f.type for f in read_fields if isinstance(f.type, VectorType)
         }
 
-        file_schema_names = set(self.dataset.schema.names)
+        if nested_name_paths is not None and len(nested_name_paths) != len(read_fields):
+            raise ValueError(
+                "nested_name_paths length {} does not match read_fields length {}".format(
+                    len(nested_name_paths), len(read_fields)))
+        self._nested_name_paths = nested_name_paths
+        has_nested_path = bool(
+            nested_name_paths and any(len(p) > 1 for p in nested_name_paths))
 
-        if nested_name_paths is not None and any(len(p) > 1 for p in nested_name_paths):
-            if len(nested_name_paths) != len(read_fields):
-                raise ValueError(
-                    "nested_name_paths must be parallel to read_fields "
-                    "(got %d paths for %d fields)"
-                    % (len(nested_name_paths), len(read_fields)))
-            # The full path must resolve in the file's physical schema.
-            # If any segment along the way is missing — top-level root or
-            # a sub-field that has been schema-evolved away — the field is
-            # treated as missing and filled with NULLs downstream rather
-            # than letting PyArrow's scanner raise ArrowInvalid at scan
-            # time on an unresolvable ds.field(...) expression.
-            columns_dict = {}
+        file_schema = self.dataset.schema
+        if has_nested_path:
             self.existing_fields = []
             self.missing_fields = []
-            for field, path in zip(read_fields, nested_name_paths):
-                if not path or not _path_exists_in_arrow_schema(self.dataset.schema, path):
-                    self.missing_fields.append(field.name)
-                    continue
-                columns_dict[field.name] = ds.field(*path)
-                self.existing_fields.append(field.name)
-            self.reader = self.dataset.scanner(
-                columns=columns_dict,
-                filter=push_down_predicate,
-                batch_size=batch_size,
-            ).to_reader()
+            for f, path in zip(read_fields, nested_name_paths):
+                if _path_exists_in_arrow_schema(file_schema, path):
+                    self.existing_fields.append(f.name)
+                else:
+                    self.missing_fields.append(f.name)
         else:
-            # Identify which fields exist in the file and which are missing
+            file_schema_names = set(file_schema.names)
             self.existing_fields = [f.name for f in read_fields if f.name in file_schema_names]
             self.missing_fields = [f.name for f in read_fields if f.name not in file_schema_names]
 
+        self._shredded_schemas: Dict[str, VariantSchema] = {}
+        if options is None or options.variant_shredding_enabled():
+            top_level_names = set(file_schema.names)
+            for name in self.existing_fields:
+                if name not in top_level_names:
+                    continue
+                field_type = file_schema.field(name).type
+                if is_shredded_variant(field_type):
+                    self._shredded_schemas[name] = build_variant_schema(field_type)
+
+        if has_nested_path:
+            existing_set = set(self.existing_fields)
+            columns_dict = {}
+            for f, path in zip(read_fields, nested_name_paths):
+                if f.name in existing_set:
+                    columns_dict[f.name] = ds.field(*path)
+            self.reader = self.dataset.scanner(
+                columns=columns_dict,
+                filter=push_down_predicate,
+                batch_size=batch_size
+            ).to_reader()
+        else:
             # Only pass existing fields to PyArrow scanner to avoid errors
             self.reader = self.dataset.scanner(
                 columns=self.existing_fields,
@@ -106,6 +127,9 @@ class FormatPyArrowReader(RecordBatchReader):
 
             if self._file_format == 'orc' and self._output_schema is not None:
                 batch = self._cast_orc_time_columns(batch)
+
+            if self._shredded_schemas:
+                batch = self._assemble_shredded_variants(batch)
 
             if not self.missing_fields:
                 return self._apply_vector_resolution(batch)
@@ -146,6 +170,13 @@ class FormatPyArrowReader(RecordBatchReader):
             return None
 
     def _apply_vector_resolution(self, batch: Optional[RecordBatch]) -> Optional[RecordBatch]:
+        """Resolve VECTOR columns to dense fixed_size_list shape.
+
+        Accepts three physical encodings: native fixed_size_list (passthrough),
+        list / large_list (cast to fixed_size_list), and BINARY containing
+        VectorDescriptor bytes pointing into a sibling .vector.bin (resolved
+        via resolve_vector_descriptors).
+        """
         if batch is None or not self._vector_fields:
             return batch
         new_columns = []
@@ -177,6 +208,24 @@ class FormatPyArrowReader(RecordBatchReader):
                     "VECTOR column '{}' has unsupported physical type {}".format(name, col.type))
         return pa.RecordBatch.from_arrays(new_columns, schema=pa.schema(new_fields))
 
+    def _assemble_shredded_variants(self, batch: pa.RecordBatch) -> pa.RecordBatch:
+        """Replace shredded VARIANT columns with standard struct<value, metadata>."""
+        changed = False
+        columns = list(batch.columns)
+        fields = list(batch.schema)
+
+        for i, f in enumerate(fields):
+            if f.name in self._shredded_schemas:
+                schema = self._shredded_schemas[f.name]
+                new_col = assemble_shredded_column(columns[i], schema)
+                columns[i] = new_col
+                fields[i] = pa.field(f.name, new_col.type, nullable=f.nullable)
+                changed = True
+
+        if not changed:
+            return batch
+        return pa.RecordBatch.from_arrays(columns, schema=pa.schema(fields))
+
     def _cast_orc_time_columns(self, batch):
         """Cast int32 TIME columns back to time32('ms') when reading ORC.
         """
@@ -203,27 +252,18 @@ class FormatPyArrowReader(RecordBatchReader):
             self.reader = None
 
 
-def _path_exists_in_arrow_schema(schema, path) -> bool:
-    """Walk ``path`` (a list of field names) through a nested PyArrow
-    schema (or struct type) and return True only if every segment resolves.
-
-    Used to safely tolerate sub-field schema evolution — a leaf that was
-    added in a newer schema may not exist in older files; surfacing such a
-    column as "missing" (NULL) is the same contract as the top-level path.
-    """
+def _path_exists_in_arrow_schema(schema: pa.Schema, path: List[str]) -> bool:
+    """Check whether a name path is fully resolvable in the given schema."""
     if not path:
         return False
-    current = schema
-    for name in path:
-        # PyArrow Schema has .names + .field(name); StructType has .field(name)
-        if hasattr(current, 'names') and name in current.names:
-            current = current.field(name).type
-            continue
-        if pa.types.is_struct(current):
-            try:
-                current = current.field(name).type
-                continue
-            except (KeyError, ValueError):
-                return False
+    if path[0] not in schema.names:
         return False
+    current_type = schema.field(path[0]).type
+    for name in path[1:]:
+        if not pa.types.is_struct(current_type):
+            return False
+        idx = current_type.get_field_index(name)
+        if idx < 0:
+            return False
+        current_type = current_type.field(idx).type
     return True

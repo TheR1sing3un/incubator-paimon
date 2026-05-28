@@ -1,32 +1,31 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
-"""Outer projection wrapper.
+"""Outer-projection wrapper for nested-field reads.
 
-Mirrors Java ``MergeFileSplitRead.projectOuter`` (paimon-core
-MergeFileSplitRead.java L405-410). When the merge engine required extra
-columns beyond the user's projection (mv columns, sequence fields, ...) the
-SplitRead reads those extra columns and the merge function operates on the
-inner-width rows. Before returning to the user, this wrapper projects each
-row back to the user's outer view in the user's requested order.
+Sits above a reader whose rows still carry full ROW sub-structures, and
+emits flat rows whose slots are the values reached by walking each
+nested name path. Used on the primary-key merge-read path: the inner
+reader hands the merge function complete ROW columns (so deduplicate /
+partial-update / aggregation see the original sub-structure), and this
+wrapper extracts the user-visible flat columns afterwards.
 """
 
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from pypaimon.read.reader.iface.record_iterator import RecordIterator
 from pypaimon.read.reader.iface.record_reader import RecordReader
@@ -35,118 +34,103 @@ from pypaimon.table.row.offset_row import OffsetRow
 
 
 class OuterProjectionRecordReader(RecordReader[InternalRow]):
-    """Project each row from the merge function's inner schema back to the
-    user's outer schema.
+    """Wraps an InternalRow reader and projects nested name paths into flat rows."""
 
-    Two modes:
-
-    - **Positional**: ``outer_indices[i]`` is the position of the i-th
-      outer field within the inner row. Used when the user's projection
-      stays at the top level (the standard Phase 1 case).
-    - **Path-based**: ``outer_extract_specs[i] = (inner_idx, sub_path)``.
-      The i-th outer field is reached by ``inner_row[inner_idx]`` followed
-      by successive ``[name]`` lookups for each entry in ``sub_path``.
-      Used when the user requested a nested projection on a PK table
-      (Phase 2d) — the merge function keeps the full struct and we walk
-      into it here to recover the leaf value.
-
-    Exactly one of ``outer_indices`` / ``outer_extract_specs`` must be set.
-    """
-
-    def __init__(self, inner_reader: RecordReader[InternalRow],
-                 outer_indices: Optional[List[int]] = None,
-                 outer_extract_specs: Optional[List[tuple]] = None):
-        if (outer_indices is None) == (outer_extract_specs is None):
-            raise ValueError(
-                "Exactly one of outer_indices / outer_extract_specs must be set")
-        self._inner_reader = inner_reader
-        self._outer_indices = outer_indices
-        self._outer_extract_specs = outer_extract_specs
+    def __init__(
+        self,
+        inner: RecordReader[InternalRow],
+        inner_top_names: List[str],
+        name_paths: List[List[str]],
+    ):
+        if not name_paths:
+            raise ValueError("name_paths must be non-empty")
+        for path in name_paths:
+            if not path:
+                raise ValueError("each name path must contain at least one name")
+        name_to_top_idx = {name: i for i, name in enumerate(inner_top_names)}
+        self._specs: List[_PathSpec] = []
+        for path in name_paths:
+            top_name = path[0]
+            if top_name not in name_to_top_idx:
+                raise ValueError(
+                    "path top-level field %r not found in inner row schema %r"
+                    % (top_name, inner_top_names))
+            self._specs.append(_PathSpec(name_to_top_idx[top_name], list(path[1:])))
+        self._inner = inner
+        self._flat_arity = len(name_paths)
 
     def read_batch(self) -> Optional[RecordIterator[InternalRow]]:
-        batch = self._inner_reader.read_batch()
-        if batch is None:
+        inner_batch = self._inner.read_batch()
+        if inner_batch is None:
             return None
-        return _OuterProjectionIterator(
-            batch, self._outer_indices, self._outer_extract_specs)
+        return _OuterProjectionIterator(inner_batch, self._specs, self._flat_arity)
 
     def close(self) -> None:
-        self._inner_reader.close()
-
-
-def _extract_subpath(value, sub_path):
-    """Walk ``sub_path`` (a list of field names) through a struct value
-    (typically a dict produced by Paimon's KV unwrap path). Returns the
-    leaf value, or None if any segment is missing.
-    """
-    current = value
-    for name in sub_path:
-        if current is None:
-            return None
-        if isinstance(current, dict):
-            current = current.get(name)
-            continue
-        # PyArrow-style struct may expose .as_py() or attribute access
-        if hasattr(current, name):
-            current = getattr(current, name)
-            continue
-        as_py = getattr(current, 'as_py', None)
-        if as_py is not None:
-            try:
-                py = as_py()
-            except Exception:
-                return None
-            if isinstance(py, dict):
-                current = py.get(name)
-                continue
-        return None
-    return current
+        self._inner.close()
 
 
 class _OuterProjectionIterator(RecordIterator[InternalRow]):
+    """Per-batch iterator that materialises one flat OffsetRow per inner row."""
 
-    def __init__(self, batch: RecordIterator[InternalRow],
-                 outer_indices: Optional[List[int]],
-                 outer_extract_specs: Optional[List[tuple]]):
-        self._batch = batch
-        self._outer_indices = outer_indices
-        self._outer_extract_specs = outer_extract_specs
-        arity = len(outer_indices) if outer_indices is not None else len(outer_extract_specs)
-        # Reuse a single OffsetRow + tuple buffer per iterator. The downstream
-        # consumer is expected to fully process each row before calling
-        # next() again (mirrors how OffsetRow is reused upstream).
-        self._row = OffsetRow(None, 0, arity)
-        self._arity = arity
+    def __init__(
+        self,
+        inner: RecordIterator[InternalRow],
+        specs: List["_PathSpec"],
+        flat_arity: int,
+    ):
+        self._inner = inner
+        self._specs = specs
+        self._flat_arity = flat_arity
+        self._reused_row = OffsetRow(None, 0, flat_arity)
 
     def next(self) -> Optional[InternalRow]:
-        inner_row = self._batch.next()
+        inner_row = self._inner.next()
         if inner_row is None:
             return None
+        flat = tuple(_extract(inner_row, spec) for spec in self._specs)
+        self._reused_row.replace(flat)
+        # Inherit the inner row's RowKind so downstream consumers (e.g. the
+        # to_arrow path) keep the same +I/-D/-U/+U classification.
+        self._reused_row.set_row_kind_byte(inner_row.get_row_kind().value)
+        return self._reused_row
 
-        if self._outer_indices is not None:
-            if isinstance(inner_row, OffsetRow):
-                base = inner_row.row_tuple
-                base_offset = inner_row.offset
-                projected = tuple(base[base_offset + idx] for idx in self._outer_indices)
-            else:
-                projected = tuple(inner_row.get_field(idx) for idx in self._outer_indices)
-        else:
-            # Path-based extraction (Phase 2d nested + PK).
-            if isinstance(inner_row, OffsetRow):
-                base = inner_row.row_tuple
-                base_offset = inner_row.offset
 
-                def get_field(idx):
-                    return base[base_offset + idx]
-            else:
-                get_field = inner_row.get_field
-            projected = tuple(
-                _extract_subpath(get_field(inner_idx), sub_path)
-                for inner_idx, sub_path in self._outer_extract_specs
-            )
+class _PathSpec:
+    """Pre-resolved name path: top-level slot index plus sub-field names."""
 
-        self._row.row_tuple = projected
-        self._row.offset = 0
-        self._row.arity = self._arity
-        self._row.set_row_kind_byte(inner_row.get_row_kind().value)
-        return self._row
+    __slots__ = ("top_idx", "sub_names")
+
+    def __init__(self, top_idx: int, sub_names: List[str]):
+        self.top_idx = top_idx
+        self.sub_names = sub_names
+
+
+def _extract(row: InternalRow, spec: _PathSpec) -> Any:
+    cur = row.get_field(spec.top_idx)
+    for name in spec.sub_names:
+        if cur is None:
+            return None
+        cur = _step_into(cur, name)
+    return cur
+
+
+def _step_into(value: Any, name: str) -> Any:
+    """Take one step into a ROW sub-structure by sub-field name.
+
+    Upstream materialises nested ROW values as plain Python dicts (e.g.
+    polars row-by-row iteration produces a dict for each struct slot),
+    so dict access is the only supported form here. Anything else is
+    rejected loudly to surface schema/wiring mismatches early.
+    """
+    if isinstance(value, dict):
+        return value.get(name)
+    if isinstance(value, InternalRow):
+        # Defensive: if the upstream reader handed us a wrapped sub-row,
+        # we cannot index it by name without its schema, so fail fast
+        # rather than guessing the slot.
+        raise TypeError(
+            "Cannot step into InternalRow by name %r without sub-schema; "
+            "expected a dict from the polars row materialisation" % (name,))
+    raise TypeError(
+        "Cannot index nested ROW step %r into value of type %s"
+        % (name, type(value).__name__))
