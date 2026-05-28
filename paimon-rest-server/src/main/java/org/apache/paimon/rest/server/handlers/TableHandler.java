@@ -295,7 +295,11 @@ public class TableHandler implements RouteRegistrar {
         LOG.info("Creating table: {}.{}", databaseName, identifier.getTableName());
         validateDatabaseMatch(databaseName, identifier);
         validateColumnNames(request.getSchema());
-        catalog.createTable(identifier, request.getSchema(), false);
+        Schema schema = request.getSchema();
+        if (!schema.options().containsKey("security.hadoop.username")) {
+            schema.options().put("security.hadoop.username", "hudi");
+        }
+        catalog.createTable(identifier, schema, false);
     }
 
     public RESTResponse getTable(Identifier identifier) throws Exception {

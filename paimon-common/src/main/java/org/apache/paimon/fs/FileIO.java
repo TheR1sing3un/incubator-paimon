@@ -22,6 +22,7 @@ import org.apache.paimon.annotation.Public;
 import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.fs.hadoop.HadoopFileIOLoader;
 import org.apache.paimon.fs.local.LocalFileIO;
+import org.apache.paimon.options.Options;
 
 import org.apache.commons.io.IOUtils;
 import org.slf4j.Logger;
@@ -74,6 +75,14 @@ public interface FileIO extends Serializable, Closeable {
 
     /** Set filesystem options at runtime. Usually used for job-level settings. */
     default void setRuntimeContext(Map<String, String> options) {}
+
+    /**
+     * Create a copy of this FileIO with the given options applied. Used for per-table hadoop user
+     * override. Returns this instance by default if not supported.
+     */
+    default FileIO copyWithOptions(Options newOptions) {
+        return this;
+    }
 
     /**
      * Opens an SeekableInputStream at the indicated Path.

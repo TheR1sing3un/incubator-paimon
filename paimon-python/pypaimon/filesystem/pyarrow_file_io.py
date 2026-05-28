@@ -170,7 +170,8 @@ class PyArrowFileIO(FileIO):
         )
         os.environ['CLASSPATH'] = class_paths.stdout.strip()
 
-        user = os.environ.get('HADOOP_USER_NAME', 'hadoop')
+        user = (self.properties.get('security.hadoop.username')
+                or os.environ.get('HADOOP_USER_NAME', 'hadoop'))
 
         # ViewFS: always delegate to Hadoop configuration for mount table resolution
         if scheme == 'viewfs':

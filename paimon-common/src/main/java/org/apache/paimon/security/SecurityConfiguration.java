@@ -51,6 +51,16 @@ public class SecurityConfiguration {
                     .defaultValue(true)
                     .withDescription("Indicates whether to read from your Kerberos ticket cache.");
 
+    public static final ConfigOption<String> HADOOP_USERNAME =
+            key("security.hadoop.username")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Hadoop username for simple authentication. "
+                                    + "When set, Paimon will use this username for HDFS file operations. "
+                                    + "This is useful when running on YARN where the container user "
+                                    + "differs from the desired HDFS user.");
+
     private final Options options;
 
     private final boolean useTicketCache;
@@ -59,11 +69,14 @@ public class SecurityConfiguration {
 
     private final String principal;
 
+    private final String hadoopUsername;
+
     public SecurityConfiguration(Options options) {
         this.options = checkNotNull(options);
         this.keytab = options.get(KERBEROS_LOGIN_KEYTAB);
         this.principal = options.get(KERBEROS_LOGIN_PRINCIPAL);
         this.useTicketCache = options.get(KERBEROS_LOGIN_USETICKETCACHE);
+        this.hadoopUsername = options.get(HADOOP_USERNAME);
     }
 
     public String getKeytab() {
@@ -76,6 +89,10 @@ public class SecurityConfiguration {
 
     public boolean useTicketCache() {
         return useTicketCache;
+    }
+
+    public String getHadoopUsername() {
+        return hadoopUsername;
     }
 
     public Options getOptions() {

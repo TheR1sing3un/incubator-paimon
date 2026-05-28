@@ -26,6 +26,7 @@ import org.apache.paimon.fs.PositionOutputStream;
 import org.apache.paimon.fs.PositionOutputStreamWrapper;
 import org.apache.paimon.fs.SeekableInputStream;
 import org.apache.paimon.fs.SeekableInputStreamWrapper;
+import org.apache.paimon.options.Options;
 
 import com.kuaishou.kling.lakehouse.metrics.MetricsReporter;
 import com.kuaishou.kling.lakehouse.metrics.dependency.DependencyTracker;
@@ -82,6 +83,19 @@ public class MetricsFileIO implements FileIO {
 
     public MetricsFileIO(FileIO delegate) {
         this.delegate = delegate;
+    }
+
+    public FileIO getDelegate() {
+        return delegate;
+    }
+
+    @Override
+    public MetricsFileIO copyWithOptions(Options newOptions) {
+        FileIO newDelegate = delegate.copyWithOptions(newOptions);
+        if (newDelegate == delegate) {
+            return this;
+        }
+        return new MetricsFileIO(newDelegate);
     }
 
     // --- pass-through without metrics ---

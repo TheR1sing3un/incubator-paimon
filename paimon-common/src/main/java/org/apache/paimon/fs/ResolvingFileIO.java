@@ -121,6 +121,22 @@ public class ResolvingFileIO implements FileIO {
                 });
     }
 
+    @Override
+    public ResolvingFileIO copyWithOptions(Options newOptions) {
+        ResolvingFileIO copy = new ResolvingFileIO();
+        Options mergedOptions = new Options();
+        this.context.options().toMap().forEach(mergedOptions::set);
+        newOptions.toMap().forEach(mergedOptions::set);
+        mergedOptions.set(RESOLVING_FILE_IO_ENABLED, false);
+        copy.context =
+                CatalogContext.create(
+                        mergedOptions,
+                        this.context.hadoopConf(),
+                        this.context.preferIO(),
+                        this.context.fallbackIO());
+        return copy;
+    }
+
     private <T> T wrap(Func<T> func) throws IOException {
         ClassLoader cl = Thread.currentThread().getContextClassLoader();
         try {

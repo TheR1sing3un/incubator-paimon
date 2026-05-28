@@ -25,10 +25,15 @@ import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.operation.BranchMergeOperation;
 import org.apache.paimon.options.CatalogOptions;
+import org.apache.paimon.options.Options;
 import org.apache.paimon.partition.PartitionStatistics;
 import org.apache.paimon.rest.RESTCatalogOptions;
 import org.apache.paimon.rest.responses.GetTagResponse;
+import org.apache.paimon.schema.Schema;
+import org.apache.paimon.schema.SchemaChange;
 import org.apache.paimon.schema.SchemaManager;
+import org.apache.paimon.schema.TableSchema;
+import org.apache.paimon.security.SecurityConfiguration;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Instant;
 import org.apache.paimon.table.RollbackHelper;
@@ -39,6 +44,7 @@ import org.apache.paimon.utils.ChangelogManager;
 import org.apache.paimon.utils.FileSystemBranchManager;
 import org.apache.paimon.utils.SnapshotManager;
 import org.apache.paimon.utils.SnapshotNotExistException;
+import org.apache.paimon.utils.StringUtils;
 import org.apache.paimon.utils.TagManager;
 import org.apache.paimon.utils.TimeUtils;
 
@@ -167,6 +173,52 @@ public class RESTFileSystemCatalog extends FileSystemCatalog {
         return new RESTFileSystemCatalogLoader(fileIO, new Path(warehouse()), context);
     }
 
+    // ==================== Override table operations to use resolved FileIO ===========
+
+    @Override
+    public void createTableImpl(Identifier identifier, Schema schema) {
+        FileIO tableFileIO = resolveTableFileIO(schema.options());
+        Path path = getTableLocation(identifier);
+        SchemaManager schemaManager =
+                new SchemaManager(tableFileIO, path, identifier.getBranchNameOrDefault());
+        try {
+            runWithLock(identifier, () -> uncheck(() -> schemaManager.createTable(schema)));
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Override
+    protected void alterTableImpl(Identifier identifier, List<SchemaChange> changes)
+            throws TableNotExistException, ColumnAlreadyExistException, ColumnNotExistException {
+        FileIO tableFileIO = resolveTableFileIO(identifier);
+        Path path = getTableLocation(identifier);
+        SchemaManager schemaManager =
+                new SchemaManager(tableFileIO, path, identifier.getBranchNameOrDefault());
+        try {
+            runWithLock(identifier, () -> schemaManager.commitChanges(changes));
+        } catch (TableNotExistException
+                | ColumnAlreadyExistException
+                | ColumnNotExistException
+                | RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Override
+    protected void dropTableImpl(Identifier identifier, List<Path> externalPaths) {
+        FileIO tableFileIO = resolveTableFileIO(identifier);
+        Path path = getTableLocation(identifier);
+        uncheck(() -> tableFileIO.delete(path, true));
+        for (Path externalPath : externalPaths) {
+            uncheck(() -> tableFileIO.delete(externalPath, true));
+        }
+    }
+
     // ==================== Version management ==========================
 
     @Override
@@ -182,6 +234,7 @@ public class RESTFileSystemCatalog extends FileSystemCatalog {
             List<PartitionStatistics> statistics) {
         SnapshotManager sm = newSnapshotManager(identifier);
         Path snapshotPath = sm.snapshotPath(snapshot.id());
+        FileIO tableFileIO = resolveTableFileIO(identifier);
         try {
             return withBranchLock(
                     identifier.getDatabaseName(),
@@ -191,11 +244,11 @@ public class RESTFileSystemCatalog extends FileSystemCatalog {
                             runWithLock(
                                     identifier,
                                     () -> {
-                                        if (fileIO.exists(snapshotPath)) {
+                                        if (tableFileIO.exists(snapshotPath)) {
                                             return false;
                                         }
                                         boolean committed =
-                                                fileIO.tryToWriteAtomic(
+                                                tableFileIO.tryToWriteAtomic(
                                                         snapshotPath, snapshot.toJson());
                                         if (committed) {
                                             sm.commitLatestHint(snapshot.id());
@@ -244,6 +297,7 @@ public class RESTFileSystemCatalog extends FileSystemCatalog {
     public PagedList<Snapshot> listSnapshotsPaged(
             Identifier identifier, @Nullable Integer maxResults, @Nullable String pageToken) {
         SnapshotManager sm = newSnapshotManager(identifier);
+        FileIO tableFileIO = resolveTableFileIO(identifier);
         Long latestId = sm.latestSnapshotId();
         Long earliestId = sm.earliestSnapshotId();
         if (latestId == null || earliestId == null) {
@@ -271,7 +325,8 @@ public class RESTFileSystemCatalog extends FileSystemCatalog {
                     CompletableFuture.supplyAsync(
                             () -> {
                                 try {
-                                    return SnapshotManager.tryFromPath(fileIO, sm.snapshotPath(id));
+                                    return SnapshotManager.tryFromPath(
+                                            tableFileIO, sm.snapshotPath(id));
                                 } catch (FileNotFoundException ignored) {
                                 }
                                 return null;
@@ -351,7 +406,7 @@ public class RESTFileSystemCatalog extends FileSystemCatalog {
             targetSnapshot = tm.getOrThrow(tagName).trimToSnapshot();
         }
 
-        RollbackHelper helper = new RollbackHelper(sm, cm, tm, fileIO);
+        RollbackHelper helper = new RollbackHelper(sm, cm, tm, resolveTableFileIO(identifier));
         helper.cleanLargerThan(targetSnapshot);
         if (instant instanceof Instant.TagInstant) {
             helper.createSnapshotFileIfNeeded(targetSnapshot);
@@ -468,16 +523,17 @@ public class RESTFileSystemCatalog extends FileSystemCatalog {
             throws TableNotExistException, BranchNotExistException {
         FileStoreTable table = (FileStoreTable) getTable(identifier);
         FileStore<?> store = table.store();
+        FileIO tableFileIO = resolveTableFileIO(identifier);
         return new BranchMergeOperation(
                 store.snapshotManager(),
                 store.manifestListFactory(),
                 store.manifestFileFactory(),
-                new SchemaManager(fileIO, getTableLocation(identifier), targetBranch),
-                new TagManager(fileIO, getTableLocation(identifier), targetBranch),
+                new SchemaManager(tableFileIO, getTableLocation(identifier), targetBranch),
+                new TagManager(tableFileIO, getTableLocation(identifier), targetBranch),
                 store.options(),
                 store.partitionType(),
                 "branch-merge",
-                fileIO,
+                tableFileIO,
                 getTableLocation(identifier),
                 newBranchManager(identifier));
     }
@@ -617,36 +673,63 @@ public class RESTFileSystemCatalog extends FileSystemCatalog {
         if (!tm.tagExists(tagName)) {
             throw new TagNotExistException(identifier, tagName);
         }
-        fileIO.deleteQuietly(tm.tagPath(tagName));
+        resolveTableFileIO(identifier).deleteQuietly(tm.tagPath(tagName));
     }
 
     // ==================== Version management helpers ==========================
 
-    private SnapshotManager newSnapshotManager(Identifier identifier) {
+    private FileIO resolveTableFileIO(Identifier identifier) {
         Path tablePath = getTableLocation(identifier);
         String branch = identifier.getBranchNameOrDefault();
-        return new SnapshotManager(fileIO, tablePath, branch, null, null);
+        SchemaManager schemaManager = new SchemaManager(fileIO, tablePath, branch);
+        Optional<TableSchema> latestSchema = schemaManager.latest();
+        if (!latestSchema.isPresent()) {
+            return fileIO;
+        }
+        return resolveTableFileIO(latestSchema.get().options());
+    }
+
+    private FileIO resolveTableFileIO(Map<String, String> tableOptions) {
+        String tableUsername = tableOptions.get(SecurityConfiguration.HADOOP_USERNAME.key());
+        if (StringUtils.isNullOrWhitespaceOnly(tableUsername)) {
+            return fileIO;
+        }
+        String catalogUsername = context.options().get(SecurityConfiguration.HADOOP_USERNAME);
+        if (tableUsername.equals(catalogUsername)) {
+            return fileIO;
+        }
+        return fileIO.copyWithOptions(Options.fromMap(tableOptions));
+    }
+
+    private SnapshotManager newSnapshotManager(Identifier identifier) {
+        FileIO tableFileIO = resolveTableFileIO(identifier);
+        Path tablePath = getTableLocation(identifier);
+        String branch = identifier.getBranchNameOrDefault();
+        return new SnapshotManager(tableFileIO, tablePath, branch, null, null);
     }
 
     private TagManager newTagManager(Identifier identifier) {
+        FileIO tableFileIO = resolveTableFileIO(identifier);
         Path tablePath = getTableLocation(identifier);
         String branch = identifier.getBranchNameOrDefault();
-        return new TagManager(fileIO, tablePath, branch);
+        return new TagManager(tableFileIO, tablePath, branch);
     }
 
     private FileSystemBranchManager newBranchManager(Identifier identifier) {
+        FileIO tableFileIO = resolveTableFileIO(identifier);
         Path tablePath = getTableLocation(identifier);
         String branch = identifier.getBranchNameOrDefault();
-        SnapshotManager sm = new SnapshotManager(fileIO, tablePath, branch, null, null);
-        TagManager tm = new TagManager(fileIO, tablePath, branch);
-        SchemaManager scm = new SchemaManager(fileIO, tablePath, branch);
-        return new FileSystemBranchManager(fileIO, tablePath, sm, tm, scm);
+        SnapshotManager sm = new SnapshotManager(tableFileIO, tablePath, branch, null, null);
+        TagManager tm = new TagManager(tableFileIO, tablePath, branch);
+        SchemaManager scm = new SchemaManager(tableFileIO, tablePath, branch);
+        return new FileSystemBranchManager(tableFileIO, tablePath, sm, tm, scm);
     }
 
     private ChangelogManager newChangelogManager(Identifier identifier) {
+        FileIO tableFileIO = resolveTableFileIO(identifier);
         Path tablePath = getTableLocation(identifier);
         String branch = identifier.getBranchNameOrDefault();
-        return new ChangelogManager(fileIO, tablePath, branch);
+        return new ChangelogManager(tableFileIO, tablePath, branch);
     }
 
     private void assertTableExists(Identifier identifier) throws TableNotExistException {

@@ -35,6 +35,7 @@ import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.schema.SchemaManager;
 import org.apache.paimon.schema.SchemaValidation;
 import org.apache.paimon.schema.TableSchema;
+import org.apache.paimon.security.SecurityConfiguration;
 import org.apache.paimon.stats.Statistics;
 import org.apache.paimon.table.sink.AppendTableRowKeyExtractor;
 import org.apache.paimon.table.sink.DynamicBucketRowKeyExtractor;
@@ -69,6 +70,9 @@ import org.apache.paimon.utils.TagManager;
 
 import org.apache.paimon.shade.caffeine2.com.github.benmanes.caffeine.cache.Cache;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.io.FileNotFoundException;
@@ -87,6 +91,7 @@ import static org.apache.paimon.CoreOptions.PATH;
 abstract class AbstractFileStoreTable implements FileStoreTable {
 
     private static final long serialVersionUID = 1L;
+    private static final Logger LOG = LoggerFactory.getLogger(AbstractFileStoreTable.class);
 
     protected final FileIO fileIO;
     protected final Path path;
@@ -391,12 +396,23 @@ abstract class AbstractFileStoreTable implements FileStoreTable {
 
     @Override
     public FileStoreTable copy(TableSchema newTableSchema) {
+        FileIO newFileIO = this.fileIO;
+        String hadoopUsername =
+                newTableSchema.options().get(SecurityConfiguration.HADOOP_USERNAME.key());
+        LOG.info(
+                "copy(TableSchema) called, hadoopUsername=[{}], fileIO class={}",
+                hadoopUsername,
+                fileIO.getClass().getName());
+        if (!StringUtils.isNullOrWhitespaceOnly(hadoopUsername)) {
+            newFileIO = fileIO.copyWithOptions(Options.fromMap(newTableSchema.options()));
+        }
+
         AbstractFileStoreTable copied =
                 newTableSchema.primaryKeys().isEmpty()
                         ? new AppendOnlyFileStoreTable(
-                                fileIO, path, newTableSchema, catalogEnvironment)
+                                newFileIO, path, newTableSchema, catalogEnvironment)
                         : new PrimaryKeyFileStoreTable(
-                                fileIO, path, newTableSchema, catalogEnvironment);
+                                newFileIO, path, newTableSchema, catalogEnvironment);
         if (snapshotCache != null) {
             copied.setSnapshotCache(snapshotCache);
         }

@@ -46,9 +46,13 @@ public class HadoopSecuredFileSystem extends FileSystem {
     private final FileSystem fileSystem;
     private final UserGroupInformation ugi;
 
-    private HadoopSecuredFileSystem(FileSystem fileSystem, UserGroupInformation ugi) {
+    HadoopSecuredFileSystem(FileSystem fileSystem, UserGroupInformation ugi) {
         this.fileSystem = fileSystem;
         this.ugi = ugi;
+    }
+
+    public UserGroupInformation getUgi() {
+        return ugi;
     }
 
     @Override

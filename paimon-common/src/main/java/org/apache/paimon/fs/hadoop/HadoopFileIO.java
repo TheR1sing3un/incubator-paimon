@@ -27,16 +27,21 @@ import org.apache.paimon.fs.PositionOutputStream;
 import org.apache.paimon.fs.RemoteIterator;
 import org.apache.paimon.fs.SeekableInputStream;
 import org.apache.paimon.hadoop.SerializableConfiguration;
+import org.apache.paimon.security.SecurityConfiguration;
 import org.apache.paimon.utils.FileIOUtils;
 import org.apache.paimon.utils.FunctionWithException;
 import org.apache.paimon.utils.Pair;
 import org.apache.paimon.utils.ReflectionUtils;
+import org.apache.paimon.utils.StringUtils;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Options;
+import org.apache.hadoop.security.UserGroupInformation;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.OutputStreamWriter;
@@ -44,6 +49,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.security.PrivilegedExceptionAction;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -53,6 +59,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public class HadoopFileIO implements FileIO {
 
     private static final long serialVersionUID = 1L;
+    private static final Logger LOG = LoggerFactory.getLogger(HadoopFileIO.class);
 
     protected SerializableConfiguration hadoopConf;
 
@@ -81,6 +88,17 @@ public class HadoopFileIO implements FileIO {
     public void configure(CatalogContext context) {
         this.hadoopConf = new SerializableConfiguration(context.hadoopConf());
         this.options = context.options();
+    }
+
+    @Override
+    public HadoopFileIO copyWithOptions(org.apache.paimon.options.Options newOptions) {
+        LOG.info(
+                "copyWithOptions called, newOptions contains hadoop.username: [{}]",
+                newOptions.get(SecurityConfiguration.HADOOP_USERNAME));
+        HadoopFileIO copy = new HadoopFileIO(this.path);
+        copy.hadoopConf = this.hadoopConf;
+        copy.options = newOptions;
+        return copy;
     }
 
     public Configuration hadoopConf() {
@@ -215,6 +233,27 @@ public class HadoopFileIO implements FileIO {
 
     protected FileSystem createFileSystem(org.apache.hadoop.fs.Path path) throws IOException {
         Configuration conf = hadoopConf.get();
+        String hadoopUsername =
+                options != null ? options.get(SecurityConfiguration.HADOOP_USERNAME) : null;
+        LOG.info(
+                "createFileSystem for path {}, options is {}, hadoopUsername is [{}]",
+                path,
+                options != null ? options.toMap() : "null",
+                hadoopUsername);
+        if (!StringUtils.isNullOrWhitespaceOnly(hadoopUsername)) {
+            UserGroupInformation ugi = UserGroupInformation.createRemoteUser(hadoopUsername);
+            try {
+                FileSystem fs =
+                        ugi.doAs(
+                                (PrivilegedExceptionAction<FileSystem>)
+                                        () -> path.getFileSystem(conf));
+                return new HadoopSecuredFileSystem(fs, ugi);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException(
+                        "Interrupted while creating FileSystem as user " + hadoopUsername, e);
+            }
+        }
         FileSystem fileSystem = path.getFileSystem(conf);
         fileSystem = HadoopSecuredFileSystem.trySecureFileSystem(fileSystem, options, conf);
         return fileSystem;
