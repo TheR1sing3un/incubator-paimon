@@ -1,27 +1,24 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
 import logging
-from dataclasses import replace
 from typing import List
 
 from pypaimon.common.file_io import FileIO
-from pypaimon.common.options.core_options import CoreOptions
 
 logger = logging.getLogger(__name__)
 from pypaimon.common.json_util import JSON
@@ -57,9 +54,12 @@ class RenamingSnapshotCommit(SnapshotCommit):
 
         Args:
             snapshot: The snapshot to commit
-            statistics: List of partition statistics
-            committer: Optional committer name for audit tracking
-            message: Optional commit message for audit tracking
+            statistics: List of partition statistics (currently unused but kept for interface compatibility)
+            committer: Optional committer name; injected into snapshot.properties
+                for filesystem-based commit where the wire-level field has no
+                separate home.
+            message: Optional commit message; injected into snapshot.properties
+                alongside committer.
 
         Returns:
             True if commit was successful, False otherwise
@@ -68,7 +68,18 @@ class RenamingSnapshotCommit(SnapshotCommit):
             Exception: If commit fails
         """
         if committer is not None or message is not None:
-            snapshot = self._inject_commit_properties(snapshot, committer, message)
+            from dataclasses import replace
+            from pypaimon.common.options.core_options import CoreOptions
+            props = dict(snapshot.properties) if snapshot.properties else {}
+            if committer is not None:
+                props.setdefault(
+                    CoreOptions.SNAPSHOT_COMMIT_PREFIX + CoreOptions.COMMIT_COMMITTER.key(),
+                    committer)
+            if message is not None:
+                props.setdefault(
+                    CoreOptions.SNAPSHOT_COMMIT_PREFIX + CoreOptions.COMMIT_MESSAGE.key(),
+                    message)
+            snapshot = replace(snapshot, properties=props)
         new_snapshot_path = self.snapshot_manager.get_snapshot_path(snapshot.id)
         if not self.file_io.exists(new_snapshot_path):
             # Try to write atomically using the file IO
@@ -82,18 +93,6 @@ class RenamingSnapshotCommit(SnapshotCommit):
 
     def close(self):
         """Close the lock and release resources."""
-
-    @staticmethod
-    def _inject_commit_properties(snapshot, committer, message):
-        """Inject committer and message into snapshot properties for filesystem-based commit."""
-        properties = dict(snapshot.properties) if snapshot.properties else {}
-        if committer is not None:
-            properties.setdefault(
-                CoreOptions.SNAPSHOT_COMMIT_PREFIX + CoreOptions.COMMIT_COMMITTER.key(), committer)
-        if message is not None:
-            properties.setdefault(
-                CoreOptions.SNAPSHOT_COMMIT_PREFIX + CoreOptions.COMMIT_MESSAGE.key(), message)
-        return replace(snapshot, properties=properties)
 
     def _commit_latest_hint(self, snapshot_id: int):
         """
