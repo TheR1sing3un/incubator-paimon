@@ -1,92 +1,89 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+"""The ``$tags`` system table — every tag plus its snapshot metadata."""
+
+from typing import List, Optional
 
 import pyarrow
 
-from pypaimon.table.system.system_table_base import SystemTableBase
+from pypaimon.schema.data_types import AtomicType, DataField, RowType
+from pypaimon.table.system.system_table import SystemTable
 
 
-TAGS_NAME = "tags"
+TABLE_TYPE = RowType(False, [
+    DataField(0, "tag_name", AtomicType("STRING", nullable=False)),
+    DataField(1, "snapshot_id", AtomicType("BIGINT", nullable=False)),
+    DataField(2, "schema_id", AtomicType("BIGINT", nullable=False)),
+    DataField(3, "commit_time", AtomicType("TIMESTAMP(3)", nullable=False)),
+    DataField(4, "record_count", AtomicType("BIGINT", nullable=True)),
+    DataField(5, "create_time", AtomicType("TIMESTAMP(3)", nullable=True)),
+    DataField(6, "time_retained", AtomicType("STRING", nullable=True)),
+])
 
 
-class TagsTable(SystemTableBase):
-    """A system table exposing every tag of a table.
+_TIMESTAMP_TYPE = pyarrow.timestamp("ms")
 
-    Mirrors Java's ``org.apache.paimon.table.system.TagsTable``.
-    """
 
-    _SCHEMA = pyarrow.schema([
-        pyarrow.field("tag_name", pyarrow.string()),
-        pyarrow.field("snapshot_id", pyarrow.int64()),
-        pyarrow.field("schema_id", pyarrow.int64()),
-        pyarrow.field("commit_time", pyarrow.timestamp("ms")),
-        pyarrow.field("record_count", pyarrow.int64()),
-        pyarrow.field("create_time", pyarrow.timestamp("ms")),
-        pyarrow.field("time_retained", pyarrow.string()),
-    ])
+class TagsTable(SystemTable):
+    """The ``$tags`` system table."""
 
-    def schema(self) -> pyarrow.Schema:
-        return self._SCHEMA
+    def system_table_name(self) -> str:
+        return "tags"
 
-    def build_arrow_table(self) -> pyarrow.Table:
-        tag_manager = self.origin.tag_manager()
-        file_io = self.origin.file_io
+    def row_type(self) -> RowType:
+        return TABLE_TYPE
 
-        rows = []
-        for tag_name in sorted(tag_manager.list_tags()):
-            tag = tag_manager.get(tag_name)
+    def primary_keys(self) -> List[str]:
+        return ["tag_name"]
+
+    def _build_arrow_table(self) -> pyarrow.Table:
+        tag_manager = self.base_table.tag_manager()
+
+        names: List[str] = []
+        snapshot_ids: List[int] = []
+        schema_ids: List[int] = []
+        commit_times: List[int] = []
+        record_counts: List[Optional[int]] = []
+        create_times: List[Optional[int]] = []
+        time_retained: List[Optional[str]] = []
+
+        for name in tag_manager.list_tags():
+            tag = tag_manager.get(name)
             if tag is None:
                 continue
+            names.append(name)
+            snapshot_ids.append(int(tag.id))
+            schema_ids.append(int(tag.schema_id))
+            commit_times.append(int(tag.time_millis))
+            record_counts.append(
+                None if tag.total_record_count is None
+                else int(tag.total_record_count))
+            # TODO: surface create_time and time_retained once the Tag
+            # dataclass carries them.
+            create_times.append(None)
+            time_retained.append(None)
 
-            create_time_ms = None
-            try:
-                path = tag_manager.tag_path(tag_name)
-                for status in file_io.list_status(tag_manager.tag_directory()):
-                    if getattr(status, "path", None) == path \
-                            and getattr(status, "mtime", None) is not None:
-                        create_time_ms = int(status.mtime * 1000)
-                        break
-            except Exception:
-                create_time_ms = None
-
-            rows.append({
-                "tag_name": tag_name,
-                "snapshot_id": tag.id,
-                "schema_id": tag.schema_id,
-                "commit_time": tag.time_millis,
-                "record_count": tag.total_record_count,
-                "create_time": create_time_ms,
-                "time_retained": None,
-            })
-
-        return _rows_to_arrow(rows, self._SCHEMA)
-
-
-def _rows_to_arrow(rows, schema: pyarrow.Schema) -> pyarrow.Table:
-    columns = {field.name: [] for field in schema}
-    for row in rows:
-        for field in schema:
-            columns[field.name].append(row.get(field.name))
-    arrays = []
-    for field in schema:
-        values = columns[field.name]
-        if pyarrow.types.is_timestamp(field.type):
-            arrays.append(pyarrow.array(values, type=pyarrow.int64()).cast(field.type))
-        else:
-            arrays.append(pyarrow.array(values, type=field.type))
-    return pyarrow.Table.from_arrays(arrays, schema=schema)
+        return pyarrow.table({
+            "tag_name": pyarrow.array(names, type=pyarrow.string()),
+            "snapshot_id": pyarrow.array(snapshot_ids, type=pyarrow.int64()),
+            "schema_id": pyarrow.array(schema_ids, type=pyarrow.int64()),
+            "commit_time": pyarrow.array(commit_times, type=_TIMESTAMP_TYPE),
+            "record_count": pyarrow.array(record_counts, type=pyarrow.int64()),
+            "create_time": pyarrow.array(create_times, type=_TIMESTAMP_TYPE),
+            "time_retained": pyarrow.array(time_retained, type=pyarrow.string()),
+        })

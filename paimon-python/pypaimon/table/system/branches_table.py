@@ -1,103 +1,96 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+"""The ``$branches`` system table — every named branch and its mtime."""
+
+from typing import List, Optional
 
 import pyarrow
 
-from pypaimon.table.system.system_table_base import SystemTableBase
+from pypaimon.branch.branch_manager import BranchManager
+from pypaimon.schema.data_types import AtomicType, DataField, RowType
+from pypaimon.table.system.system_table import SystemTable
 
 
-BRANCHES_NAME = "branches"
+TABLE_TYPE = RowType(False, [
+    DataField(0, "branch_name", AtomicType("STRING", nullable=False)),
+    DataField(1, "create_time", AtomicType("TIMESTAMP(3)", nullable=False)),
+])
 
 
-class BranchesTable(SystemTableBase):
-    """A system table exposing every branch of a table.
+_TIMESTAMP_TYPE = pyarrow.timestamp("ms")
 
-    Mirrors Java's ``org.apache.paimon.table.system.BranchesTable``. The
-    catalog is required because branch listing is catalog-specific
-    (filesystem scan vs. REST API).
+
+class BranchesTable(SystemTable):
+    """The ``$branches`` system table."""
+
+    def system_table_name(self) -> str:
+        return "branches"
+
+    def row_type(self) -> RowType:
+        return TABLE_TYPE
+
+    def primary_keys(self) -> List[str]:
+        return ["branch_name"]
+
+    def _build_arrow_table(self) -> pyarrow.Table:
+        branch_manager = self.base_table.branch_manager()
+        names = list(branch_manager.branches())
+        create_times: List[int] = []
+        for name in names:
+            branch_path = BranchManager.branch_path(
+                self.base_table.table_path, name)
+            ms = _read_mtime_ms(self.base_table.file_io, branch_path)
+            # ``create_time`` is declared NOT NULL. When the backing
+            # store cannot return an mtime (some remote object stores
+            # via PyArrowFileIO) fall back to epoch 0 so the schema
+            # contract holds.
+            create_times.append(0 if ms is None else int(ms))
+        return pyarrow.table({
+            "branch_name": pyarrow.array(names, type=pyarrow.string()),
+            "create_time": pyarrow.array(create_times, type=_TIMESTAMP_TYPE),
+        })
+
+
+def _read_mtime_ms(file_io, path: str) -> Optional[int]:
+    """Read the modification time of ``path`` as epoch milliseconds.
+
+    Returns ``None`` when the path is missing or the file-status object
+    does not carry a usable timestamp. Handles both
+    ``mtime_ns`` (PyArrow's ``FileInfo``) and ``mtime`` (LocalFileStatus's
+    seconds-since-epoch float or a ``datetime``).
     """
+    try:
+        if not file_io.exists(path):
+            return None
+        file_status = file_io.get_file_status(path)
+    except Exception:
+        return None
 
-    _SCHEMA = pyarrow.schema([
-        pyarrow.field("branch_name", pyarrow.string()),
-        pyarrow.field("create_time", pyarrow.timestamp("ms")),
-    ])
-
-    def schema(self) -> pyarrow.Schema:
-        return self._SCHEMA
-
-    def build_arrow_table(self) -> pyarrow.Table:
-        branch_names = self._list_branches()
-
-        table_path = self.origin.table_path.rstrip("/")
-        file_io = self.origin.file_io
-
-        names = []
-        create_times = []
-        for branch in sorted(branch_names):
-            names.append(branch)
-            create_time_ms = None
-            branch_path = f"{table_path}/branch/branch-{branch}"
-            try:
-                if file_io.exists(branch_path):
-                    statuses = file_io.list_status(f"{table_path}/branch")
-                    for status in statuses:
-                        if getattr(status, "base_name", None) == f"branch-{branch}" \
-                                and getattr(status, "mtime", None) is not None:
-                            create_time_ms = int(status.mtime * 1000)
-                            break
-            except Exception:
-                create_time_ms = None
-            create_times.append(create_time_ms)
-
-        arrays = [
-            pyarrow.array(names, type=pyarrow.string()),
-            pyarrow.array(create_times, type=pyarrow.int64()).cast(
-                pyarrow.timestamp("ms")
-            ),
-        ]
-        return pyarrow.Table.from_arrays(arrays, schema=self._SCHEMA)
-
-    def _list_branches(self):
-        if self.catalog is not None:
-            try:
-                return list(self.catalog.list_branches(self.origin.identifier))
-            except NotImplementedError:
-                pass
-            except Exception:
-                pass
-
-        # Fallback: scan the filesystem directly. Matches
-        # ``FileSystemCatalog.list_branches`` logic.
-        table_path = self.origin.table_path.rstrip("/")
-        branch_dir = f"{table_path}/branch"
-        file_io = self.origin.file_io
-        if not file_io.exists(branch_dir):
-            return []
-        branches = []
+    mtime_ns = getattr(file_status, "mtime_ns", None)
+    if mtime_ns is not None:
+        return int(mtime_ns // 1_000_000)
+    mtime = getattr(file_status, "mtime", None)
+    if mtime is None:
+        return None
+    try:
+        return int(mtime.timestamp() * 1000)
+    except AttributeError:
         try:
-            import pyarrow.fs as pafs
-            for status in file_io.list_status(branch_dir):
-                is_directory = (
-                    hasattr(status, "type") and status.type == pafs.FileType.Directory
-                )
-                name = getattr(status, "base_name", "")
-                if is_directory and name and name.startswith("branch-"):
-                    branches.append(name[len("branch-"):])
-        except Exception:
-            return []
-        return branches
+            return int(float(mtime) * 1000)
+        except (TypeError, ValueError):
+            return None
