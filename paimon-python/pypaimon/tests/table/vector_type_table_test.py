@@ -49,7 +49,7 @@ class VectorReadFormatTest(unittest.TestCase):
 
         read_fields = [
             DataField(0, "id", AtomicType("BIGINT")),
-            DataField(1, "embed", VectorType(True, 3, AtomicType("FLOAT"))),
+            DataField(1, "embed", VectorType(True, AtomicType("FLOAT"), 3)),
         ]
         reader = FormatPyArrowReader(self.file_io, "parquet", path, read_fields, None)
         batch = reader.read_arrow_batch()
@@ -78,7 +78,7 @@ class VectorReadFormatTest(unittest.TestCase):
 
         read_fields = [
             DataField(0, "id", AtomicType("BIGINT")),
-            DataField(1, "embed", VectorType(True, 2, AtomicType("FLOAT"))),
+            DataField(1, "embed", VectorType(True, AtomicType("FLOAT"), 2)),
         ]
         reader = FormatPyArrowReader(self.file_io, "parquet", path, read_fields, None)
         batch = reader.read_arrow_batch()
@@ -105,7 +105,7 @@ class VectorReadFormatTest(unittest.TestCase):
 
         read_fields = [
             DataField(0, "id", AtomicType("BIGINT")),
-            DataField(1, "embed", VectorType(True, 2, AtomicType("FLOAT"))),
+            DataField(1, "embed", VectorType(True, AtomicType("FLOAT"), 2)),
         ]
         reader = FormatPyArrowReader(self.file_io, "parquet", path, read_fields, None)
         batch = reader.read_arrow_batch()
@@ -136,7 +136,7 @@ class JavaVectorCfInteropTest(unittest.TestCase):
         file_io = LocalFileIO("file://" + self.FIXTURE, Options({}))
         read_fields = [
             DataField(0, "id", AtomicType("BIGINT")),
-            DataField(1, "embed", VectorType(True, 8, AtomicType("FLOAT"))),
+            DataField(1, "embed", VectorType(True, AtomicType("FLOAT"), 8)),
         ]
         reader = FormatPyArrowReader(
             file_io, "parquet",
