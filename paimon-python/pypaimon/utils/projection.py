@@ -1,30 +1,32 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
-"""Projection utility — top-level and nested field projection.
+"""Column projection utilities.
 
-Mirrors Java ``o.a.p.utils.Projection`` (paimon-common) at L42-417, which
-provides the dual ``TopLevelProjection`` (1D ``int[]``) and
-``NestedProjection`` (2D ``int[][]``) split. Nested projection paths
-``[[1, 0], [1, 2]]`` mean "the 0th and 2nd children of the top-level field at
-index 1"; the projection result is flattened into a top-level
-``List[DataField]`` with names joined by ``_`` (with ``_$N`` suffix on
-collision), preserving the leaf field's ID for schema-evolution mapping.
+A projection maps a source row type to a flat list of ``DataField``: the
+columns the user wants to read. Two flavours:
+
+* :class:`TopLevelProjection` selects fields by their top-level index.
+* :class:`NestedProjection` accepts paths that walk into ROW children, e.g.
+  ``[[1, 0], [1, 2]]`` means "the 0th and 2nd children of the field at top
+  level index 1". The result is flattened into top-level fields whose
+  names are the underscore-joined original path (``a_b`` for ``a.b``,
+  with a ``__N`` suffix on collisions) and whose IDs are inherited from
+  the leaf so schema-evolution remapping by field ID still works.
 """
 
 from abc import ABC, abstractmethod
@@ -34,19 +36,11 @@ from pypaimon.schema.data_types import DataField, RowType
 
 
 class Projection(ABC):
-    """Base class for column projection.
-
-    A projection maps a source ``RowType`` to a flat list of ``DataField``
-    representing the columns the user wants to read. ``TopLevelProjection``
-    handles one-level selection by index; ``NestedProjection`` handles
-    deeper paths into ROW children.
-    """
+    """Abstract base for column projection."""
 
     @abstractmethod
     def project(self, row_type) -> List[DataField]:
-        """Apply this projection to the source row type and return the
-        resulting flat list of DataField.
-        """
+        """Apply the projection and return the resulting flat fields."""
 
     @abstractmethod
     def is_nested(self) -> bool:
@@ -54,12 +48,11 @@ class Projection(ABC):
 
     @abstractmethod
     def to_top_level_indexes(self) -> List[int]:
-        """Return the top-level positions touched by this projection.
+        """Top-level positions touched by this projection.
 
-        For nested projections, this returns the unique top-level indexes
-        in path order. Java's ``Projection.toTopLevelIndexes`` raises on
-        nested projections; we instead return the dedup'd top indexes since
-        Python callers want this for fallback paths.
+        For nested projections, returns unique top-level indexes in path
+        order. Useful for fallback paths that can only push down at the
+        top level.
         """
 
     @abstractmethod
@@ -77,18 +70,44 @@ class Projection(ABC):
         (e.g. PyArrow's ``ds.field(*name_path)``).
         """
 
+    # ------------------------------------------------------------------
+    # Factories
+    # ------------------------------------------------------------------
+
     @staticmethod
-    def of(indexes_or_paths) -> 'Projection':
+    def empty() -> "Projection":
+        """The empty projection: no columns selected."""
+        return _EmptyProjection()
+
+    @staticmethod
+    def of(indexes_or_paths) -> "Projection":
         """Build a projection from either ``int[]`` or ``int[][]``.
 
-        Empty input returns an :class:`_EmptyProjection` instance.
+        Empty input returns :func:`empty`. The input must be uniformly
+        shaped — either all integers or all sequences of integers; mixing
+        the two raises ``TypeError`` so the failure is reported at the
+        ``of`` call site rather than as an opaque error deep in
+        ``project``.
         """
         if not indexes_or_paths:
             return _EmptyProjection()
-        first = indexes_or_paths[0]
-        if isinstance(first, (list, tuple)):
+        first_is_path = isinstance(indexes_or_paths[0], (list, tuple))
+        for entry in indexes_or_paths[1:]:
+            entry_is_path = isinstance(entry, (list, tuple))
+            if entry_is_path != first_is_path:
+                raise TypeError(
+                    "Projection.of expects either all top-level indexes "
+                    "or all nested paths; got a mix")
+        if first_is_path:
             return NestedProjection([list(p) for p in indexes_or_paths])
         return TopLevelProjection(list(indexes_or_paths))
+
+    @staticmethod
+    def range(start_inclusive: int, end_exclusive: int) -> "Projection":
+        """Top-level projection over a contiguous index range."""
+        if end_exclusive <= start_inclusive:
+            return _EmptyProjection()
+        return TopLevelProjection(list(range(start_inclusive, end_exclusive)))
 
 
 class _EmptyProjection(Projection):
@@ -134,14 +153,10 @@ class TopLevelProjection(Projection):
 
 
 class NestedProjection(Projection):
-    """Nested projection: each path navigates from a top-level field through
-    successive ROW children. A path of length 1 is equivalent to a top-level
-    selection. Mirrors Java ``Projection.NestedProjection`` (L229-335).
+    """Projection over paths that may walk into ROW children.
 
-    ``project(row_type)`` returns a flat list whose ``DataField.name`` is the
-    underscore-joined path of original field names (with ``_$N`` suffix on
-    collisions), and whose ``DataField.id`` is the **leaf** field's ID — so
-    downstream schema-evolution remapping by field ID continues to work.
+    Each path navigates from a top-level field through successive ROW
+    children. A path of length 1 is equivalent to a top-level selection.
     """
 
     def __init__(self, paths: Sequence[Sequence[int]]):
@@ -150,7 +165,8 @@ class NestedProjection(Projection):
         self.paths = [list(p) for p in paths]
         for p in self.paths:
             if len(p) == 0:
-                raise ValueError("Each projection path must have at least one index")
+                raise ValueError(
+                    "Each projection path must have at least one index")
         self._has_nested = any(len(p) > 1 for p in self.paths)
 
     def is_nested(self) -> bool:
@@ -178,7 +194,7 @@ class NestedProjection(Projection):
             names = [field.name]
             for idx in path[1:]:
                 child_type = field.type
-                if not _is_row_type(child_type):
+                if not is_row_type(child_type):
                     raise ValueError(
                         "Nested projection step expected a ROW type but got %s "
                         "for field '%s'" % (child_type, field.name))
@@ -198,7 +214,7 @@ class NestedProjection(Projection):
             name_parts = [field.name]
             for idx in path[1:]:
                 child_type = field.type
-                if not _is_row_type(child_type):
+                if not is_row_type(child_type):
                     raise ValueError(
                         "Nested projection step expected a ROW type but got %s "
                         "for field '%s'" % (child_type, field.name))
@@ -208,11 +224,11 @@ class NestedProjection(Projection):
             base_name = "_".join(name_parts)
             final_name = base_name
             while final_name in seen_names:
-                final_name = "%s_$%d" % (base_name, dup_count)
+                final_name = "%s__%d" % (base_name, dup_count)
                 dup_count += 1
             seen_names.add(final_name)
-            # Keep the leaf field's ID for schema-evolution mapping; rename
-            # the field but otherwise inherit type / description / default.
+            # Keep the leaf field's ID so downstream schema-evolution
+            # remapping by field ID still works after rename.
             out.append(DataField(
                 id=field.id,
                 name=final_name,
@@ -232,14 +248,12 @@ def _row_fields(row_type) -> List[DataField]:
     fields: Optional[List[DataField]] = getattr(row_type, 'fields', None)
     if fields is None:
         raise ValueError(
-            "Projection target must be a RowType or have a .fields attribute, got %s"
-            % type(row_type).__name__)
+            "Projection target must be a RowType or have a .fields attribute, "
+            "got %s" % type(row_type).__name__)
     return list(fields)
 
 
-def _is_row_type(data_type) -> bool:
+def is_row_type(data_type) -> bool:
     if isinstance(data_type, RowType):
         return True
-    # Some lightweight stubs (e.g. test namedtuples) report .fields without
-    # being a RowType subclass. Accept those too.
     return getattr(data_type, 'fields', None) is not None

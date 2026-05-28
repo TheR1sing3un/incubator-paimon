@@ -1,180 +1,204 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
-"""Unit tests for the Projection utility (top-level + nested).
+import unittest
 
-Mirrors the cases covered by Java's ProjectionTest (paimon-flink-common).
-"""
-
-import pytest
-
-from pypaimon.schema.data_types import (
-    AtomicType, DataField, RowType,
-)
-from pypaimon.utils.projection import (
-    NestedProjection,
-    Projection,
-    TopLevelProjection,
-)
+from pypaimon.schema.data_types import AtomicType, DataField, RowType
+from pypaimon.utils.projection import (NestedProjection, Projection,
+                                       TopLevelProjection)
 
 
-def _row(*fields):
-    return RowType(nullable=True, fields=list(fields))
+def _atomic(idx: int, name: str, type_name: str = 'BIGINT') -> DataField:
+    return DataField(idx, name, AtomicType(type_name))
 
 
-def _atomic(name, type_name, nullable=True):
-    return DataField(0, name, AtomicType(type_name, nullable=nullable))
+def _struct(idx: int, name: str, sub_fields) -> DataField:
+    return DataField(idx, name, RowType(False, list(sub_fields)))
 
 
-def _df(field_id, name, dtype):
-    return DataField(field_id, name, dtype)
+def _three_top_fields():
+    """schema: [pk: BIGINT, mv: ROW<latest_version BIGINT, latest_value STRING>, val: STRING]"""
+    return [
+        _atomic(1, 'pk'),
+        _struct(2, 'mv', [
+            _atomic(10, 'latest_version'),
+            _atomic(11, 'latest_value', 'STRING'),
+        ]),
+        _atomic(3, 'val', 'STRING'),
+    ]
 
 
-class TestProjectionFactory:
+class TopLevelProjectionTest(unittest.TestCase):
 
-    def test_empty_projection(self):
-        p = Projection.of([])
-        assert p.is_nested() is False
-        assert p.to_top_level_indexes() == []
-        assert p.to_nested_indexes() == []
-        assert p.project(_row(_atomic('a', 'INT'))) == []
+    def test_factory_produces_top_level(self):
+        p = Projection.of([2, 0])
+        self.assertIsInstance(p, TopLevelProjection)
+        self.assertFalse(p.is_nested())
 
-    def test_int_array_creates_top_level(self):
-        p = Projection.of([0, 2])
-        assert isinstance(p, TopLevelProjection)
-        assert p.is_nested() is False
+    def test_indexes_round_trip(self):
+        p = Projection.of([2, 0, 1])
+        self.assertEqual(p.to_top_level_indexes(), [2, 0, 1])
+        # nested form lifts each top-level index into a singleton path
+        self.assertEqual(p.to_nested_indexes(), [[2], [0], [1]])
 
-    def test_int_int_array_creates_nested(self):
-        p = Projection.of([[0], [1, 2]])
-        assert isinstance(p, NestedProjection)
-        assert p.is_nested() is True
+    def test_project_picks_fields_in_order(self):
+        fields = _three_top_fields()
+        res = Projection.of([2, 0]).project(fields)
+        self.assertEqual([f.name for f in res], ['val', 'pk'])
+        self.assertEqual([f.id for f in res], [3, 1])
 
-    def test_single_path_array_with_one_index_is_not_nested(self):
-        p = Projection.of([[0], [1]])
-        assert isinstance(p, NestedProjection)
-        # paths of length 1 only → not actually nested
-        assert p.is_nested() is False
+    def test_to_name_paths(self):
+        fields = _three_top_fields()
+        names = Projection.of([2, 0]).to_name_paths(fields)
+        self.assertEqual(names, [['val'], ['pk']])
 
+    def test_range_factory(self):
+        p = Projection.range(1, 4)
+        self.assertEqual(p.to_top_level_indexes(), [1, 2, 3])
 
-class TestTopLevelProjection:
-
-    def test_project_picks_fields_by_index(self):
-        rt = _row(
-            _atomic('a', 'INT'),
-            _atomic('b', 'BIGINT'),
-            _atomic('c', 'STRING'),
-        )
-        p = TopLevelProjection([2, 0])
-        out = p.project(rt)
-        assert [f.name for f in out] == ['c', 'a']
-        assert [f.type.type for f in out] == ['STRING', 'INT']
-
-    def test_to_indexes_round_trip(self):
-        p = TopLevelProjection([3, 1, 2])
-        assert p.to_top_level_indexes() == [3, 1, 2]
-        assert p.to_nested_indexes() == [[3], [1], [2]]
+    def test_range_zero_or_negative_returns_empty(self):
+        self.assertFalse(Projection.range(2, 2).is_nested())
+        self.assertEqual(Projection.range(2, 2).to_top_level_indexes(), [])
+        self.assertEqual(Projection.range(5, 1).to_top_level_indexes(), [])
 
 
-class TestNestedProjection:
+class NestedProjectionTest(unittest.TestCase):
 
-    def _row_with_struct(self):
-        # Mirrors Java ProjectionTest.testNestedProjection
-        return _row(
-            _df(0, 'f0', AtomicType('INT')),
-            _df(1, 'f1', _row(
-                _df(2, 'f0', AtomicType('INT')),
-                _df(3, 'f1', AtomicType('INT')),
-                _df(4, 'f2', AtomicType('INT')),
-            )),
-            _df(5, 'f2', AtomicType('STRING')),
-        )
+    def test_factory_produces_nested(self):
+        p = Projection.of([[1, 0], [1, 1]])
+        self.assertIsInstance(p, NestedProjection)
+        self.assertTrue(p.is_nested())
 
-    def test_basic_nested_paths(self):
-        p = NestedProjection([[1, 0], [1, 2]])
-        out = p.project(self._row_with_struct())
-        # Java ProjectionTest expects flattened names f1_f0, f1_f2
-        assert [f.name for f in out] == ['f1_f0', 'f1_f2']
-        # Field IDs are inherited from the leaf
-        assert [f.id for f in out] == [2, 4]
+    def test_singleton_paths_reported_not_nested(self):
+        # paths of length 1 only — observable behaviour matches top level.
+        p = Projection.of([[2], [0]])
+        self.assertIsInstance(p, NestedProjection)
+        self.assertFalse(p.is_nested())
 
-    def test_mixed_top_and_nested(self):
-        p = NestedProjection([[0], [1, 0], [2]])
-        out = p.project(self._row_with_struct())
-        assert [f.name for f in out] == ['f0', 'f1_f0', 'f2']
-        assert [f.id for f in out] == [0, 2, 5]
+    def test_top_level_indexes_dedup_in_path_order(self):
+        p = Projection.of([[1, 0], [1, 1], [0]])
+        self.assertEqual(p.to_top_level_indexes(), [1, 0])
 
-    def test_nested_collision_renames_with_dollar_suffix(self):
-        # Construct a schema whose flattened paths collide
-        rt = _row(
-            _df(0, 'a_b', AtomicType('INT')),  # top-level "a_b"
-            _df(1, 'a', _row(
-                _df(2, 'b', AtomicType('STRING')),  # nested a.b → flattened "a_b"
-            )),
-        )
-        p = NestedProjection([[0], [1, 0]])
-        out = p.project(rt)
-        names = [f.name for f in out]
-        # First "a_b" wins; the second gets a "_$0" suffix
-        assert names[0] == 'a_b'
-        assert names[1].startswith('a_b_$')
+    def test_nested_indexes_round_trip(self):
+        p = Projection.of([[1, 0], [1, 1]])
+        self.assertEqual(p.to_nested_indexes(), [[1, 0], [1, 1]])
 
-    def test_path_through_non_row_raises(self):
-        rt = _row(_df(0, 'a', AtomicType('INT')))
-        p = NestedProjection([[0, 0]])
-        with pytest.raises(ValueError, match='ROW'):
-            p.project(rt)
+    def test_to_name_paths_walks_into_struct(self):
+        fields = _three_top_fields()
+        names = Projection.of([[1, 0], [1, 1], [0]]).to_name_paths(fields)
+        self.assertEqual(
+            names,
+            [['mv', 'latest_version'], ['mv', 'latest_value'], ['pk']])
 
-    def test_to_indexes(self):
-        p = NestedProjection([[1, 0], [0], [1, 2]])
-        assert p.to_top_level_indexes() == [1, 0]
-        assert p.to_nested_indexes() == [[1, 0], [0], [1, 2]]
+    def test_project_flattens_with_underscore_join(self):
+        fields = _three_top_fields()
+        res = Projection.of([[1, 0], [1, 1], [0]]).project(fields)
+        self.assertEqual(
+            [f.name for f in res], ['mv_latest_version', 'mv_latest_value', 'pk'])
 
-    def test_empty_paths_rejected(self):
-        with pytest.raises(ValueError):
+    def test_project_preserves_leaf_field_id(self):
+        # Schema-evolution remapping is by field ID, so flattened nested
+        # fields must inherit the leaf's ID — not the parent struct's.
+        fields = _three_top_fields()
+        res = Projection.of([[1, 0], [1, 1]]).project(fields)
+        self.assertEqual([f.id for f in res], [10, 11])
+
+    def test_collision_dedup_via_dollar_suffix(self):
+        # Two leaves under different parents with the same final name.
+        sub_a = _atomic(20, 'x')
+        sub_b = _atomic(21, 'x')
+        fields = [
+            _struct(1, 'a', [sub_a]),
+            _struct(2, 'b', [sub_b]),
+        ]
+        # path [0,0] -> 'a_x', path [1,0] -> 'b_x' (no collision yet).
+        res = Projection.of([[0, 0], [1, 0]]).project(fields)
+        self.assertEqual([f.name for f in res], ['a_x', 'b_x'])
+
+        # When two collapse to the SAME name, the second gets `__N`.
+        # Build two parents whose leaves have the same compound name.
+        sub_x_only = _atomic(30, 'x')
+        fields2 = [
+            _struct(1, 'a', [sub_x_only]),
+            _atomic(2, 'a_x'),  # plain top-level already named 'a_x'.
+        ]
+        res2 = Projection.of([[0, 0], [1]]).project(fields2)
+        # First path produces 'a_x'; second is already-existing 'a_x'.
+        # Collision → suffix on the second.
+        self.assertEqual(res2[0].name, 'a_x')
+        self.assertTrue(res2[1].name.startswith('a_x__'))
+
+    def test_project_rejects_non_row_step(self):
+        # Trying to walk into an atomic field must fail loudly.
+        fields = _three_top_fields()
+        with self.assertRaises(ValueError):
+            Projection.of([[0, 0]]).project(fields)
+
+    def test_constructor_rejects_empty_paths_list(self):
+        with self.assertRaises(ValueError):
             NestedProjection([])
 
-    def test_zero_length_path_rejected(self):
-        with pytest.raises(ValueError):
+    def test_constructor_rejects_zero_length_path(self):
+        with self.assertRaises(ValueError):
             NestedProjection([[]])
 
-    def test_accepts_plain_field_list(self):
-        # _row_fields helper accepts plain lists of DataField too.
+    def test_dup_count_is_monotonic_across_distinct_collisions(self):
+        # ``__N`` is a per-call monotonic counter — distinct collisions
+        # share the suffix space, they don't each restart at 0.
+        sub_x_1 = _atomic(20, 'x')
+        sub_x_2 = _atomic(21, 'x')
+        sub_y_1 = _atomic(30, 'y')
+        sub_y_2 = _atomic(31, 'y')
         fields = [
-            _df(0, 'a', AtomicType('INT')),
-            _df(1, 'b', _row(_df(2, 'c', AtomicType('STRING')))),
+            _atomic(1, 'a_x'),
+            _struct(2, 'a', [sub_x_1]),
+            _atomic(3, 'a_y'),
+            _struct(4, 'a', [sub_y_1]),  # collides via path [3, 0] → a_y
+            _struct(5, 'a', [sub_x_2, sub_y_2]),  # second a.x collision
         ]
-        p = NestedProjection([[1, 0]])
-        out = p.project(fields)
-        assert [f.name for f in out] == ['b_c']
-        assert [f.id for f in out] == [2]
+        # Order: a_x (top) → keeps; [1, 0] flatten → a_x (collision) → a_x__0
+        # a_y (top) → keeps; [3, 0] flatten → a_y (collision) → a_y__1
+        res = Projection.of(
+            [[0], [1, 0], [2], [3, 0]]).project(fields)
+        self.assertEqual(
+            [f.name for f in res], ['a_x', 'a_x__0', 'a_y', 'a_y__1'])
 
-    def test_to_name_paths_top_level_only(self):
-        rt = _row(
-            _atomic('a', 'INT'),
-            _atomic('b', 'BIGINT'),
-        )
-        p = TopLevelProjection([1, 0])
-        assert p.to_name_paths(rt) == [['b'], ['a']]
+    def test_of_rejects_mixed_int_and_path(self):
+        # Mixing top-level indexes and nested paths is a programming error;
+        # ``of`` should fail loudly at the call site instead of producing a
+        # broken projection that explodes downstream.
+        with self.assertRaises(TypeError):
+            Projection.of([1, [2, 3]])
+        with self.assertRaises(TypeError):
+            Projection.of([[1, 2], 3])
 
-    def test_to_name_paths_nested(self):
-        rt = self._row_with_struct()
-        p = NestedProjection([[0], [1, 0], [1, 2]])
-        assert p.to_name_paths(rt) == [['f0'], ['f1', 'f0'], ['f1', 'f2']]
 
-    def test_to_name_paths_empty(self):
-        assert Projection.of([]).to_name_paths(_row(_atomic('a', 'INT'))) == []
+class EmptyProjectionTest(unittest.TestCase):
+
+    def test_of_empty(self):
+        self.assertEqual(Projection.of([]).to_top_level_indexes(), [])
+        self.assertEqual(Projection.of([]).to_nested_indexes(), [])
+
+    def test_empty_factory(self):
+        p = Projection.empty()
+        self.assertEqual(p.project(_three_top_fields()), [])
+        self.assertFalse(p.is_nested())
+        self.assertEqual(p.to_name_paths(_three_top_fields()), [])
+
+
+if __name__ == '__main__':
+    unittest.main()
