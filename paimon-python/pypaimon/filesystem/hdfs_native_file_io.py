@@ -223,6 +223,18 @@ class HdfsNativeFileIO(FileIO):
 
         self._client = Client(**client_kwargs)
 
+    def __reduce__(self):
+        """Pickle support for Ray / multiprocessing.
+
+        hdfs_native.Client is a Rust binding that can't be pickled; rather
+        than try to serialise live handles, we serialise the constructor
+        inputs and let workers re-init their own Client. Same pattern
+        pyarrow.fs.HadoopFileSystem uses.
+        """
+        netloc = self._netloc or ""
+        path = f"{self._scheme}://{netloc}"
+        return (type(self), (path, self.properties))
+
     @property
     def filesystem(self):
         """pyarrow.fs.FileSystem facade backed by hdfs_native.fsspec.

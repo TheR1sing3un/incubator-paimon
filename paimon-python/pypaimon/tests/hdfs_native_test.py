@@ -663,5 +663,70 @@ class FilesystemPropertyTest(unittest.TestCase):
         self.assertIn("hdfs-native fsspec adapter", str(ctx.exception))
 
 
+class PickleTest(unittest.TestCase):
+    """Cover __reduce__ so Ray / multiprocessing can ship FileIO."""
+
+    def setUp(self):
+        _install_fake_hdfs_native()
+
+    def tearDown(self):
+        _uninstall_fake_hdfs_native()
+
+    def _make(self, path, props=None):
+        from pypaimon.filesystem.hdfs_native_file_io import HdfsNativeFileIO
+        return HdfsNativeFileIO(path, Options(props or {}))
+
+    def test_reduce_returns_class_and_args(self):
+        from pypaimon.filesystem.hdfs_native_file_io import HdfsNativeFileIO
+        fio = self._make("viewfs://cluster1/some/sub/path",
+                         {"dfs.nameservices": "ns1"})
+        cls, args = fio.__reduce__()
+        self.assertIs(cls, HdfsNativeFileIO)
+        path, options = args
+        # Path is rebuilt from scheme+netloc (path segment dropped) — that
+        # is intentional because __init__ ignores path beyond scheme+netloc.
+        self.assertEqual(path, "viewfs://cluster1")
+        self.assertEqual(options.to_map(), {"dfs.nameservices": "ns1"})
+
+    def test_reduce_for_empty_netloc(self):
+        fio = self._make("hdfs://")
+        _, (path, _) = fio.__reduce__()
+        self.assertEqual(path, "hdfs://")
+
+    def test_pickle_roundtrip_preserves_type_and_options(self):
+        import pickle
+        fio = self._make("hdfs://ns1/foo",
+                         {"dfs.foo": "bar", "fs.viewfs.x": "y"})
+        client_cls = sys.modules["hdfs_native"].Client
+        client_cls.reset_mock()
+        # Roundtrip via the highest pickle protocol.
+        blob = pickle.dumps(fio, protocol=pickle.HIGHEST_PROTOCOL)
+        restored = pickle.loads(blob)
+        from pypaimon.filesystem.hdfs_native_file_io import HdfsNativeFileIO
+        self.assertIsInstance(restored, HdfsNativeFileIO)
+        self.assertEqual(restored.properties.to_map(),
+                         {"dfs.foo": "bar", "fs.viewfs.x": "y"})
+        # The original __init__ ran once; the unpickle ran __init__ again.
+        self.assertEqual(client_cls.call_count, 1)
+
+    def test_pickle_with_viewfs_scheme(self):
+        import pickle
+        fio = self._make("viewfs://cluster1/")
+        restored = pickle.loads(pickle.dumps(fio))
+        self.assertEqual(restored._scheme, "viewfs")
+        self.assertEqual(restored._netloc, "cluster1")
+
+    def test_pickle_does_not_serialise_live_client(self):
+        # If the live _client were pickled, the call would fail (MagicMocks
+        # are picklable but the real RawClient would not be). This test
+        # documents the contract: __reduce__ MUST sidestep _client.
+        import pickle
+        fio = self._make("hdfs://ns1/")
+        blob = pickle.dumps(fio)
+        # The pickled blob should reference the constructor inputs only;
+        # specifically it should not embed the literal mock _client.
+        self.assertNotIn(b"_client", blob)
+
+
 if __name__ == "__main__":
     unittest.main()
