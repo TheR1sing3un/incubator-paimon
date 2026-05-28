@@ -1,252 +1,321 @@
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#    http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing,
-#  software distributed under the License is distributed on an
-#  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-#  KIND, either express or implied.  See the License for the
-#  specific language governing permissions and limitations
-#  under the License.
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
-"""Interactive SQL shell for querying Paimon tables via DuckDB."""
+"""
+SQL commands for Paimon CLI.
 
-import atexit
+This module provides SQL query capability via pypaimon-rust + DataFusion.
+"""
+
 import os
+import re
 import sys
+import time
+
+import pyarrow as pa
+
+_PAIMON_BANNER = r"""
+    ____        _
+   / __ \____ _(_)___ ___  ____  ____
+  / /_/ / __ `/ / __ `__ \/ __ \/ __ \
+ / ____/ /_/ / / / / / / / /_/ / / / /
+/_/    \__,_/_/_/ /_/ /_/\____/_/ /_/
+
+  Powered by pypaimon-rust + DataFusion
+  Type 'help' for usage, 'exit' to quit.
+"""
+
+_USE_PATTERN = re.compile(
+    r"^\s*use\s+(\w+)\s*;?\s*$",
+    re.IGNORECASE,
+)
+
+_HISTORY_FILE = os.path.expanduser("~/.paimon_history")
+_HISTORY_MAX_LENGTH = 1000
+
+_PROMPT = "paimon> "
+_CONTINUATION_PROMPT = "      > "
 
 
-def add_sql_subcommand(parser):
-    """Add arguments to the ``sql`` subparser."""
-    parser.add_argument(
-        'query', nargs='?', default=None,
-        help='SQL query to execute (non-interactive mode)'
-    )
-    parser.add_argument(
-        '--database', '-d', default=None,
-        help='Default Paimon database name'
-    )
-    parser.set_defaults(func=cmd_sql)
+def _get_readline():
+    """Get the best available readline module.
 
-
-def _execute_and_print(db, sql):
-    """Execute a SQL statement via PaimonDuckDB and print the result."""
-    result = db.sql(sql)
+    Prefers gnureadline (full GNU readline) over the built-in readline
+    (which is libedit on macOS and may have limited features).
+    """
     try:
-        df = result.fetchdf()
-        if not df.empty:
-            print(df.to_string(index=False))
-    except Exception:
-        # DDL or statements with no result set
+        import gnureadline as readline
+        return readline
+    except ImportError:
+        pass
+    try:
+        import readline
+        return readline
+    except ImportError:
+        return None
+
+
+def _is_libedit(rl):
+    """Check if the readline module is backed by libedit (macOS default)."""
+    return hasattr(rl, '__doc__') and rl.__doc__ and 'libedit' in rl.__doc__
+
+
+def _setup_readline():
+    """Enable readline for arrow key support and persistent command history."""
+    rl = _get_readline()
+    if rl is None:
+        return
+    rl.set_history_length(_HISTORY_MAX_LENGTH)
+    if not os.path.exists(_HISTORY_FILE):
+        return
+    if _is_libedit(rl):
+        # libedit escapes spaces as \040 in history files, so we load manually.
+        with open(_HISTORY_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.rstrip('\n')
+                if line:
+                    rl.add_history(line)
+    else:
+        rl.read_history_file(_HISTORY_FILE)
+
+
+def _save_history():
+    """Save readline history to file."""
+    rl = _get_readline()
+    if rl is None:
+        return
+    try:
+        if _is_libedit(rl):
+            # Write history manually to avoid libedit's \040 escaping.
+            length = rl.get_current_history_length()
+            lines = []
+            for i in range(1, length + 1):
+                item = rl.get_history_item(i)
+                if item is not None:
+                    lines.append(item)
+            # Keep only the last N entries
+            lines = lines[-_HISTORY_MAX_LENGTH:]
+            with open(_HISTORY_FILE, 'w', encoding='utf-8') as f:
+                for line in lines:
+                    f.write(line + '\n')
+        else:
+            rl.write_history_file(_HISTORY_FILE)
+    except OSError:
         pass
 
 
 def cmd_sql(args):
-    """Entry point for the ``paimon sql`` command."""
+    """
+    Execute the 'sql' command.
+
+    Runs a SQL query against Paimon tables, or starts an interactive SQL REPL.
+
+    Args:
+        args: Parsed command line arguments.
+    """
+    from pypaimon.cli.cli import load_catalog_config
+
+    config_path = args.config
+    config = load_catalog_config(config_path)
+
     try:
-        import duckdb  # noqa: F401
-    except ImportError:
-        print(
-            "Error: duckdb is required for the sql command.\n"
-            "Install it with: pip install 'ks-pypaimon[duckdb]'",
-            file=sys.stderr,
-        )
+        from pypaimon_rust.datafusion import SQLContext
+        catalog_options = {str(k): str(v) for k, v in config.items()}
+        ctx = SQLContext()
+        ctx.register_catalog("paimon", catalog_options)
+        ctx.set_current_catalog("paimon")
+        ctx.set_current_database("default")
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    from pypaimon.cli.cli import load_catalog_config
-    config = load_catalog_config(args.config)
-
-    database = args.database or config.pop('database', None) or 'default'
-
-    from pypaimon.duckdb import PaimonDuckDB
-    db = PaimonDuckDB(config, database=database)
-
-    if args.query is not None:
-        # Non-interactive: single query from positional argument
-        _execute_and_print(db, args.query)
-        return
-
-    if not sys.stdin.isatty():
-        # Piped input
-        content = sys.stdin.read()
-        for stmt in content.split(';'):
-            stmt = stmt.strip()
-            if stmt:
-                _execute_and_print(db, stmt)
-        return
-
-    # Interactive REPL
-    repl = PaimonSqlRepl(db, config, database)
-    repl.run()
+    query = args.query
+    if query:
+        _execute_query(ctx, query, getattr(args, 'format', 'table'))
+    else:
+        _interactive_repl(ctx, getattr(args, 'format', 'table'))
 
 
-class PaimonSqlRepl:
-    """Interactive SQL REPL backed by PaimonDuckDB."""
+def _execute_query(ctx, query, output_format):
+    """Execute a single SQL query and print the result."""
+    try:
+        batches = ctx.sql(query)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
-    PROMPT = 'paimon> '
-    CONTINUATION = '     -> '
+    if batches:
+        _print_table(pa.Table.from_batches(batches), output_format)
+    else:
+        print("OK")
 
-    def __init__(self, db, catalog_options, database):
-        self.db = db
-        self.catalog_options = catalog_options
-        self.database = database
-        self._catalog = None
 
-    @property
-    def catalog(self):
-        if self._catalog is None:
-            from pypaimon.cli.cli import create_catalog
-            self._catalog = create_catalog(self.catalog_options)
-        return self._catalog
+def _print_table(table, output_format, elapsed=None):
+    """Print a PyArrow Table in the requested format."""
+    df = table.to_pandas()
+    if output_format == 'json':
+        import json
+        print(json.dumps(df.to_dict(orient='records'), ensure_ascii=False))
+    else:
+        print(df.to_string(index=False))
 
-    def run(self):
-        self._setup_readline()
-        print("Apache Paimon SQL Shell (DuckDB backend)")
-        print("Database: {}".format(self.database))
-        print("Type .help for help, .quit to exit.")
-        print()
+    if elapsed is not None:
+        row_count = len(df)
+        print(f"({row_count} {'row' if row_count == 1 else 'rows'} in {elapsed:.2f}s)")
 
-        while True:
-            try:
-                stmt = self._read_statement()
-            except EOFError:
+
+def _read_multiline_query():
+    """Read a potentially multi-line SQL query, terminated by ';'.
+
+    Returns the complete query string, or None on EOF/interrupt.
+    """
+    lines = []
+    prompt = _PROMPT
+    while True:
+        try:
+            line = input(prompt)
+        except (EOFError, KeyboardInterrupt):
+            if lines:
+                # Cancel current multi-line input
                 print()
-                break
-            except KeyboardInterrupt:
-                print()
-                continue
-
-            if stmt is None:
-                continue
-
-            if stmt.startswith('.'):
-                should_exit = self._handle_dot_command(stmt)
-                if should_exit:
-                    break
-            else:
-                try:
-                    _execute_and_print(self.db, stmt)
-                except Exception as e:
-                    print("Error: {}".format(e), file=sys.stderr)
-
-    def _read_statement(self):
-        """Read a (possibly multi-line) SQL statement ending with ``;``."""
-        first_line = input(self.PROMPT).strip()
-        if not first_line:
+                return ""
             return None
 
-        # Dot commands are always single-line
-        if first_line.startswith('.'):
-            return first_line
+        lines.append(line)
+        joined = "\n".join(lines).strip()
 
-        buf = first_line
-        while not buf.rstrip().endswith(';'):
-            try:
-                line = input(self.CONTINUATION)
-            except EOFError:
+        if not joined:
+            lines.clear()
+            prompt = _PROMPT
+            continue
+
+        # Single-word commands that don't need ';'
+        lower = joined.lower().rstrip(';').strip()
+        if lower in ('exit', 'quit', 'help'):
+            return joined
+
+        # USE command doesn't strictly need ';'
+        if _USE_PATTERN.match(joined):
+            return joined
+
+        # For SQL statements, wait for ';'
+        if joined.endswith(';'):
+            return joined
+
+        prompt = _CONTINUATION_PROMPT
+
+
+def _handle_use(ctx, match):
+    """Handle USE <database> command."""
+    database = match.group(1)
+    try:
+        ctx.set_current_database(database)
+        print(f"Using database '{database}'.")
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+
+
+def _interactive_repl(ctx, output_format):
+    """Run an interactive SQL REPL."""
+    _setup_readline()
+    print(_PAIMON_BANNER)
+
+    try:
+        while True:
+            query = _read_multiline_query()
+            if query is None:
+                print("\nBye!")
                 break
-            buf += '\n' + line
 
-        # Strip trailing semicolon for DuckDB execution
-        return buf.rstrip().rstrip(';').strip()
+            if not query:
+                continue
 
-    def _handle_dot_command(self, line):
-        """Handle dot-commands. Returns True if the REPL should exit."""
-        parts = line.split(None, 1)
-        cmd = parts[0].lower()
-        arg = parts[1].strip() if len(parts) > 1 else ''
+            lower = query.lower().rstrip(';').strip()
+            if lower in ('exit', 'quit'):
+                print("Bye!")
+                break
+            if lower == 'help':
+                _print_help()
+                continue
 
-        if cmd in ('.quit', '.exit'):
-            return True
+            # Handle USE <database>
+            use_match = _USE_PATTERN.match(query)
+            if use_match:
+                _handle_use(ctx, use_match)
+                continue
 
-        if cmd == '.help':
-            self._print_help()
-        elif cmd == '.tables':
-            self._show_tables()
-        elif cmd == '.schema':
-            if not arg:
-                print("Usage: .schema <table_name>", file=sys.stderr)
-            else:
-                self._show_schema(arg)
-        elif cmd == '.databases':
-            self._show_databases()
-        elif cmd == '.use':
-            if not arg:
-                print("Usage: .use <database_name>", file=sys.stderr)
-            else:
-                self._switch_database(arg)
-        else:
-            print("Unknown command: {}. Type .help for help.".format(cmd),
-                  file=sys.stderr)
-        return False
-
-    def _print_help(self):
-        print("Commands:")
-        print("  .tables              List tables in current database")
-        print("  .schema <table>      Show table schema")
-        print("  .databases           List all databases")
-        print("  .use <database>      Switch database")
-        print("  .help                Show this help")
-        print("  .quit / .exit        Exit the shell")
-        print()
-        print("SQL queries end with ';' and support multi-line input.")
-        print("Time travel: SELECT * FROM t VERSION AS OF 42;")
-
-    def _show_tables(self):
-        try:
-            tables = self.catalog.list_tables(self.database)
-            for t in tables:
-                print(t)
-        except Exception as e:
-            print("Error: {}".format(e), file=sys.stderr)
-
-    def _show_schema(self, table_name):
-        try:
-            identifier = '{}.{}'.format(self.database, table_name)
-            table = self.catalog.get_table(identifier)
-            fields = table.table_schema.fields
-            if not fields:
-                print("(no columns)")
-                return
-            max_name = max(len(f.name) for f in fields)
-            header_name = 'Column'
-            header_type = 'Type'
-            max_name = max(max_name, len(header_name))
-            print('{}  {}'.format(header_name.ljust(max_name), header_type))
-            print('{}  {}'.format('-' * max_name, '-' * 20))
-            for f in fields:
-                print('{}  {}'.format(f.name.ljust(max_name), str(f.type)))
-        except Exception as e:
-            print("Error: {}".format(e), file=sys.stderr)
-
-    def _show_databases(self):
-        try:
-            databases = self.catalog.list_databases()
-            for db in databases:
-                print(db)
-        except Exception as e:
-            print("Error: {}".format(e), file=sys.stderr)
-
-    def _switch_database(self, database):
-        self.database = database
-        self.db.database = database
-        print("Switched to database: {}".format(database))
-
-    def _setup_readline(self):
-        try:
-            import readline
-            history_path = os.path.expanduser('~/.paimon_sql_history')
             try:
-                readline.read_history_file(history_path)
-            except (FileNotFoundError, IOError):
-                pass
-            readline.set_history_length(1000)
-            atexit.register(readline.write_history_file, history_path)
-        except (ImportError, Exception):
-            pass
+                start = time.time()
+                batches = ctx.sql(query)
+                elapsed = time.time() - start
+                if batches:
+                    _print_table(pa.Table.from_batches(batches), output_format, elapsed)
+                else:
+                    print(f"OK ({elapsed:.2f}s)")
+                print()
+            except Exception as e:
+                print(f"Error: {e}\n", file=sys.stderr)
+    finally:
+        _save_history()
+
+
+def _print_help():
+    """Print REPL help information."""
+    print("""
+Commands:
+  USE <database>;              Switch the default database
+  SHOW DATABASES;              List all databases
+  SHOW TABLES;                 List tables in the current database
+  SELECT ... FROM <table>;     Execute a SQL query
+  exit / quit                  Exit the REPL
+
+Table reference:
+  <table>                      Table in the current default database
+  <database>.<table>           Table in a specific database
+
+Tips:
+  - SQL statements end with ';' and can span multiple lines
+  - Arrow keys are supported for line editing and command history
+  - Command history is saved across sessions (~/.paimon_history)
+""")
+
+
+def add_sql_subcommand(subparsers):
+    """
+    Add the sql subcommand to the main parser.
+
+    Args:
+        subparsers: The subparsers object from the main argument parser.
+    """
+    sql_parser = subparsers.add_parser(
+        'sql',
+        help='Execute SQL queries on Paimon tables (requires pypaimon-rust)'
+    )
+    sql_parser.add_argument(
+        'query',
+        nargs='?',
+        default=None,
+        help='SQL query to execute. If omitted, starts interactive REPL.'
+    )
+    sql_parser.add_argument(
+        '--format', '-f',
+        type=str,
+        choices=['table', 'json'],
+        default='table',
+        help='Output format: table (default) or json'
+    )
+    sql_parser.set_defaults(func=cmd_sql)

@@ -88,15 +88,13 @@ def cmd_table_explain(args):
     if args.limit:
         read_builder = read_builder.with_limit(args.limit)
 
-    plan = read_builder.new_scan().plan()
+    from pypaimon.read.explain import render_explain
+    result = read_builder.explain(verbose=bool(args.top_k))
 
     if args.output == 'json':
-        summary = plan.summary(top_k=args.top_k)
         # `predicate_repr` from Predicate.__repr__ can be noisy; if the user
-        # supplied --where, prefer the raw clause for the JSON output (text
-        # output keeps the parsed repr because it's more precise about
-        # which clauses were actually understood).
-        payload = asdict(summary)
+        # supplied --where, prefer the raw clause for the JSON output.
+        payload = asdict(result)
         if args.where:
             payload['predicate_repr'] = args.where
         print(json.dumps(payload, indent=2, default=str, ensure_ascii=False))
@@ -104,4 +102,4 @@ def cmd_table_explain(args):
         header = f"Plan for {table_identifier}"
         print(header)
         print("=" * len(header))
-        print(plan.describe(top_k=args.top_k))
+        print(render_explain(result))
