@@ -15,26 +15,16 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Entry represents a key value."""
+from pypaimon.globalindex.lumina.lumina_vector_global_index_reader import (
+    LUMINA_IDENTIFIER,
+    LUMINA_IDENTIFIERS,
+    LUMINA_VECTOR_ANN_IDENTIFIER,
+    LuminaVectorGlobalIndexReader,
+)
 
-from dataclasses import dataclass
-
-
-@dataclass
-class BlockHandle:
-    """Handle for a data block."""
-
-    def __init__(self, offset: int, size: int):
-        """
-        Initialize the block handle.
-
-        Args:
-            offset: Offset of the block in the file
-            size: Size of the block in bytes
-        """
-        self.offset = offset
-        self.size = size
-
-    def is_null(self) -> bool:
-        """Check if this handle represents a null block."""
-        return self.offset == 0 and self.size == 0
+__all__ = [
+    'LUMINA_IDENTIFIER',
+    'LUMINA_IDENTIFIERS',
+    'LUMINA_VECTOR_ANN_IDENTIFIER',
+    'LuminaVectorGlobalIndexReader',
+]
