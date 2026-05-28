@@ -15,26 +15,12 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Entry represents a key value."""
+from pypaimon.globalindex.tantivy.tantivy_full_text_global_index_reader import (
+    TantivyFullTextGlobalIndexReader,
+    TANTIVY_FULLTEXT_IDENTIFIER,
+)
 
-from dataclasses import dataclass
-
-
-@dataclass
-class BlockHandle:
-    """Handle for a data block."""
-
-    def __init__(self, offset: int, size: int):
-        """
-        Initialize the block handle.
-
-        Args:
-            offset: Offset of the block in the file
-            size: Size of the block in bytes
-        """
-        self.offset = offset
-        self.size = size
-
-    def is_null(self) -> bool:
-        """Check if this handle represents a null block."""
-        return self.offset == 0 and self.size == 0
+__all__ = [
+    'TantivyFullTextGlobalIndexReader',
+    'TANTIVY_FULLTEXT_IDENTIFIER',
+]
