@@ -1,20 +1,19 @@
-################################################################################
-#  Licensed to the Apache Software Foundation (ASF) under one
-#  or more contributor license agreements.  See the NOTICE file
-#  distributed with this work for additional information
-#  regarding copyright ownership.  The ASF licenses this file
-#  to you under the Apache License, Version 2.0 (the
-#  "License"); you may not use this file except in compliance
-#  with the License.  You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
 from dataclasses import dataclass
 
@@ -52,16 +51,6 @@ class ManifestEntry(FileEntry):
             file=self.file.assign_first_row_id(first_row_id)
         )
 
-    def assign_commit_snapshot_id(self, commit_snapshot_id: int) -> 'ManifestEntry':
-        """Create a new ManifestEntry with the assigned commit_snapshot_id."""
-        return ManifestEntry(
-            kind=self.kind,
-            partition=self.partition,
-            bucket=self.bucket,
-            total_buckets=self.total_buckets,
-            file=self.file.assign_commit_snapshot_id(commit_snapshot_id)
-        )
-
     def assign_sequence_number(self, min_sequence_number: int, max_sequence_number: int) -> 'ManifestEntry':
         """Create a new ManifestEntry with the assigned sequence numbers."""
         return ManifestEntry(
@@ -70,6 +59,16 @@ class ManifestEntry(FileEntry):
             bucket=self.bucket,
             total_buckets=self.total_buckets,
             file=self.file.assign_sequence_number(min_sequence_number, max_sequence_number)
+        )
+
+    def assign_commit_snapshot_id(self, commit_snapshot_id: int) -> 'ManifestEntry':
+        """Create a new ManifestEntry with the assigned commit_snapshot_id."""
+        return ManifestEntry(
+            kind=self.kind,
+            partition=self.partition,
+            bucket=self.bucket,
+            total_buckets=self.total_buckets,
+            file=self.file.assign_commit_snapshot_id(commit_snapshot_id)
         )
 
 
