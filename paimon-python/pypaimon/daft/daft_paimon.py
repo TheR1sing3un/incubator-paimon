@@ -15,85 +15,123 @@
 #  See the License for the specific language governing permissions and
 # limitations under the License.
 ################################################################################
-"""Top-level API for reading and writing Paimon tables with Daft DataFrames.
+"""
+Top-level API for reading and writing Paimon tables with Daft DataFrames.
 
-Mirrors :mod:`pypaimon.ray`. Usage::
+Usage::
 
     from pypaimon.daft import read_paimon, write_paimon
 
-    df = read_paimon("db.tbl", catalog_options={"warehouse": "/path"})
-    write_paimon(df, "db.tbl", catalog_options={"warehouse": "/path"})
-
-Note: Daft 0.7+ already ships an upstream Paimon integration via
-``daft.read_paimon`` and ``df.write_paimon``. This module is a *parallel*
-implementation in the ``pypaimon.daft`` namespace, designed for deeper
-Paimon-side feature support: snapshot/tag time-travel, projection / limit /
-``pypaimon.Predicate`` pushdown, and custom commit metadata.
-
-Limitations vs ``pypaimon.ray``:
-    * ``min_rows_per_file`` is not supported (Daft's ``DataSink`` does not
-      currently expose an equivalent of Ray's ``min_rows_per_write`` block
-      coalescing). For controlled file sizing, use ``df.repartition(N)``
-      before calling :func:`write_paimon`.
+    df = read_paimon("db.table", catalog_options={"warehouse": "/path"})
+    write_paimon(df, "db.table", catalog_options={"warehouse": "/path"})
 """
-from typing import TYPE_CHECKING, Dict, List, Optional
 
-from pypaimon.common.predicate import Predicate
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Dict, Optional
 
 if TYPE_CHECKING:
     import daft
+
+    from pypaimon.table.file_store_table import FileStoreTable
+
+
+def _read_table(
+    table: FileStoreTable,
+    catalog_options: Dict[str, str] | None = None,
+    io_config=None,
+    snapshot_id: int | None = None,
+    tag_name: str | None = None,
+) -> "daft.DataFrame":
+    """Read a Paimon table object into a lazy Daft DataFrame."""
+    if snapshot_id is not None and tag_name is not None:
+        raise ValueError(
+            "snapshot_id and tag_name cannot be set at the same time"
+        )
+
+    from daft import context, runners
+    from daft.daft import StorageConfig
+
+    from pypaimon.daft.daft_datasource import PaimonDataSource
+    from pypaimon.daft.daft_io_config import (
+        _convert_paimon_catalog_options_to_io_config,
+    )
+
+    travel_options: dict[str, str] = {}
+    if snapshot_id is not None:
+        travel_options["scan.snapshot-id"] = str(snapshot_id)
+    if tag_name is not None:
+        travel_options["scan.tag-name"] = tag_name
+    if travel_options:
+        table = table.copy(travel_options)
+
+    if catalog_options is None:
+        catalog_options = {}
+
+    io_config = io_config or _convert_paimon_catalog_options_to_io_config(catalog_options)
+    io_config = io_config or context.get_context().daft_planning_config.default_io_config
+
+    multithreaded_io = runners.get_or_create_runner().name != "ray"
+    storage_config = StorageConfig(multithreaded_io, io_config)
+
+    warehouse = catalog_options.get("warehouse", "")
+    scan_catalog_options = {"warehouse": warehouse} if warehouse else {}
+
+    source = PaimonDataSource(
+        table, storage_config=storage_config, catalog_options=scan_catalog_options
+    )
+    return source.read()
+
+
+def _write_table(
+    df: "daft.DataFrame",
+    table: FileStoreTable,
+    mode: str = "append",
+) -> "daft.DataFrame":
+    """Write a Daft DataFrame to a Paimon table object."""
+    from pypaimon.daft.daft_datasink import PaimonDataSink
+
+    return df.write_sink(PaimonDataSink(table, mode))
 
 
 def read_paimon(
     table_identifier: str,
     catalog_options: Dict[str, str],
     *,
-    filter: Optional[Predicate] = None,
-    projection: Optional[List[str]] = None,
-    limit: Optional[int] = None,
     snapshot_id: Optional[int] = None,
     tag_name: Optional[str] = None,
-    io_config: Optional["daft.io.IOConfig"] = None,  # noqa: F821 — passthrough only
+    io_config=None,
 ) -> "daft.DataFrame":
-    """Read a Paimon table into a Daft DataFrame.
+    """Read a Paimon table into a lazy Daft DataFrame.
+
+    Returns a lazy DataFrame backed by Daft's optimizer. Use standard
+    DataFrame operations (.select, .where, .limit) for projection,
+    filtering, and limit — they are automatically pushed down into the
+    Paimon scan via Daft's DataSource protocol.
 
     Args:
-        table_identifier: Full table name, e.g. ``"db.table"``.
+        table_identifier: Full table name, e.g. ``"db_name.table_name"``.
         catalog_options: Options passed to ``CatalogFactory.create()``,
             e.g. ``{"warehouse": "/path/to/warehouse"}``.
-        filter: Optional ``pypaimon.Predicate`` pushed into the Paimon scan.
-            This is the recommended path for predicate pushdown — Daft-side
-            ``df.where(...)`` filters arrive via Daft's ``Pushdowns`` and are
-            currently kept as residuals (Daft applies them post-scan).
-        projection: Optional list of column names to read.
-        limit: Optional row limit for the scan.
-        snapshot_id: Optional snapshot id to read from a specific snapshot.
-        tag_name: Optional tag name to read from a specific tagged snapshot.
-        io_config: Reserved for forward compatibility. Currently unused —
-            Paimon storage IO is configured entirely by ``catalog_options``.
+        snapshot_id: Optional snapshot id to time-travel to. Mutually
+            exclusive with ``tag_name``.
+        tag_name: Optional tag name to time-travel to. Mutually
+            exclusive with ``snapshot_id``.
+        io_config: Optional Daft IOConfig for accessing object storage.
+            If None, will be inferred from the catalog options.
 
     Returns:
-        A ``daft.DataFrame`` over the Paimon table data.
+        A lazy ``daft.DataFrame`` backed by this Paimon table.
     """
-    from pypaimon.read.datasource.daft_datasource import PaimonDataSource
+    from pypaimon.catalog.catalog_factory import CatalogFactory
 
-    if snapshot_id is not None and tag_name is not None:
-        raise ValueError(
-            "snapshot_id and tag_name cannot be set at the same time"
-        )
+    catalog = CatalogFactory.create(catalog_options)
+    table = catalog.get_table(table_identifier)
 
-    source = PaimonDataSource(
-        table_identifier,
-        catalog_options,
-        predicate=filter,
-        projection=projection,
-        limit=limit,
-        snapshot_id=snapshot_id,
-        tag_name=tag_name,
+    return _read_table(
+        table, catalog_options=catalog_options,
+        io_config=io_config, snapshot_id=snapshot_id, tag_name=tag_name,
     )
-    # ``DataSource.read()`` is the documented entry point that wraps the
-    # source as a Daft DataFrame via the Rust ScanOperator handle.
-    return source.read()
 
 
 def write_paimon(
@@ -101,37 +139,23 @@ def write_paimon(
     table_identifier: str,
     catalog_options: Dict[str, str],
     *,
-    overwrite: bool = False,
-    committer: Optional[str] = None,
-    message: Optional[str] = None,
-    options: Optional[Dict[str, str]] = None,
-) -> None:
+    mode: str = "append",
+) -> "daft.DataFrame":
     """Write a Daft DataFrame to a Paimon table.
 
     Args:
         df: The Daft DataFrame to write.
-        table_identifier: Full table name, e.g. ``"db.table"``.
+        table_identifier: Full table name, e.g. ``"db_name.table_name"``.
         catalog_options: Options passed to ``CatalogFactory.create()``.
-        overwrite: If ``True``, overwrite existing data in the table.
-        committer: Optional committer name for audit tracking.
-        message: Optional commit message for audit tracking.
-        options: Optional dynamic table options to override defaults at write
-            time, e.g. ``{"target-file-size": "256mb"}``.
+        mode: Write mode — ``"append"`` or ``"overwrite"``.
+
+    Returns:
+        A summary ``daft.DataFrame`` with columns
+        (operation, rows, file_size, file_name).
     """
     from pypaimon.catalog.catalog_factory import CatalogFactory
-    from pypaimon.write.daft_datasink import PaimonDataSink
 
     catalog = CatalogFactory.create(catalog_options)
     table = catalog.get_table(table_identifier)
 
-    sink = PaimonDataSink(
-        table,
-        overwrite=overwrite,
-        committer=committer,
-        message=message,
-        options=options,
-    )
-
-    # df.write_sink is blocking; it triggers execution and the commit happens
-    # in PaimonDataSink.finalize on the driver after all worker writes return.
-    df.write_sink(sink).collect()
+    return _write_table(df, table, mode=mode)

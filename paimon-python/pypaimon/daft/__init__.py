@@ -15,18 +15,17 @@
 #  See the License for the specific language governing permissions and
 # limitations under the License.
 ################################################################################
-"""High-level Daft integration for Apache Paimon.
 
-Mirrors :mod:`pypaimon.ray`. Provides:
-    - :func:`read_paimon` -> ``daft.DataFrame``
-    - :func:`write_paimon`(df, ...) -> ``None``
-
-Note: Daft 0.7+ already ships an upstream Paimon integration via
-``daft.read_paimon`` and ``df.write_paimon``. The integration in this module is
-a *parallel* implementation in the ``pypaimon.daft`` namespace, designed for
-deeper Paimon-side feature support (snapshot/tag time-travel, projection /
-limit / pypaimon.Predicate pushdown, custom commit metadata).
-"""
 from pypaimon.daft.daft_paimon import read_paimon, write_paimon
 
-__all__ = ["read_paimon", "write_paimon"]
+__all__ = ["read_paimon", "write_paimon", "PaimonCatalog", "PaimonTable"]
+
+
+def __getattr__(name):
+    if name in ("PaimonCatalog", "PaimonTable"):
+        from pypaimon.daft.daft_catalog import PaimonCatalog, PaimonTable
+
+        globals()["PaimonCatalog"] = PaimonCatalog
+        globals()["PaimonTable"] = PaimonTable
+        return globals()[name]
+    raise AttributeError(f"module 'pypaimon.daft' has no attribute {name!r}")
