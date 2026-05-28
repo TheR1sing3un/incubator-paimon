@@ -19,19 +19,19 @@
 package org.apache.paimon.operation;
 
 import org.apache.paimon.annotation.VisibleForTesting;
+import org.apache.paimon.data.BinaryVector;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.data.VectorDescriptor;
 import org.apache.paimon.data.columnar.VectorCFReaderContext;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.fs.SeekableInputStream;
+import org.apache.paimon.memory.MemorySegment;
 import org.apache.paimon.reader.RecordReader;
 
 import javax.annotation.Nullable;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -58,6 +58,8 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
     private final int dim;
     private final InternalRow.FieldGetter[] fieldGetters;
     private final int fieldCount;
+
+    private byte[] reusableRangeBuf;
 
     public PostFilterVectorResolveReader(
             RecordReader<InternalRow> inner,
@@ -125,24 +127,19 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
             return new EmptyIterator();
         }
 
-        float[][] resolved = coalesceAndResolve(descriptors);
+        BinaryVector[] resolved = coalesceAndResolve(descriptors);
 
         for (int i = 0; i < snapshots.size(); i++) {
             if (resolved[i] != null) {
-                snapshots
-                        .get(i)
-                        .setField(
-                                vectorReadPos,
-                                org.apache.paimon.data.BinaryVector.fromPrimitiveArray(
-                                        resolved[i]));
+                snapshots.get(i).setField(vectorReadPos, resolved[i]);
             }
         }
 
         return new SnapshotIterator(snapshots);
     }
 
-    private float[][] coalesceAndResolve(List<byte[]> descriptors) throws IOException {
-        float[][] resolved = new float[descriptors.size()][];
+    private BinaryVector[] coalesceAndResolve(List<byte[]> descriptors) throws IOException {
+        BinaryVector[] resolved = new BinaryVector[descriptors.size()];
         Stats stats = STATS.get();
 
         List<PendingRead> pending = new ArrayList<>();
@@ -204,19 +201,18 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
 
                     long rangeRows = endIdx - startIdx + 1;
                     int bytesToRead = (int) (rangeRows * bpv);
-                    byte[] rangeBuf = new byte[bytesToRead];
+                    byte[] rangeBuf = ensureRangeBuf(bytesToRead);
                     long fileOffset = startIdx * bpv;
                     stream.seek(fileOffset);
                     org.apache.paimon.utils.IOUtils.readFully(stream, rangeBuf, 0, bytesToRead);
 
                     for (int j = pos; j <= endPos; j++) {
                         int localOffset = (int) ((pending.get(j).rowIndex - startIdx) * bpv);
-                        float[] floats = new float[dim];
-                        ByteBuffer.wrap(rangeBuf, localOffset, bpv)
-                                .order(ByteOrder.nativeOrder())
-                                .asFloatBuffer()
-                                .get(floats);
-                        resolved[pending.get(j).rowInResult] = floats;
+                        byte[] vectorBytes = new byte[bpv];
+                        System.arraycopy(rangeBuf, localOffset, vectorBytes, 0, bpv);
+                        BinaryVector bv = new BinaryVector(dim);
+                        bv.pointTo(MemorySegment.wrap(vectorBytes), 0, bpv);
+                        resolved[pending.get(j).rowInResult] = bv;
                     }
 
                     pos = endPos + 1;
@@ -227,9 +223,17 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
         return resolved;
     }
 
+    private byte[] ensureRangeBuf(int needed) {
+        if (reusableRangeBuf == null || reusableRangeBuf.length < needed) {
+            reusableRangeBuf = new byte[needed];
+        }
+        return reusableRangeBuf;
+    }
+
     @Override
     public void close() throws IOException {
         inner.close();
+        reusableRangeBuf = null;
     }
 
     /** Accumulated statistics for testing and monitoring. */
