@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 from pypaimon.common.options.core_options import CoreOptions
 from pypaimon.write.commit_message import CommitMessage
 from pypaimon.write.writer.append_only_data_writer import AppendOnlyDataWriter
-from pypaimon.write.writer.data_blob_writer import DataBlobWriter
+from pypaimon.write.writer.dedicated_format_writer import DedicatedFormatWriter
 from pypaimon.write.writer.data_vector_writer import DataVectorWriter
 from pypaimon.write.writer.data_writer import DataWriter
 from pypaimon.write.writer.key_value_data_writer import KeyValueDataWriter
@@ -69,7 +69,7 @@ class FileStoreWrite:
 
         # Check if table has blob columns
         if self._has_blob_columns():
-            return DataBlobWriter(
+            return DedicatedFormatWriter(
                 table=self.table,
                 partition=partition,
                 bucket=bucket,
