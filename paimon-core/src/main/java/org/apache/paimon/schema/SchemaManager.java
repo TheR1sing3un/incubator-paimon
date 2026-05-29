@@ -25,6 +25,7 @@ import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
+import org.apache.paimon.schema.ColumnDirectiveUtils.ConvertedColumn;
 import org.apache.paimon.schema.SchemaChange.AddColumn;
 import org.apache.paimon.schema.SchemaChange.DropColumn;
 import org.apache.paimon.schema.SchemaChange.RemoveOption;
@@ -37,18 +38,22 @@ import org.apache.paimon.schema.SchemaChange.UpdateColumnPosition;
 import org.apache.paimon.schema.SchemaChange.UpdateColumnType;
 import org.apache.paimon.schema.SchemaChange.UpdateComment;
 import org.apache.paimon.table.FileStoreTableFactory;
+import org.apache.paimon.table.SchemaModification;
 import org.apache.paimon.types.ArrayType;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataType;
 import org.apache.paimon.types.DataTypeCasts;
+import org.apache.paimon.types.DataTypeRoot;
 import org.apache.paimon.types.MapType;
 import org.apache.paimon.types.ReassignFieldId;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.BranchManager;
+import org.apache.paimon.utils.ChangelogManager;
 import org.apache.paimon.utils.LazyField;
 import org.apache.paimon.utils.Preconditions;
 import org.apache.paimon.utils.SnapshotManager;
 import org.apache.paimon.utils.StringUtils;
+import org.apache.paimon.utils.TagManager;
 
 import org.apache.paimon.shade.guava30.com.google.common.collect.FluentIterable;
 import org.apache.paimon.shade.guava30.com.google.common.collect.ImmutableList;
@@ -65,7 +70,9 @@ import java.io.Serializable;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -79,6 +86,7 @@ import java.util.stream.Collectors;
 
 import static org.apache.paimon.CoreOptions.AGG_FUNCTION;
 import static org.apache.paimon.CoreOptions.BUCKET_KEY;
+import static org.apache.paimon.CoreOptions.CLUSTERING_COLUMNS;
 import static org.apache.paimon.CoreOptions.DELETION_VECTORS_ENABLED;
 import static org.apache.paimon.CoreOptions.DELETION_VECTORS_MODIFIABLE;
 import static org.apache.paimon.CoreOptions.DISTINCT;
@@ -88,11 +96,14 @@ import static org.apache.paimon.CoreOptions.IGNORE_RETRACT;
 import static org.apache.paimon.CoreOptions.IGNORE_UPDATE_BEFORE;
 import static org.apache.paimon.CoreOptions.LIST_AGG_DELIMITER;
 import static org.apache.paimon.CoreOptions.NESTED_KEY;
+import static org.apache.paimon.CoreOptions.PK_CLUSTERING_OVERRIDE;
 import static org.apache.paimon.CoreOptions.SEQUENCE_FIELD;
 import static org.apache.paimon.catalog.AbstractCatalog.DB_SUFFIX;
 import static org.apache.paimon.catalog.Identifier.DEFAULT_MAIN_BRANCH;
 import static org.apache.paimon.catalog.Identifier.UNKNOWN_DATABASE;
 import static org.apache.paimon.mergetree.compact.PartialUpdateMergeFunction.SEQUENCE_GROUP;
+import static org.apache.paimon.schema.ColumnDirectiveUtils.applyAddColumnDirective;
+import static org.apache.paimon.schema.ColumnDirectiveUtils.applyDirectives;
 import static org.apache.paimon.utils.DefaultValueUtils.validateDefaultValue;
 import static org.apache.paimon.utils.FileUtils.listVersionedFiles;
 import static org.apache.paimon.utils.Preconditions.checkArgument;
@@ -102,7 +113,7 @@ import static org.apache.paimon.utils.Preconditions.checkState;
 @ThreadSafe
 public class SchemaManager implements Serializable {
 
-    private static final String SCHEMA_PREFIX = "schema-";
+    public static final String SCHEMA_PREFIX = "schema-";
 
     private final FileIO fileIO;
     private final Path tableRoot;
@@ -188,6 +199,7 @@ public class SchemaManager implements Serializable {
                 }
             }
 
+            schema = applyDirectives(schema);
             TableSchema newSchema = TableSchema.create(0, schema);
 
             // validate table from creating table
@@ -305,6 +317,7 @@ public class SchemaManager implements Serializable {
         List<DataField> newFields = new ArrayList<>(oldTableSchema.fields());
         AtomicInteger highestFieldId = new AtomicInteger(oldTableSchema.highestFieldId());
         String newComment = oldTableSchema.comment();
+        List<String> newPrimaryKeys = oldTableSchema.primaryKeys();
         for (SchemaChange change : changes) {
             if (change instanceof SetOption) {
                 SetOption setOption = (SetOption) change;
@@ -319,7 +332,7 @@ public class SchemaManager implements Serializable {
             } else if (change instanceof RemoveOption) {
                 RemoveOption removeOption = (RemoveOption) change;
                 if (hasSnapshots.get()) {
-                    checkResetTableOption(removeOption.key());
+                    checkResetTableOption(oldOptions, removeOption.key());
                 }
                 newOptions.remove(removeOption.key());
             } else if (change instanceof UpdateComment) {
@@ -333,8 +346,27 @@ public class SchemaManager implements Serializable {
                         "Column %s cannot specify NOT NULL in the %s table.",
                         String.join(".", addColumn.fieldNames()),
                         lazyIdentifier.get().getFullName());
+
+                ConvertedColumn converted =
+                        applyAddColumnDirective(
+                                addColumn.description(),
+                                addColumn.fieldNames()[0],
+                                addColumn.dataType(),
+                                newOptions);
+                DataType requestedDataType = addColumn.dataType();
+                String effectiveComment = addColumn.description();
+                if (converted != null) {
+                    Preconditions.checkArgument(
+                            addColumn.fieldNames().length == 1,
+                            "Comment directive cannot be used on a nested column %s.",
+                            String.join(".", addColumn.fieldNames()));
+                    requestedDataType = converted.type();
+                    effectiveComment = converted.comment();
+                }
+
                 int id = highestFieldId.incrementAndGet();
-                DataType dataType = ReassignFieldId.reassign(addColumn.dataType(), highestFieldId);
+                DataType dataType = ReassignFieldId.reassign(requestedDataType, highestFieldId);
+                String storedComment = effectiveComment;
                 new NestedColumnModifier(addColumn.fieldNames(), lazyIdentifier) {
                     @Override
                     protected void updateLastColumn(
@@ -343,8 +375,7 @@ public class SchemaManager implements Serializable {
                                     Catalog.ColumnNotExistException {
                         assertColumnNotExists(newFields, fieldName, lazyIdentifier);
 
-                        DataField dataField =
-                                new DataField(id, fieldName, dataType, addColumn.description());
+                        DataField dataField = new DataField(id, fieldName, dataType, storedComment);
 
                         // key: name ; value : index
                         Map<String, Integer> map = new HashMap<>();
@@ -396,6 +427,7 @@ public class SchemaManager implements Serializable {
             } else if (change instanceof RenameColumn) {
                 RenameColumn rename = (RenameColumn) change;
                 assertNotUpdatingPartitionKeys(oldTableSchema, rename.fieldNames(), "rename");
+                assertNotRenamingBlobColumn(newFields, rename.fieldNames());
                 new NestedColumnModifier(rename.fieldNames(), lazyIdentifier) {
                     @Override
                     protected void updateLastColumn(
@@ -425,6 +457,16 @@ public class SchemaManager implements Serializable {
             } else if (change instanceof DropColumn) {
                 DropColumn drop = (DropColumn) change;
                 dropColumnValidation(oldTableSchema, drop);
+                if (drop.fieldNames().length == 1) {
+                    String dropName = drop.fieldNames()[0];
+                    newFields.stream()
+                            .filter(f -> f.name().equals(dropName))
+                            .findFirst()
+                            .ifPresent(
+                                    f ->
+                                            ColumnDirectiveUtils.removeDroppedDirectiveOptions(
+                                                    dropName, f.type().getTypeRoot(), newOptions));
+                }
                 new NestedColumnModifier(drop.fieldNames(), lazyIdentifier) {
                     @Override
                     protected void updateLastColumn(
@@ -441,6 +483,8 @@ public class SchemaManager implements Serializable {
                 UpdateColumnType update = (UpdateColumnType) change;
                 assertNotUpdatingPartitionKeys(oldTableSchema, update.fieldNames(), "update");
                 assertNotUpdatingPrimaryKeys(oldTableSchema, update.fieldNames(), "update");
+                assertNotChangingBlobColumnType(
+                        newFields, update.fieldNames(), update.newDataType());
                 updateNestedColumn(
                         newFields,
                         update.fieldNames(),
@@ -543,15 +587,16 @@ public class SchemaManager implements Serializable {
                                     update.newDefaultValue());
                         },
                         lazyIdentifier);
+            } else if (change instanceof SchemaChange.DropPrimaryKey) {
+                if (hasSnapshots.get()) {
+                    throw new UnsupportedOperationException(
+                            "Cannot drop primary keys on a non-empty table.");
+                }
+                newPrimaryKeys = Collections.emptyList();
             } else {
                 throw new UnsupportedOperationException("Unsupported change: " + change.getClass());
             }
         }
-
-        // Auto-convert ArrayType columns to VectorType when configured as vector-field.
-        // This supports the ALTER TABLE flow: ADD COLUMN (ArrayType) + SET TBLPROPERTIES
-        // (vector-field) in either order.
-        resolveVectorFieldTypes(newFields, newOptions);
 
         // We change TableSchema to Schema, because we want to deal with primary-key and
         // partition in options.
@@ -560,8 +605,7 @@ public class SchemaManager implements Serializable {
                         newFields,
                         oldTableSchema.partitionKeys(),
                         applyNotNestedColumnRename(
-                                oldTableSchema.primaryKeys(),
-                                Iterables.filter(changes, RenameColumn.class)),
+                                newPrimaryKeys, Iterables.filter(changes, RenameColumn.class)),
                         applyRenameColumnsToOptions(newOptions, changes),
                         newComment);
 
@@ -573,43 +617,6 @@ public class SchemaManager implements Serializable {
                 newSchema.primaryKeys(),
                 newSchema.options(),
                 newSchema.comment());
-    }
-
-    /**
-     * Auto-convert ArrayType columns to VectorType when configured as vector-field. This supports
-     * the ALTER TABLE flow where ADD COLUMN creates ArrayType first, then SET TBLPROPERTIES marks
-     * it as a vector field.
-     */
-    private static void resolveVectorFieldTypes(
-            List<DataField> fields, Map<String, String> options) {
-        Set<String> vectorFields = CoreOptions.vectorField(options);
-        if (vectorFields.isEmpty()) {
-            return;
-        }
-        for (int i = 0; i < fields.size(); i++) {
-            DataField field = fields.get(i);
-            if (vectorFields.contains(field.name())
-                    && field.type() instanceof org.apache.paimon.types.ArrayType) {
-                String dimKey = String.format("field.%s.vector-dim", field.name());
-                String dimVal = options.get(dimKey);
-                if (dimVal != null && !dimVal.trim().isEmpty()) {
-                    try {
-                        int dim = Integer.parseInt(dimVal.trim());
-                        org.apache.paimon.types.DataType elementType =
-                                ((org.apache.paimon.types.ArrayType) field.type()).getElementType();
-                        org.apache.paimon.types.VectorType vectorType =
-                                new org.apache.paimon.types.VectorType(
-                                        field.type().isNullable(), dim, elementType);
-                        fields.set(
-                                i,
-                                new DataField(
-                                        field.id(), field.name(), vectorType, field.description()));
-                    } catch (NumberFormatException ignored) {
-                        // invalid dim, let validation catch it later
-                    }
-                }
-            }
-        }
     }
 
     // gets the rootType at the defined depth
@@ -743,7 +750,10 @@ public class SchemaManager implements Serializable {
         }
     }
 
-    public boolean mergeSchema(RowType rowType, boolean allowExplicitCast) {
+    public boolean mergeSchema(
+            RowType rowType,
+            boolean allowExplicitCast,
+            @Nullable SchemaModification schemaModification) {
         TableSchema current =
                 latest().orElseThrow(
                                 () ->
@@ -752,12 +762,17 @@ public class SchemaManager implements Serializable {
         TableSchema update = SchemaMergingUtils.mergeSchemas(current, rowType, allowExplicitCast);
         if (current.equals(update)) {
             return false;
-        } else {
-            try {
+        }
+        try {
+            if (schemaModification != null) {
+                List<SchemaChange> changes = SchemaMergingUtils.diffSchemaChanges(current, update);
+                schemaModification.alterSchema(changes);
+                return true;
+            } else {
                 return commit(update);
-            } catch (Exception e) {
-                throw new RuntimeException("Failed to commit the schema.", e);
             }
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to commit the schema.", e);
         }
     }
 
@@ -926,6 +941,41 @@ public class SchemaManager implements Serializable {
         if (schema.primaryKeys().contains(fieldName)) {
             throw new UnsupportedOperationException(
                     String.format("Cannot %s primary key", operation));
+        }
+    }
+
+    private static void assertNotRenamingBlobColumn(List<DataField> fields, String[] fieldNames) {
+        if (fieldNames.length > 1) {
+            return;
+        }
+        String fieldName = fieldNames[0];
+        for (DataField field : fields) {
+            if (field.name().equals(fieldName) && field.type().is(DataTypeRoot.BLOB)) {
+                throw new UnsupportedOperationException(
+                        String.format("Cannot rename BLOB column: [%s]", fieldName));
+            }
+        }
+    }
+
+    private static void assertNotChangingBlobColumnType(
+            List<DataField> fields, String[] fieldNames, DataType newType) {
+        if (fieldNames.length > 1) {
+            return;
+        }
+        String fieldName = fieldNames[0];
+        for (DataField field : fields) {
+            if (!field.name().equals(fieldName)) {
+                continue;
+            }
+            boolean wasBlob = field.type().is(DataTypeRoot.BLOB);
+            boolean willBeBlob = newType.is(DataTypeRoot.BLOB);
+            if (wasBlob || willBeBlob) {
+                throw new UnsupportedOperationException(
+                        String.format(
+                                "Cannot change column type involving BLOB: [%s] %s -> %s",
+                                fieldName, field.type(), newType));
+            }
+            return;
         }
     }
 
@@ -1140,6 +1190,56 @@ public class SchemaManager implements Serializable {
         fileIO.deleteQuietly(toSchemaPath(schemaId));
     }
 
+    /**
+     * Rollback to a specific schema version. All schema versions greater than the target will be
+     * deleted. This operation will fail if any snapshot, tag, or changelog references a schema
+     * version greater than the target.
+     *
+     * @param targetSchemaId the schema version to rollback to.
+     * @param snapshotManager the snapshot manager to check snapshot references.
+     * @param tagManager the tag manager to check tag references.
+     * @param changelogManager the changelog manager to check changelog references.
+     */
+    public void rollbackTo(
+            long targetSchemaId,
+            SnapshotManager snapshotManager,
+            TagManager tagManager,
+            ChangelogManager changelogManager)
+            throws IOException {
+        checkArgument(schemaExists(targetSchemaId), "Schema %s does not exist.", targetSchemaId);
+
+        // Collect all schemaIds referenced by snapshots, tags, and changelogs
+        Set<Long> usedSchemaIds = new HashSet<>();
+
+        snapshotManager.pickOrLatest(
+                snapshot -> {
+                    usedSchemaIds.add(snapshot.schemaId());
+                    return false;
+                });
+        tagManager.taggedSnapshots().forEach(s -> usedSchemaIds.add(s.schemaId()));
+        changelogManager.changelogs().forEachRemaining(c -> usedSchemaIds.add(c.schemaId()));
+
+        // Check if any referenced schema is newer than the target
+        Optional<Long> conflict =
+                usedSchemaIds.stream().filter(id -> id > targetSchemaId).min(Long::compareTo);
+        if (conflict.isPresent()) {
+            throw new RuntimeException(
+                    String.format(
+                            "Cannot rollback to schema %d, schema %d is still referenced by snapshots/tags/changelogs.",
+                            targetSchemaId, conflict.get()));
+        }
+
+        // Delete all schemas newer than the target
+        List<Long> toBeDeleted =
+                listAllIds().stream()
+                        .filter(id -> id > targetSchemaId)
+                        .collect(Collectors.toList());
+        toBeDeleted.sort((o1, o2) -> Long.compare(o2, o1));
+        for (Long id : toBeDeleted) {
+            fileIO.delete(toSchemaPath(id), false);
+        }
+    }
+
     public static void checkAlterTableOption(
             Map<String, String> options, String key, @Nullable String oldValue, String newValue) {
         if (CoreOptions.IMMUTABLE_OPTIONS.contains(key)) {
@@ -1210,9 +1310,18 @@ public class SchemaManager implements Serializable {
                                 IGNORE_UPDATE_BEFORE.key()));
             }
         }
+
+        if (CLUSTERING_COLUMNS.key().equals(key)) {
+            if (options.containsKey(PK_CLUSTERING_OVERRIDE.key())) {
+                throw new UnsupportedOperationException(
+                        String.format(
+                                "Cannot change %s when %s enabled.",
+                                CLUSTERING_COLUMNS.key(), PK_CLUSTERING_OVERRIDE.key()));
+            }
+        }
     }
 
-    public static void checkResetTableOption(String key) {
+    public static void checkResetTableOption(Map<String, String> options, String key) {
         if (CoreOptions.IMMUTABLE_OPTIONS.contains(key)) {
             throw new UnsupportedOperationException(
                     String.format("Change '%s' is not supported yet.", key));
@@ -1220,6 +1329,13 @@ public class SchemaManager implements Serializable {
 
         if (CoreOptions.BUCKET.key().equals(key)) {
             throw new UnsupportedOperationException(String.format("Cannot reset %s.", key));
+        }
+
+        if (options.containsKey(PK_CLUSTERING_OVERRIDE.key())
+                && CLUSTERING_COLUMNS.key().equals(key)) {
+            throw new UnsupportedOperationException(
+                    String.format(
+                            "Cannot reset %s when %s enabled.", key, PK_CLUSTERING_OVERRIDE.key()));
         }
     }
 
