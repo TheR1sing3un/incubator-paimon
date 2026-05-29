@@ -616,8 +616,7 @@ public class PlanCacheTest {
                         .build();
         catalog.createTable(Identifier.create("default", "vcf_arr"), vcfArrSchema, true);
         FileStoreTable vcfArr =
-                (FileStoreTable)
-                        catalog.getTable(Identifier.create("default", "vcf_arr"));
+                (FileStoreTable) catalog.getTable(Identifier.create("default", "vcf_arr"));
 
         // Write VCF data
         writeVcfRows(vcfArr, 0, 4);
