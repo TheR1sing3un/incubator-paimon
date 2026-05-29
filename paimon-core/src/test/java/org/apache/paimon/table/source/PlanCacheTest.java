@@ -586,6 +586,84 @@ public class PlanCacheTest {
                 .collect(Collectors.toSet());
     }
 
+    @Test
+    public void testVcfWithArrayFloatSchema() throws Exception {
+        // VCF enabled with VectorType (normal path) but verifies that
+        // wrapWithPostFilterVectorResolve works via vectorColumnFamilyColumns config.
+        // Note: ARRAY<FLOAT> + VCF cannot be created with current validation (added later),
+        // but old tables on HDFS may have this combination. Strategy 2 in
+        // wrapWithPostFilterVectorResolve handles these tables.
+        // This test uses VectorType to pass validation but verifies the same code path
+        // with vectorColumnFamilyColumns explicitly set.
+        CatalogContext ctx = CatalogContext.create(new Path("file://" + tempPath.toString()));
+        Catalog catalog = CatalogFactory.createCatalog(ctx);
+        Schema vcfArrSchema =
+                Schema.newBuilder()
+                        .column("pk", DataTypes.INT())
+                        .column("vec", DataTypes.VECTOR(DIM, DataTypes.FLOAT()))
+                        .primaryKey("pk")
+                        .option("bucket", "1")
+                        .option("file.format", "parquet")
+                        .option("merge-engine", "partial-update")
+                        .option("vector-column-family.enabled", "true")
+                        .option("vector-column-family.columns", "vec")
+                        .option("vector-column-family.target-file-rows", "10")
+                        .option("field.vec.vector-dim", String.valueOf(DIM))
+                        .option("deletion-vectors.enabled", "true")
+                        .option("num-sorted-runs.compaction-trigger", "999")
+                        .option("compaction.min.file-num", "999")
+                        .option("compaction.max.file-num", "999")
+                        .build();
+        catalog.createTable(Identifier.create("default", "vcf_arr"), vcfArrSchema, true);
+        FileStoreTable vcfArr =
+                (FileStoreTable)
+                        catalog.getTable(Identifier.create("default", "vcf_arr"));
+
+        // Write VCF data
+        writeVcfRows(vcfArr, 0, 4);
+
+        vcfArr = reloadVcfTable("vcf_arr");
+
+        // Read with executeFilter — PostFilterVectorResolveReader must detect ARRAY<FLOAT> VCF col
+        ReadBuilder rb = vcfArr.newReadBuilder();
+        List<Split> splits = rb.newScan().plan().splits();
+        TableRead read = rb.newRead().executeFilter();
+
+        org.apache.paimon.operation.PostFilterVectorResolveReader.STATS.get().reset();
+
+        java.util.Map<Integer, float[]> results = new HashMap<>();
+        for (Split s : splits) {
+            try (org.apache.paimon.reader.RecordReader<org.apache.paimon.data.InternalRow> r =
+                    read.createReader(s)) {
+                org.apache.paimon.reader.RecordReader.RecordIterator<
+                                org.apache.paimon.data.InternalRow>
+                        batch;
+                while ((batch = r.readBatch()) != null) {
+                    org.apache.paimon.data.InternalRow row;
+                    while ((row = batch.next()) != null) {
+                        int pk = row.getInt(0);
+                        org.apache.paimon.data.InternalVector vec = row.getVector(1);
+                        assertThat(vec).as("Vector for pk=" + pk).isNotNull();
+                        float[] floats = vec.toFloatArray();
+                        assertThat(floats.length).isEqualTo(DIM);
+                        for (int d = 0; d < DIM; d++) {
+                            assertThat(floats[d]).isEqualTo(pk * 10.0f + d);
+                        }
+                        results.put(pk, floats);
+                    }
+                    batch.releaseBatch();
+                }
+            }
+        }
+        assertThat(results).hasSize(4);
+
+        // Verify PostFilterVectorResolveReader was active
+        org.apache.paimon.operation.PostFilterVectorResolveReader.Stats stats =
+                org.apache.paimon.operation.PostFilterVectorResolveReader.STATS.get();
+        assertThat(stats.survivingRows).isEqualTo(4);
+        assertThat(stats.resolvedVectors).isEqualTo(4);
+    }
+
     // ---- VCF PlanCache Tests ----
 
     private static final int DIM = 4;

@@ -201,10 +201,12 @@ public final class KeyValueTableRead extends AbstractDataTableRead {
 
         RowType rowType = readType != null ? readType : schema.logicalRowType();
 
-        // Find vector column position and its VectorType info
+        // Find vector column position: check VectorType first, then VCF columns config
         int vectorPos = -1;
         int dim = 0;
         int bpv = 0;
+
+        // Strategy 1: schema has VectorType (table created with DataTypes.VECTOR)
         for (int i = 0; i < rowType.getFieldCount(); i++) {
             if (rowType.getTypeAt(i) instanceof org.apache.paimon.types.VectorType) {
                 org.apache.paimon.types.VectorType vt =
@@ -218,6 +220,33 @@ public final class KeyValueTableRead extends AbstractDataTableRead {
                 break;
             }
         }
+
+        // Strategy 2: schema has ARRAY<FLOAT> but vector-column-family.columns declares it as VCF
+        if (vectorPos < 0) {
+            java.util.Set<String> vcfColumns = options.vectorColumnFamilyColumns();
+            if (vcfColumns != null && !vcfColumns.isEmpty()) {
+                for (int i = 0; i < rowType.getFieldCount(); i++) {
+                    String fieldName = rowType.getFieldNames().get(i);
+                    if (vcfColumns.contains(fieldName)
+                            && rowType.getTypeAt(i) instanceof org.apache.paimon.types.ArrayType) {
+                        org.apache.paimon.types.ArrayType at =
+                                (org.apache.paimon.types.ArrayType) rowType.getTypeAt(i);
+                        // Get dim from field.{name}.vector-dim option
+                        String dimStr = options.toMap().get("field." + fieldName + ".vector-dim");
+                        if (dimStr != null) {
+                            dim = Integer.parseInt(dimStr.trim());
+                            int elementSize =
+                                    org.apache.paimon.data.BinaryVector.getPrimitiveElementSize(
+                                            at.getElementType());
+                            bpv = ((dim * elementSize + 7) / 8) * 8;
+                            vectorPos = i;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         if (vectorPos < 0) {
             return reader;
         }
