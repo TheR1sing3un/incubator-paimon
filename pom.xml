@@ -649,13 +649,14 @@ under the License.
                         <exclude>paimon-common/src/test/resources/compatible/**</exclude>
                         <exclude>paimon-faiss/paimon-faiss-jni/build/**</exclude>
                         <exclude>paimon-python/pypaimon/sample/data/**</exclude>
+                        <exclude>paimon-python/pypaimon/filesystem/_kwai_default_hadoop_conf/**</exclude>
+                        <exclude>paimon-python/pypaimon/tests/e2e/hdfs/docker-compose.yml</exclude>
                         <!-- Frontend module (node_modules, dist, generated files) -->
                         <exclude>paimon-frontend/**</exclude>
                         <exclude>.gitattributes</exclude>
                     </excludes>
                 </configuration>
             </plugin>
-
             <plugin>
                 <groupId>com.diffplug.spotless</groupId>
                 <artifactId>spotless-maven-plugin</artifactId>
