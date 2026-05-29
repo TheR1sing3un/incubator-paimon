@@ -100,6 +100,10 @@ run_test() {
     local http_code
     http_code=$(curl "${curl_args[@]}" "$url" 2>/dev/null) || {
         echo -e "  ${RED}FAIL${NC} - curl error (connection refused?)"
+        echo -e "  URI: ${url}"
+        if [[ -n "$body" ]]; then
+            echo -e "  Body: ${body}"
+        fi
         FAILED=$((FAILED + 1))
         FAILURES="${FAILURES}\n  [${method}] ${path} - ${description} (curl error)"
         return
@@ -113,6 +117,10 @@ run_test() {
         PASSED=$((PASSED + 1))
     else
         echo -e "  ${RED}FAIL${NC} - HTTP ${http_code} (expected ${expected_status}xx)"
+        echo -e "  URI: ${url}"
+        if [[ -n "$body" ]]; then
+            echo -e "  Body: ${body}"
+        fi
         echo "  Response: ${response_body:0:500}"
         FAILED=$((FAILED + 1))
         FAILURES="${FAILURES}\n  [${method}] ${path} - ${description} (HTTP ${http_code})"
