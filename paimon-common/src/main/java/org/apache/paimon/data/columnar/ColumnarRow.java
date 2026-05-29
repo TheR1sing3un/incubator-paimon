@@ -208,12 +208,15 @@ public final class ColumnarRow implements InternalRow, DataSetters, Serializable
                 return resolved.getArray(rowId);
             }
         }
-        // Vector column family mode: resolve descriptor and convert to float array
-        InternalVector vec = getVector(pos);
-        if (vec == null) {
-            return null;
+        // VCF mode only: resolve descriptor and convert to float array
+        if (vectorCFContext != null) {
+            InternalVector vec = getVector(pos);
+            if (vec == null) {
+                return null;
+            }
+            return new org.apache.paimon.data.GenericArray(vec.toFloatArray());
         }
-        return new org.apache.paimon.data.GenericArray(vec.toFloatArray());
+        return null;
     }
 
     @Override

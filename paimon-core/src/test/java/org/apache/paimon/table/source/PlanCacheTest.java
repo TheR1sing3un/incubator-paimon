@@ -496,6 +496,74 @@ public class PlanCacheTest {
         assertThat(extractFileNames(skipSplits)).isEqualTo(extractFileNames(fullSplits));
     }
 
+    @Test
+    public void testNonVcfArrayFloatProjectionRead() throws Exception {
+        // Non-VCF table with ARRAY<FLOAT> column — getArray() must not fall through
+        // to VectorDescriptor.deserialize (regression test for ColumnarRow.getArray bug)
+        CatalogContext ctx = CatalogContext.create(new Path("file://" + tempPath.toString()));
+        Catalog catalog = CatalogFactory.createCatalog(ctx);
+        Schema arrSchema =
+                Schema.newBuilder()
+                        .column("pk", DataTypes.INT())
+                        .column("name", DataTypes.STRING())
+                        .column("arr", DataTypes.ARRAY(DataTypes.FLOAT()))
+                        .primaryKey("pk")
+                        .option("bucket", "1")
+                        .build();
+        catalog.createTable(Identifier.create("default", "arr_table"), arrSchema, true);
+        FileStoreTable arrTable =
+                (FileStoreTable)
+                        catalog.getTable(Identifier.create("default", "arr_table"));
+
+        // Write rows with ARRAY<FLOAT>
+        BatchWriteBuilder wb = arrTable.newBatchWriteBuilder();
+        try (BatchTableWrite write = wb.newWrite();
+                BatchTableCommit commit = wb.newCommit()) {
+            float[] v1 = {1.0f, 2.0f, 3.0f};
+            float[] v2 = {4.0f, 5.0f, 6.0f};
+            write.write(
+                    GenericRow.of(
+                            1,
+                            org.apache.paimon.data.BinaryString.fromString("a"),
+                            new org.apache.paimon.data.GenericArray(v1)));
+            write.write(
+                    GenericRow.of(
+                            2,
+                            org.apache.paimon.data.BinaryString.fromString("b"),
+                            new org.apache.paimon.data.GenericArray(v2)));
+            commit.commit(write.prepareCommit());
+        }
+
+        // Read with projection {pk, arr} — skipping 'name'
+        int[] proj = {0, 2};
+        ReadBuilder rb = arrTable.newReadBuilder().withProjection(proj);
+        List<Split> splits = rb.newScan().plan().splits();
+        TableRead read = rb.newRead().executeFilter();
+        java.util.Map<Integer, float[]> results = new HashMap<>();
+        for (Split s : splits) {
+            try (org.apache.paimon.reader.RecordReader<org.apache.paimon.data.InternalRow> r =
+                    read.createReader(s)) {
+                org.apache.paimon.reader.RecordReader.RecordIterator<
+                                org.apache.paimon.data.InternalRow>
+                        batch;
+                while ((batch = r.readBatch()) != null) {
+                    org.apache.paimon.data.InternalRow row;
+                    while ((row = batch.next()) != null) {
+                        int pk = row.getInt(0);
+                        org.apache.paimon.data.InternalArray arr = row.getArray(1);
+                        assertThat(arr).isNotNull();
+                        float[] floats = arr.toFloatArray();
+                        results.put(pk, floats);
+                    }
+                    batch.releaseBatch();
+                }
+            }
+        }
+        assertThat(results).hasSize(2);
+        assertThat(results.get(1)).containsExactly(1.0f, 2.0f, 3.0f);
+        assertThat(results.get(2)).containsExactly(4.0f, 5.0f, 6.0f);
+    }
+
     private Set<String> extractFileNames(List<Split> splits) {
         Set<String> files = new HashSet<>();
         for (Split split : splits) {
