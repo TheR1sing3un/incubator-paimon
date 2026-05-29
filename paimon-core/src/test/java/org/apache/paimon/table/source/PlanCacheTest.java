@@ -512,8 +512,7 @@ public class PlanCacheTest {
                         .build();
         catalog.createTable(Identifier.create("default", "arr_table"), arrSchema, true);
         FileStoreTable arrTable =
-                (FileStoreTable)
-                        catalog.getTable(Identifier.create("default", "arr_table"));
+                (FileStoreTable) catalog.getTable(Identifier.create("default", "arr_table"));
 
         // Write rows with ARRAY<FLOAT>
         BatchWriteBuilder wb = arrTable.newBatchWriteBuilder();
