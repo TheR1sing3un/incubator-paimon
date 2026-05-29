@@ -50,6 +50,7 @@ import org.apache.spark.sql.catalyst.analysis.NoSuchFunctionException;
 import org.apache.spark.sql.connector.catalog.functions.UnboundFunction;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.io.TempDir;
@@ -147,6 +148,86 @@ public class DatasetCatalogSQLTest {
             commit.commit(write.prepareCommit());
         }
 
+        // Schema overlay fixtures: B is the public superset, A1/A2 are subsets that present B's
+        // schema at read time via the dataset-catalog's view_schema_dataset pointer.
+        // B:  {id, name, age, dept, salary}
+        // A1: {id, name, age}             — drops dept, salary
+        // A2: {id, name, dept}            — drops age, salary
+        Schema bSchema =
+                Schema.newBuilder()
+                        .column("id", DataTypes.INT())
+                        .column("name", DataTypes.STRING())
+                        .column("age", DataTypes.INT())
+                        .column("dept", DataTypes.STRING())
+                        .column("salary", DataTypes.DOUBLE())
+                        .primaryKey("id")
+                        .option("bucket", "1")
+                        .build();
+        org.apache.paimon.catalog.Identifier bId =
+                org.apache.paimon.catalog.Identifier.create("paimon_db", "t_b");
+        paimonCatalog.createTable(bId, bSchema, false);
+        Table bTable = paimonCatalog.getTable(bId);
+        BatchWriteBuilder bWriteBuilder = bTable.newBatchWriteBuilder();
+        try (BatchTableWrite write = bWriteBuilder.newWrite();
+                BatchTableCommit commit = bWriteBuilder.newCommit()) {
+            write.write(
+                    GenericRow.of(
+                            1,
+                            BinaryString.fromString("Alice"),
+                            25,
+                            BinaryString.fromString("eng"),
+                            100.0));
+            write.write(
+                    GenericRow.of(
+                            2,
+                            BinaryString.fromString("Bob"),
+                            30,
+                            BinaryString.fromString("sales"),
+                            120.0));
+            commit.commit(write.prepareCommit());
+        }
+
+        Schema a1Schema =
+                Schema.newBuilder()
+                        .column("id", DataTypes.INT())
+                        .column("name", DataTypes.STRING())
+                        .column("age", DataTypes.INT())
+                        .primaryKey("id")
+                        .option("bucket", "1")
+                        .build();
+        org.apache.paimon.catalog.Identifier a1Id =
+                org.apache.paimon.catalog.Identifier.create("paimon_db", "t_a1");
+        paimonCatalog.createTable(a1Id, a1Schema, false);
+        Table a1Table = paimonCatalog.getTable(a1Id);
+        BatchWriteBuilder a1WriteBuilder = a1Table.newBatchWriteBuilder();
+        try (BatchTableWrite write = a1WriteBuilder.newWrite();
+                BatchTableCommit commit = a1WriteBuilder.newCommit()) {
+            write.write(GenericRow.of(10, BinaryString.fromString("Xerxes"), 41));
+            write.write(GenericRow.of(11, BinaryString.fromString("Yolanda"), 42));
+            commit.commit(write.prepareCommit());
+        }
+
+        Schema a2Schema =
+                Schema.newBuilder()
+                        .column("id", DataTypes.INT())
+                        .column("name", DataTypes.STRING())
+                        .column("dept", DataTypes.STRING())
+                        .primaryKey("id")
+                        .option("bucket", "1")
+                        .build();
+        org.apache.paimon.catalog.Identifier a2Id =
+                org.apache.paimon.catalog.Identifier.create("paimon_db", "t_a2");
+        paimonCatalog.createTable(a2Id, a2Schema, false);
+        Table a2Table = paimonCatalog.getTable(a2Id);
+        BatchWriteBuilder a2WriteBuilder = a2Table.newBatchWriteBuilder();
+        try (BatchTableWrite write = a2WriteBuilder.newWrite();
+                BatchTableCommit commit = a2WriteBuilder.newCommit()) {
+            write.write(
+                    GenericRow.of(
+                            20, BinaryString.fromString("Zara"), BinaryString.fromString("ops")));
+            commit.commit(write.prepareCommit());
+        }
+
         // 2. Start MockWebServer for dataset-catalog REST API
         server = new MockWebServer();
         server.setDispatcher(createDispatcher());
@@ -179,6 +260,17 @@ public class DatasetCatalogSQLTest {
         if (server != null) {
             server.shutdown();
         }
+    }
+
+    @BeforeEach
+    void resetOverlayConfs() {
+        // Schema overlay is session-level via SQLConf; reset before every test.
+        spark.conf().unset(DatasetCatalog.PUBLIC_VIEW_KEY);
+    }
+
+    /** Declare the session-level public-view (for tests that exercise overlay). */
+    private void setPublicView(String viewValue) {
+        spark.conf().set(DatasetCatalog.PUBLIC_VIEW_KEY, viewValue);
     }
 
     // ======================== SELECT ========================
@@ -435,6 +527,133 @@ public class DatasetCatalogSQLTest {
         return (DatasetCatalog) spark.sessionState().catalogManager().catalog("dataset");
     }
 
+    // ======================== Schema overlay ========================
+
+    @Test
+    void overlayDisabledByDefaultUsesPhysicalSchema() {
+        // The default state is "no public-view conf" → overlay must NOT apply.
+        // This is the safety property: overlay is per-dataset opt-in via conf at submission.
+        Dataset<Row> result = spark.sql("SELECT * FROM dataset.test_ns.A1 ORDER BY id");
+        assertThat(result.schema().fieldNames()).containsExactly("id", "name", "age");
+        List<Row> rows = result.collectAsList();
+        assertThat(rows).hasSize(2);
+        assertThat(rows.get(0).getInt(0)).isEqualTo(10);
+        assertThat(rows.get(0).getString(1)).isEqualTo("Xerxes");
+        assertThat(rows.get(0).getInt(2)).isEqualTo(41);
+    }
+
+    @Test
+    void overlaySelectAllPresentsBSchemaWithNullsForMissingColumns() {
+        setPublicView("test_ns.B");
+        // A1 physical: {id, name, age}; B (view): {id, name, age, dept, salary}
+        // SELECT * on A1 must return 5 columns; dept/salary are NULL because A1 lacks them.
+        Dataset<Row> result = spark.sql("SELECT * FROM dataset.test_ns.A1 ORDER BY id");
+        assertThat(result.schema().fieldNames())
+                .containsExactly("id", "name", "age", "dept", "salary");
+        List<Row> rows = result.collectAsList();
+        assertThat(rows).hasSize(2);
+        assertThat(rows.get(0).getInt(0)).isEqualTo(10);
+        assertThat(rows.get(0).getString(1)).isEqualTo("Xerxes");
+        assertThat(rows.get(0).getInt(2)).isEqualTo(41);
+        assertThat(rows.get(0).isNullAt(3)).isTrue(); // dept
+        assertThat(rows.get(0).isNullAt(4)).isTrue(); // salary
+        assertThat(rows.get(1).getInt(0)).isEqualTo(11);
+        assertThat(rows.get(1).isNullAt(3)).isTrue();
+        assertThat(rows.get(1).isNullAt(4)).isTrue();
+    }
+
+    @Test
+    void overlayProjectExistingColumnsAvoidsNullFill() {
+        setPublicView("test_ns.B");
+        // Column pruning still works: requesting only existing columns reads no NULL placeholders.
+        Dataset<Row> result = spark.sql("SELECT id, name FROM dataset.test_ns.A1 ORDER BY id");
+        assertThat(result.schema().fieldNames()).containsExactly("id", "name");
+        List<Row> rows = result.collectAsList();
+        assertThat(rows).hasSize(2);
+        assertThat(rows.get(0).getString(1)).isEqualTo("Xerxes");
+        assertThat(rows.get(1).getString(1)).isEqualTo("Yolanda");
+    }
+
+    @Test
+    void overlayProjectMissingColumnReturnsAllNulls() {
+        setPublicView("test_ns.B");
+        // Selecting a column that does not exist physically in A1 must produce NULL for every row.
+        List<Row> rows =
+                spark.sql("SELECT dept FROM dataset.test_ns.A1 ORDER BY id").collectAsList();
+        assertThat(rows).hasSize(2);
+        assertThat(rows.get(0).isNullAt(0)).isTrue();
+        assertThat(rows.get(1).isNullAt(0)).isTrue();
+    }
+
+    @Test
+    void overlayFilterOnExistingColumnPushesDown() {
+        setPublicView("test_ns.B");
+        // Filter on a column that physically exists in A1 should still narrow the result.
+        List<Row> rows =
+                spark.sql("SELECT id, name FROM dataset.test_ns.A1 WHERE id = 11").collectAsList();
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).getInt(0)).isEqualTo(11);
+        assertThat(rows.get(0).getString(1)).isEqualTo("Yolanda");
+    }
+
+    @Test
+    void overlayFilterOnMissingColumnEqualityYieldsNoRows() {
+        setPublicView("test_ns.B");
+        // dept = 'eng' on A1 (where dept is always NULL) evaluates to NULL → no rows.
+        List<Row> rows =
+                spark.sql("SELECT id FROM dataset.test_ns.A1 WHERE dept = 'eng'").collectAsList();
+        assertThat(rows).isEmpty();
+    }
+
+    @Test
+    void overlayFilterOnMissingColumnIsNullMatchesAll() {
+        setPublicView("test_ns.B");
+        // dept IS NULL on A1 matches every row.
+        List<Row> rows =
+                spark.sql("SELECT id FROM dataset.test_ns.A1 WHERE dept IS NULL ORDER BY id")
+                        .collectAsList();
+        assertThat(rows).hasSize(2);
+        assertThat(rows.get(0).getInt(0)).isEqualTo(10);
+        assertThat(rows.get(1).getInt(0)).isEqualTo(11);
+    }
+
+    @Test
+    void overlayUnionAcrossSubsetsUsesCommonSchema() {
+        // Single session-level conf applies to all queried datasets.
+        setPublicView("test_ns.B");
+        // The whole point of the overlay: A1 and A2 are different physical subsets of B, but the
+        // same SELECT * works against both because both expose B's schema.
+        Dataset<Row> r1 = spark.sql("SELECT * FROM dataset.test_ns.A1");
+        Dataset<Row> r2 = spark.sql("SELECT * FROM dataset.test_ns.A2");
+        assertThat(r1.schema()).isEqualTo(r2.schema());
+
+        List<Row> unioned =
+                spark.sql(
+                                "SELECT id, name, age, dept FROM dataset.test_ns.A1 "
+                                        + "UNION ALL "
+                                        + "SELECT id, name, age, dept FROM dataset.test_ns.A2 "
+                                        + "ORDER BY id")
+                        .collectAsList();
+        assertThat(unioned).hasSize(3);
+        // A1 row 0: age=41, dept=NULL
+        assertThat(unioned.get(0).getInt(2)).isEqualTo(41);
+        assertThat(unioned.get(0).isNullAt(3)).isTrue();
+        // A2 row: age=NULL, dept='ops'
+        assertThat(unioned.get(2).isNullAt(2)).isTrue();
+        assertThat(unioned.get(2).getString(3)).isEqualTo("ops");
+    }
+
+    @Test
+    void overlayBackingViewDatasetReadsAllColumns() {
+        // Even with conf set to B, querying B itself triggers self-reference detection in the
+        // resolver and returns B's own physical schema (no NULL fill, no degenerate wrap).
+        setPublicView("test_ns.B");
+        List<Row> rows = spark.sql("SELECT * FROM dataset.test_ns.B ORDER BY id").collectAsList();
+        assertThat(rows).hasSize(2);
+        assertThat(rows.get(0).getString(3)).isEqualTo("eng");
+        assertThat(rows.get(0).getDouble(4)).isEqualTo(100.0);
+    }
+
     // ======================== MockWebServer Dispatcher ========================
 
     private Dispatcher createDispatcher() {
@@ -472,8 +691,10 @@ public class DatasetCatalogSQLTest {
                                 new ListResponse<>(
                                         Arrays.asList(
                                                 new DatasetInfo("users", "paimon_db", "t_users"),
-                                                new DatasetInfo(
-                                                        "orders", "paimon_db", "t_orders"))));
+                                                new DatasetInfo("orders", "paimon_db", "t_orders"),
+                                                new DatasetInfo("B", "paimon_db", "t_b"),
+                                                new DatasetInfo("A1", "paimon_db", "t_a1"),
+                                                new DatasetInfo("A2", "paimon_db", "t_a2"))));
                     }
 
                     // GET /api/v1/namespaces/{ns}/datasets/byname/{name}
@@ -486,6 +707,12 @@ public class DatasetCatalogSQLTest {
                             case "orders":
                                 return jsonResponse(
                                         new DatasetInfo("orders", "paimon_db", "t_orders"));
+                            case "B":
+                                return jsonResponse(new DatasetInfo("B", "paimon_db", "t_b"));
+                            case "A1":
+                                return jsonResponse(new DatasetInfo("A1", "paimon_db", "t_a1"));
+                            case "A2":
+                                return jsonResponse(new DatasetInfo("A2", "paimon_db", "t_a2"));
                             default:
                                 return new MockResponse().setResponseCode(404);
                         }

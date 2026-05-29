@@ -30,6 +30,7 @@ import org.apache.paimon.spark.catalog.functions.PaimonFunctions;
 import org.apache.paimon.spark.dataset.model.ConfigResponse;
 import org.apache.paimon.spark.dataset.model.DatasetInfo;
 import org.apache.paimon.spark.dataset.model.NamespaceInfo;
+import org.apache.paimon.spark.dataset.overlay.SchemaOverlayResolver;
 import org.apache.paimon.table.Table;
 
 import org.apache.spark.sql.PaimonSparkSession$;
@@ -245,7 +246,8 @@ public class DatasetCatalog extends SparkBaseCatalog
      *
      * <p>SQL: {@code SELECT * FROM dataset.ns.name VERSION AS OF 1}
      */
-    public SparkTable loadTable(Identifier ident, String version) throws NoSuchTableException {
+    public org.apache.spark.sql.connector.catalog.Table loadTable(Identifier ident, String version)
+            throws NoSuchTableException {
         LOG.info("Time travel to version '{}'.", version);
         return loadDatasetTable(
                 ident, Collections.singletonMap(CoreOptions.SCAN_VERSION.key(), version));
@@ -256,7 +258,8 @@ public class DatasetCatalog extends SparkBaseCatalog
      *
      * <p>SQL: {@code SELECT * FROM dataset.ns.name TIMESTAMP AS OF '2024-01-01'}
      */
-    public SparkTable loadTable(Identifier ident, long timestamp) throws NoSuchTableException {
+    public org.apache.spark.sql.connector.catalog.Table loadTable(Identifier ident, long timestamp)
+            throws NoSuchTableException {
         // Spark passes microseconds, Paimon uses milliseconds
         timestamp = timestamp / 1000;
         LOG.info("Time travel target timestamp is {} milliseconds.", timestamp);
@@ -270,10 +273,23 @@ public class DatasetCatalog extends SparkBaseCatalog
      * Loads a dataset table by resolving the logical name to a physical Paimon table.
      *
      * <p>Steps: (1) parse logical identifier → (2) REST API lookup → (3) construct Paimon
-     * identifier with branch → (4) load from Paimon catalog → (5) wrap as SparkTable.
+     * identifier with branch → (4) load from Paimon catalog → (5) merge SQL conf → (6) optionally
+     * apply schema overlay or wrap as plain SparkTable.
+     *
+     * <p>Schema overlay is opt-in via SQLConf at job-submission time. To enable overlay, set:
+     *
+     * <pre>{@code
+     * spark.paimon.dataset.schema-overlay.public-view = <viewNamespace>.<viewName>
+     * }</pre>
+     *
+     * <p>The value is the {@code <namespace>.<name>} of the "public" dataset whose schema should be
+     * presented at read time. The conf applies to all datasets queried in this Spark session;
+     * datasets that aren't a subset of the view will fail validation at load time. Self-reference
+     * (querying the view dataset itself) is detected and bypassed. Suffix paths (system tables /
+     * branches) always bypass overlay because they have their own fixed schemas.
      */
-    private SparkTable loadDatasetTable(Identifier ident, Map<String, String> extraOptions)
-            throws NoSuchTableException {
+    private org.apache.spark.sql.connector.catalog.Table loadDatasetTable(
+            Identifier ident, Map<String, String> extraOptions) throws NoSuchTableException {
         // 1. Parse logical identifier
         DatasetIdentifier dsIdent = DatasetIdentifier.of(ident);
 
@@ -302,12 +318,51 @@ public class DatasetCatalog extends SparkBaseCatalog
             // 5. Merge SQL conf and extra options
             table = copyWithSQLConf(table, catalogName, paimonId, extraOptions);
 
-            // 6. Return SparkTable (factory selects V2-row-level-ops variant when applicable)
+            // 6. Apply schema overlay when (a) the access path is the bare dataset name (no
+            // $suffix) and (b) the user has set the public-view conf at job submission. Overlay
+            // leverages Paimon's native schema-evolution path: SchemaOverlayResolver synthesizes
+            // a TableSchema with the view's columns and a fresh schema id, then calls
+            // FileStoreTable.copy(TableSchema). Paimon's existing pipeline handles the rest
+            // (devolveFilters, stats evolution, NULL-fill).
+            if (!dsIdent.hasSuffix()) {
+                Identifier view = readPublicViewConf();
+                if (view != null) {
+                    return SchemaOverlayResolver.maybeWrap(
+                            table,
+                            dsIdent.getNamespace(),
+                            dsIdent.getDatasetName(),
+                            view,
+                            client,
+                            paimonCatalog);
+                }
+            }
             return SparkTable.of(table);
         } catch (Catalog.TableNotExistException e) {
             throw new NoSuchTableException(ident);
         }
     }
+
+    /**
+     * Reads the session-level public-view SQLConf.
+     *
+     * <p>Conf key: {@link #PUBLIC_VIEW_KEY}. Conf value: {@code <viewNamespace>.<viewName>} — the
+     * dataset whose schema should be presented at read time for any dataset accessed via this
+     * catalog. Returns {@code null} when the conf is not set or empty.
+     */
+    @javax.annotation.Nullable
+    private static Identifier readPublicViewConf() {
+        SparkSession session = PaimonSparkSession$.MODULE$.active();
+        String value = session.sessionState().conf().getConfString(PUBLIC_VIEW_KEY, null);
+        return SchemaOverlayResolver.parseViewConfValue(value);
+    }
+
+    /**
+     * SQLConf key declaring the session-level schema-overlay view. Value format: {@code
+     * <viewNamespace>.<viewName>}. Setting this conf opts every dataset accessed in this session
+     * into overlay against the same view; self-references and suffix paths are automatically
+     * bypassed.
+     */
+    public static final String PUBLIC_VIEW_KEY = "spark.paimon.dataset.schema-overlay.public-view";
 
     @Override
     public Identifier[] listTables(String[] namespace) throws NoSuchNamespaceException {

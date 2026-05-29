@@ -23,6 +23,7 @@ import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.spark.SparkTable;
 import org.apache.paimon.spark.dataset.model.DatasetInfo;
 import org.apache.paimon.spark.dataset.model.NamespaceInfo;
+import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Table;
 import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.types.RowType;
@@ -82,6 +83,19 @@ class DatasetCatalogTest {
         mockPaimonCatalog = mock(Catalog.class);
         mockRestClient = mock(DatasetRestClient.class);
         catalog = new DatasetCatalog("", mockPaimonCatalog, mockRestClient, "default");
+        // Schema overlay is session-level via SQLConf; default is no conf set, so no overlay.
+        // Tests that exercise overlay paths call setPublicView(...) explicitly.
+        spark.conf().unset(DatasetCatalog.PUBLIC_VIEW_KEY);
+    }
+
+    /** Convenience: declare a session-level public-view for tests that exercise overlay paths. */
+    private void setPublicView(String viewValue) {
+        spark.conf().set(DatasetCatalog.PUBLIC_VIEW_KEY, viewValue);
+    }
+
+    /** Convenience: clear the public-view conf. */
+    private void clearPublicView() {
+        spark.conf().unset(DatasetCatalog.PUBLIC_VIEW_KEY);
     }
 
     // ======================== loadTable — basic read ========================
@@ -178,7 +192,8 @@ class DatasetCatalogTest {
         Table mockTable = createMockTable();
         when(mockPaimonCatalog.getTable(any())).thenReturn(mockTable);
 
-        SparkTable result = catalog.loadTable(Identifier.of(new String[] {"ns"}, "ds"), "42");
+        org.apache.spark.sql.connector.catalog.Table result =
+                catalog.loadTable(Identifier.of(new String[] {"ns"}, "ds"), "42");
 
         assertThat(result).isNotNull();
         // Verify that copy was called with version option
@@ -197,7 +212,7 @@ class DatasetCatalogTest {
 
         // Spark passes microseconds: 1_700_000_000_000_000 μs = 1_700_000_000_000 ms
         long timestampMicros = 1_700_000_000_000_000L;
-        SparkTable result =
+        org.apache.spark.sql.connector.catalog.Table result =
                 catalog.loadTable(Identifier.of(new String[] {"ns"}, "ds"), timestampMicros);
 
         assertThat(result).isNotNull();
@@ -207,6 +222,163 @@ class DatasetCatalogTest {
                         argMapContaining(
                                 CoreOptions.SCAN_TIMESTAMP_MILLIS.key(),
                                 String.valueOf(timestampMicros / 1000)));
+    }
+
+    @Test
+    void loadTableNoPublicViewConfNoOverlay() throws Exception {
+        // Without the per-dataset public-view conf, overlay never engages — this is the default
+        // path for all datasets that haven't been opted in.
+        when(mockRestClient.getDatasetByName("ns", "A1"))
+                .thenReturn(new DatasetInfo("A1", "db", "t_a1"));
+
+        Table tableA =
+                createMockTable(
+                        RowType.builder()
+                                .field("id", DataTypes.INT())
+                                .field("name", DataTypes.STRING())
+                                .build());
+        when(mockPaimonCatalog.getTable(any())).thenReturn(tableA);
+
+        org.apache.spark.sql.connector.catalog.Table result =
+                catalog.loadTable(Identifier.of(new String[] {"ns"}, "A1"));
+
+        assertThat(result).isInstanceOf(SparkTable.class);
+        // Resolver isn't invoked, so view dataset (e.g. "B") is never looked up.
+        verify(mockRestClient, org.mockito.Mockito.never()).getDatasetByName("ns", "B");
+    }
+
+    // ======================== loadTable — schema overlay ========================
+    // Note: the "successful wrap" path (overlay actually applied to a real Paimon table) is
+    // covered by DatasetCatalogSQLTest in paimon-spark-ut, where we have a real filesystem
+    // Paimon catalog. Here we cover only the gating + validation logic that can be exercised
+    // without bootstrapping a real FileStoreTable.
+
+    @Test
+    void loadTableSelfReferenceOverlayIsNoOp() throws Exception {
+        // Public-view conf points to the very dataset being queried → resolver short-circuits;
+        // a typical case is "global view = B, query B".
+        setPublicView("ns.A1");
+        try {
+            when(mockRestClient.getDatasetByName("ns", "A1"))
+                    .thenReturn(new DatasetInfo("A1", "db", "t_a1"));
+
+            Table tableA = createMockTable(RowType.builder().field("id", DataTypes.INT()).build());
+            when(mockPaimonCatalog.getTable(any())).thenReturn(tableA);
+
+            org.apache.spark.sql.connector.catalog.Table result =
+                    catalog.loadTable(Identifier.of(new String[] {"ns"}, "A1"));
+
+            assertThat(result).isInstanceOf(SparkTable.class);
+            // Only A is looked up; resolver returns before any second REST call.
+            verify(mockRestClient, org.mockito.Mockito.times(1)).getDatasetByName("ns", "A1");
+        } finally {
+            clearPublicView();
+        }
+    }
+
+    @Test
+    void loadTableOverlayValidationFailsOnExtraColumn() throws Exception {
+        // A has 'extra' which B does not → validation must fail.
+        setPublicView("ns.B");
+        try {
+            when(mockRestClient.getDatasetByName("ns", "A1"))
+                    .thenReturn(new DatasetInfo("A1", "db", "t_a1"));
+            when(mockRestClient.getDatasetByName("ns", "B"))
+                    .thenReturn(new DatasetInfo("B", "db", "t_b"));
+
+            FileStoreTable tableA =
+                    createMockFileStoreTable(
+                            RowType.builder()
+                                    .field("id", DataTypes.INT())
+                                    .field("extra", DataTypes.STRING())
+                                    .build());
+            Table tableB = createMockTable(RowType.builder().field("id", DataTypes.INT()).build());
+            when(mockPaimonCatalog.getTable(
+                            org.apache.paimon.catalog.Identifier.create("db", "t_a1")))
+                    .thenReturn(tableA);
+            when(mockPaimonCatalog.getTable(
+                            org.apache.paimon.catalog.Identifier.create("db", "t_b")))
+                    .thenReturn(tableB);
+
+            assertThatThrownBy(() -> catalog.loadTable(Identifier.of(new String[] {"ns"}, "A1")))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("extra")
+                    .hasMessageContaining("not present");
+        } finally {
+            clearPublicView();
+        }
+    }
+
+    @Test
+    void loadTableOverlayValidationFailsOnTypeMismatch() throws Exception {
+        // A.id is INT, B.id is BIGINT → type mismatch, must reject.
+        setPublicView("ns.B");
+        try {
+            when(mockRestClient.getDatasetByName("ns", "A1"))
+                    .thenReturn(new DatasetInfo("A1", "db", "t_a1"));
+            when(mockRestClient.getDatasetByName("ns", "B"))
+                    .thenReturn(new DatasetInfo("B", "db", "t_b"));
+
+            FileStoreTable tableA =
+                    createMockFileStoreTable(
+                            RowType.builder().field("id", DataTypes.INT()).build());
+            Table tableB =
+                    createMockTable(RowType.builder().field("id", DataTypes.BIGINT()).build());
+            when(mockPaimonCatalog.getTable(
+                            org.apache.paimon.catalog.Identifier.create("db", "t_a1")))
+                    .thenReturn(tableA);
+            when(mockPaimonCatalog.getTable(
+                            org.apache.paimon.catalog.Identifier.create("db", "t_b")))
+                    .thenReturn(tableB);
+
+            assertThatThrownBy(() -> catalog.loadTable(Identifier.of(new String[] {"ns"}, "A1")))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("Types must match");
+        } finally {
+            clearPublicView();
+        }
+    }
+
+    @Test
+    void loadTableOverlaySkipsForSuffixPath() throws Exception {
+        // Suffix path (e.g. $snapshots) bypasses overlay even when public-view is set.
+        setPublicView("ns.B");
+        try {
+            when(mockRestClient.getDatasetByName("ns", "A1"))
+                    .thenReturn(new DatasetInfo("A1", "db", "t_a1"));
+
+            Table tableA = createMockTable(RowType.builder().field("id", DataTypes.INT()).build());
+            when(mockPaimonCatalog.getTable(
+                            org.apache.paimon.catalog.Identifier.create("db", "t_a1$snapshots")))
+                    .thenReturn(tableA);
+
+            org.apache.spark.sql.connector.catalog.Table result =
+                    catalog.loadTable(Identifier.of(new String[] {"ns"}, "A1$snapshots"));
+
+            assertThat(result).isInstanceOf(SparkTable.class);
+            // B should never be looked up for suffix paths
+            verify(mockRestClient, org.mockito.Mockito.never()).getDatasetByName("ns", "B");
+        } finally {
+            clearPublicView();
+        }
+    }
+
+    @Test
+    void loadTableInvalidPublicViewValueThrows() throws Exception {
+        // Conf value missing the '<ns>.<name>' separator → parser throws IllegalArgumentException.
+        setPublicView("no_dot_in_value");
+        try {
+            when(mockRestClient.getDatasetByName("ns", "A1"))
+                    .thenReturn(new DatasetInfo("A1", "db", "t_a1"));
+            Table tableA = createMockTable(RowType.builder().field("id", DataTypes.INT()).build());
+            when(mockPaimonCatalog.getTable(any())).thenReturn(tableA);
+
+            assertThatThrownBy(() -> catalog.loadTable(Identifier.of(new String[] {"ns"}, "A1")))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Invalid view ref");
+        } finally {
+            clearPublicView();
+        }
     }
 
     // ======================== listTables ========================
@@ -342,20 +514,53 @@ class DatasetCatalogTest {
     // ======================== Helpers ========================
 
     private Table createMockTable() {
+        return createMockTable(
+                RowType.builder()
+                        .field("id", DataTypes.INT())
+                        .field("name", DataTypes.STRING())
+                        .build());
+    }
+
+    private Table createMockTable(RowType rowType) {
         Table table = mock(Table.class);
         when(table.name()).thenReturn("test_table");
         when(table.fullName()).thenReturn("db.test_table");
-        when(table.rowType())
-                .thenReturn(
-                        RowType.builder()
-                                .field("id", DataTypes.INT())
-                                .field("name", DataTypes.STRING())
-                                .build());
+        when(table.rowType()).thenReturn(rowType);
         when(table.partitionKeys()).thenReturn(Collections.emptyList());
         when(table.primaryKeys()).thenReturn(Collections.emptyList());
         when(table.options()).thenReturn(Collections.emptyMap());
         when(table.comment()).thenReturn(Optional.empty());
         when(table.copy(any())).thenReturn(table);
+        return table;
+    }
+
+    /**
+     * Creates a FileStoreTable mock used in tests that exercise overlay validation paths (resolver
+     * casts to FileStoreTable then calls schema().fields()). Only the schema-related stubs that
+     * validation reaches before throwing are set up; the test asserts that validation throws before
+     * any further state matters.
+     */
+    private FileStoreTable createMockFileStoreTable(RowType rowType) {
+        FileStoreTable table = mock(FileStoreTable.class);
+        when(table.name()).thenReturn("test_table");
+        when(table.fullName()).thenReturn("db.test_table");
+        when(table.rowType()).thenReturn(rowType);
+        when(table.partitionKeys()).thenReturn(Collections.emptyList());
+        when(table.primaryKeys()).thenReturn(Collections.emptyList());
+        when(table.options()).thenReturn(Collections.emptyMap());
+        when(table.comment()).thenReturn(Optional.empty());
+        when(table.copy(any(Map.class))).thenReturn(table);
+
+        org.apache.paimon.schema.TableSchema schema =
+                new org.apache.paimon.schema.TableSchema(
+                        0L,
+                        rowType.getFields(),
+                        Math.max(0, rowType.getFieldCount() - 1),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.emptyMap(),
+                        null);
+        when(table.schema()).thenReturn(schema);
         return table;
     }
 
