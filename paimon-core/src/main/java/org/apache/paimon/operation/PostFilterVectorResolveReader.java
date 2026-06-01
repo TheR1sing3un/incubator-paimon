@@ -48,9 +48,8 @@ import java.util.List;
 public class PostFilterVectorResolveReader implements RecordReader<InternalRow> {
 
     private static final int GAP_THRESHOLD = 64;
-    private static final int MAX_CHUNK_ROWS = 32768;
 
-    private static final int MAX_BATCH_ROWS = 4096;
+    private static final int MAX_BATCH_ROWS = 131072;
 
     @VisibleForTesting
     public static final ThreadLocal<Stats> STATS = ThreadLocal.withInitial(Stats::new);
@@ -149,26 +148,24 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
 
         int size = snapshots.size();
         boolean[] hasVector = new boolean[size];
-        int numChunks = (size + MAX_CHUNK_ROWS - 1) / MAX_CHUNK_ROWS;
-        byte[][] backingChunks = new byte[numChunks][];
+        byte[] vectorBacking = coalesceAndResolve(descriptors, size, hasVector);
 
-        coalesceAndResolve(descriptors, size, hasVector, backingChunks);
-
-        for (int i = 0; i < size; i++) {
-            if (hasVector[i]) {
-                int chunkIdx = i / MAX_CHUNK_ROWS;
-                int offsetInChunk = (i % MAX_CHUNK_ROWS) * bpv;
-                BinaryVector bv = new BinaryVector(dim);
-                bv.pointTo(MemorySegment.wrap(backingChunks[chunkIdx]), offsetInChunk, bpv);
-                snapshots.get(i).setField(vectorReadPos, bv);
+        if (vectorBacking != null) {
+            MemorySegment backingSeg = MemorySegment.wrap(vectorBacking);
+            for (int i = 0; i < size; i++) {
+                if (hasVector[i]) {
+                    BinaryVector bv = new BinaryVector(dim);
+                    bv.pointTo(backingSeg, i * bpv, bpv);
+                    snapshots.get(i).setField(vectorReadPos, bv);
+                }
             }
         }
 
         return new SnapshotIterator(snapshots);
     }
 
-    private void coalesceAndResolve(
-            List<byte[]> descriptors, int totalRows, boolean[] hasVector, byte[][] backingChunks)
+    @Nullable
+    private byte[] coalesceAndResolve(List<byte[]> descriptors, int totalRows, boolean[] hasVector)
             throws IOException {
         Stats stats = STATS.get();
 
@@ -192,7 +189,7 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
         stats.resolvedVectors += pendingSize;
 
         if (pendingSize == 0) {
-            return;
+            return null;
         }
 
         Integer[] sortIndices = new Integer[pendingSize];
@@ -207,6 +204,8 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
                     }
                     return Long.compare(pendingRowIndex[a], pendingRowIndex[b]);
                 });
+
+        byte[] vectorBacking = new byte[descSize * bpv];
 
         int pos = 0;
         while (pos < pendingSize) {
@@ -252,15 +251,8 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
                         int sj = sortIndices[j];
                         int rowInResult = pendingRowInResult[sj];
                         int localOffset = (int) ((pendingRowIndex[sj] - startIdx) * bpv);
-                        int chunkIdx = rowInResult / MAX_CHUNK_ROWS;
-                        int offsetInChunk = (rowInResult % MAX_CHUNK_ROWS) * bpv;
-                        if (backingChunks[chunkIdx] == null) {
-                            int chunkRows =
-                                    Math.min(MAX_CHUNK_ROWS, totalRows - chunkIdx * MAX_CHUNK_ROWS);
-                            backingChunks[chunkIdx] = new byte[chunkRows * bpv];
-                        }
-                        System.arraycopy(
-                                rangeBuf, localOffset, backingChunks[chunkIdx], offsetInChunk, bpv);
+                        int backingOffset = rowInResult * bpv;
+                        System.arraycopy(rangeBuf, localOffset, vectorBacking, backingOffset, bpv);
                         hasVector[rowInResult] = true;
                     }
 
@@ -268,6 +260,8 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
                 }
             }
         }
+
+        return vectorBacking;
     }
 
     private void ensurePendingArrays(int capacity) {
