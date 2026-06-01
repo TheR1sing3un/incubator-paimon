@@ -33,6 +33,7 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -41,11 +42,15 @@ import java.util.List;
  * filtered), this resolver buffers surviving rows, groups their descriptors by fileId, sorts by
  * rowIndex, coalesces contiguous ranges, and does batch reads.
  *
- * <p>This is the Paimon equivalent of Doris's paimon_vector_read_coalesce path.
+ * <p>Vector data is stored in chunked backing arrays (max 32K rows per chunk, ~256MB) to avoid
+ * integer overflow for large batches while still reducing per-row object allocation.
  */
 public class PostFilterVectorResolveReader implements RecordReader<InternalRow> {
 
     private static final int GAP_THRESHOLD = 64;
+    private static final int MAX_CHUNK_ROWS = 32768;
+
+    private static final int MAX_BATCH_ROWS = 4096;
 
     @VisibleForTesting
     public static final ThreadLocal<Stats> STATS = ThreadLocal.withInitial(Stats::new);
@@ -60,6 +65,11 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
     private final int fieldCount;
 
     private byte[] reusableRangeBuf;
+    private int[] pendingRowInResult;
+    private int[] pendingFileId;
+    private long[] pendingRowIndex;
+
+    private RecordIterator<InternalRow> pendingBatch;
 
     public PostFilterVectorResolveReader(
             RecordReader<InternalRow> inner,
@@ -85,7 +95,11 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
     @Nullable
     @Override
     public RecordIterator<InternalRow> readBatch() throws IOException {
-        RecordIterator<InternalRow> batch = inner.readBatch();
+        RecordIterator<InternalRow> batch = pendingBatch;
+        if (batch == null) {
+            batch = inner.readBatch();
+        }
+        pendingBatch = null;
         if (batch == null) {
             return null;
         }
@@ -117,8 +131,14 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
             }
             snapshots.add(snap);
             descriptors.add(desc);
+            if (snapshots.size() >= MAX_BATCH_ROWS) {
+                pendingBatch = batch;
+                break;
+            }
         }
-        batch.releaseBatch();
+        if (pendingBatch == null) {
+            batch.releaseBatch();
+        }
 
         Stats stats = STATS.get();
         stats.survivingRows += snapshots.size();
@@ -127,23 +147,35 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
             return new EmptyIterator();
         }
 
-        BinaryVector[] resolved = coalesceAndResolve(descriptors);
+        int size = snapshots.size();
+        boolean[] hasVector = new boolean[size];
+        int numChunks = (size + MAX_CHUNK_ROWS - 1) / MAX_CHUNK_ROWS;
+        byte[][] backingChunks = new byte[numChunks][];
 
-        for (int i = 0; i < snapshots.size(); i++) {
-            if (resolved[i] != null) {
-                snapshots.get(i).setField(vectorReadPos, resolved[i]);
+        coalesceAndResolve(descriptors, size, hasVector, backingChunks);
+
+        for (int i = 0; i < size; i++) {
+            if (hasVector[i]) {
+                int chunkIdx = i / MAX_CHUNK_ROWS;
+                int offsetInChunk = (i % MAX_CHUNK_ROWS) * bpv;
+                BinaryVector bv = new BinaryVector(dim);
+                bv.pointTo(MemorySegment.wrap(backingChunks[chunkIdx]), offsetInChunk, bpv);
+                snapshots.get(i).setField(vectorReadPos, bv);
             }
         }
 
         return new SnapshotIterator(snapshots);
     }
 
-    private BinaryVector[] coalesceAndResolve(List<byte[]> descriptors) throws IOException {
-        BinaryVector[] resolved = new BinaryVector[descriptors.size()];
+    private void coalesceAndResolve(
+            List<byte[]> descriptors, int totalRows, boolean[] hasVector, byte[][] backingChunks)
+            throws IOException {
         Stats stats = STATS.get();
 
-        List<PendingRead> pending = new ArrayList<>();
-        for (int i = 0; i < descriptors.size(); i++) {
+        int descSize = descriptors.size();
+        int pendingSize = 0;
+        ensurePendingArrays(descSize);
+        for (int i = 0; i < descSize; i++) {
             byte[] desc = descriptors.get(i);
             if (desc == null || desc.length < 21 || !VectorDescriptor.isVectorDescriptor(desc)) {
                 continue;
@@ -151,29 +183,38 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
             int fileId = VectorDescriptor.extractFileId(desc);
             long rowIndex = VectorDescriptor.extractRowIndex(desc);
             long actualRowIndex = context.resolveActualRowIndex(fileId, rowIndex);
-            pending.add(new PendingRead(i, fileId, actualRowIndex));
+            pendingRowInResult[pendingSize] = i;
+            pendingFileId[pendingSize] = fileId;
+            pendingRowIndex[pendingSize] = actualRowIndex;
+            pendingSize++;
         }
 
-        stats.resolvedVectors += pending.size();
+        stats.resolvedVectors += pendingSize;
 
-        if (pending.isEmpty()) {
-            return resolved;
+        if (pendingSize == 0) {
+            return;
         }
 
-        pending.sort(
+        Integer[] sortIndices = new Integer[pendingSize];
+        for (int i = 0; i < pendingSize; i++) {
+            sortIndices[i] = i;
+        }
+        Arrays.sort(
+                sortIndices,
                 (a, b) -> {
-                    if (a.fileId != b.fileId) {
-                        return Integer.compare(a.fileId, b.fileId);
+                    if (pendingFileId[a] != pendingFileId[b]) {
+                        return Integer.compare(pendingFileId[a], pendingFileId[b]);
                     }
-                    return Long.compare(a.rowIndex, b.rowIndex);
+                    return Long.compare(pendingRowIndex[a], pendingRowIndex[b]);
                 });
 
         int pos = 0;
-        while (pos < pending.size()) {
-            int fid = pending.get(pos).fileId;
+        while (pos < pendingSize) {
+            int si = sortIndices[pos];
+            int fid = pendingFileId[si];
             String filePath = context.resolveFilePath(fid);
             if (filePath == null) {
-                while (pos < pending.size() && pending.get(pos).fileId == fid) {
+                while (pos < pendingSize && pendingFileId[sortIndices[pos]] == fid) {
                     pos++;
                 }
                 continue;
@@ -181,19 +222,20 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
 
             stats.streamOpens++;
             try (SeekableInputStream stream = fileIO.newInputStream(new Path(filePath))) {
-                while (pos < pending.size() && pending.get(pos).fileId == fid) {
+                while (pos < pendingSize && pendingFileId[sortIndices[pos]] == fid) {
                     int endPos = pos;
-                    long startIdx = pending.get(pos).rowIndex;
+                    long startIdx = pendingRowIndex[sortIndices[pos]];
                     long endIdx = startIdx;
 
-                    for (int j = pos + 1; j < pending.size(); j++) {
-                        if (pending.get(j).fileId != fid) {
+                    for (int j = pos + 1; j < pendingSize; j++) {
+                        int sj = sortIndices[j];
+                        if (pendingFileId[sj] != fid) {
                             break;
                         }
-                        if (pending.get(j).rowIndex - endIdx > GAP_THRESHOLD) {
+                        if (pendingRowIndex[sj] - endIdx > GAP_THRESHOLD) {
                             break;
                         }
-                        endIdx = pending.get(j).rowIndex;
+                        endIdx = pendingRowIndex[sj];
                         endPos = j;
                     }
 
@@ -207,20 +249,33 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
                     org.apache.paimon.utils.IOUtils.readFully(stream, rangeBuf, 0, bytesToRead);
 
                     for (int j = pos; j <= endPos; j++) {
-                        int localOffset = (int) ((pending.get(j).rowIndex - startIdx) * bpv);
-                        byte[] vectorBytes = new byte[bpv];
-                        System.arraycopy(rangeBuf, localOffset, vectorBytes, 0, bpv);
-                        BinaryVector bv = new BinaryVector(dim);
-                        bv.pointTo(MemorySegment.wrap(vectorBytes), 0, bpv);
-                        resolved[pending.get(j).rowInResult] = bv;
+                        int sj = sortIndices[j];
+                        int rowInResult = pendingRowInResult[sj];
+                        int localOffset = (int) ((pendingRowIndex[sj] - startIdx) * bpv);
+                        int chunkIdx = rowInResult / MAX_CHUNK_ROWS;
+                        int offsetInChunk = (rowInResult % MAX_CHUNK_ROWS) * bpv;
+                        if (backingChunks[chunkIdx] == null) {
+                            int chunkRows =
+                                    Math.min(MAX_CHUNK_ROWS, totalRows - chunkIdx * MAX_CHUNK_ROWS);
+                            backingChunks[chunkIdx] = new byte[chunkRows * bpv];
+                        }
+                        System.arraycopy(
+                                rangeBuf, localOffset, backingChunks[chunkIdx], offsetInChunk, bpv);
+                        hasVector[rowInResult] = true;
                     }
 
                     pos = endPos + 1;
                 }
             }
         }
+    }
 
-        return resolved;
+    private void ensurePendingArrays(int capacity) {
+        if (pendingRowInResult == null || pendingRowInResult.length < capacity) {
+            pendingRowInResult = new int[capacity];
+            pendingFileId = new int[capacity];
+            pendingRowIndex = new long[capacity];
+        }
     }
 
     private byte[] ensureRangeBuf(int needed) {
@@ -234,6 +289,9 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
     public void close() throws IOException {
         inner.close();
         reusableRangeBuf = null;
+        pendingRowInResult = null;
+        pendingFileId = null;
+        pendingRowIndex = null;
     }
 
     /** Accumulated statistics for testing and monitoring. */
@@ -249,18 +307,6 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
             resolvedVectors = 0;
             streamOpens = 0;
             coalescedRanges = 0;
-        }
-    }
-
-    private static class PendingRead {
-        final int rowInResult;
-        final int fileId;
-        final long rowIndex;
-
-        PendingRead(int rowInResult, int fileId, long rowIndex) {
-            this.rowInResult = rowInResult;
-            this.fileId = fileId;
-            this.rowIndex = rowIndex;
         }
     }
 
