@@ -64,6 +64,7 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
     private final int fieldCount;
 
     private byte[] reusableRangeBuf;
+    private byte[] reusableVectorBacking;
     private int[] pendingRowInResult;
     private int[] pendingFileId;
     private long[] pendingRowIndex;
@@ -205,7 +206,7 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
                     return Long.compare(pendingRowIndex[a], pendingRowIndex[b]);
                 });
 
-        byte[] vectorBacking = new byte[descSize * bpv];
+        byte[] vectorBacking = ensureVectorBacking(descSize * bpv);
 
         int pos = 0;
         while (pos < pendingSize) {
@@ -279,10 +280,18 @@ public class PostFilterVectorResolveReader implements RecordReader<InternalRow> 
         return reusableRangeBuf;
     }
 
+    private byte[] ensureVectorBacking(int needed) {
+        if (reusableVectorBacking == null || reusableVectorBacking.length < needed) {
+            reusableVectorBacking = new byte[needed];
+        }
+        return reusableVectorBacking;
+    }
+
     @Override
     public void close() throws IOException {
         inner.close();
         reusableRangeBuf = null;
+        reusableVectorBacking = null;
         pendingRowInResult = null;
         pendingFileId = null;
         pendingRowIndex = null;
