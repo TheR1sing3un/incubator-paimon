@@ -16,50 +16,69 @@
 # limitations under the License.
 ################################################################################
 
-"""Field-level aggregation framework for pypaimon merge engines.
+"""FieldAggregator registry and factory entry point.
 
-Mirrors the Java FieldAggregator / FieldAggregatorFactory design under
-o.a.p.mergetree.compact.aggregate. Currently wired into the
-versioned-partial-update merge engine only; partial-update / aggregation
-engines can adopt the same registry when they are ported.
+Looks up the registered factory for an aggregator identifier (``"sum"``,
+``"last_value"``, ...) read from table options and builds an instance
+for it. Concrete aggregators register themselves at import time via
+:func:`register_aggregator`; importing this package eagerly imports the
+built-in aggregator module so the registrations always happen,
+regardless of which call site triggers the first lookup.
 """
 
-from typing import Callable, Dict
+from typing import Callable, Dict, TYPE_CHECKING
 
 from pypaimon.read.reader.aggregate.field_aggregator import FieldAggregator
+from pypaimon.schema.data_types import DataType
 
-# Registry of aggregator factories keyed by identifier (e.g. "sum", "max").
-# Concrete aggregator modules call register_aggregator() at import time.
-_AGGREGATOR_FACTORIES: Dict[str, Callable[..., FieldAggregator]] = {}
+if TYPE_CHECKING:
+    from pypaimon.common.options.core_options import CoreOptions
 
 
-def register_aggregator(identifier: str, factory: Callable[..., FieldAggregator]) -> None:
-    """Register a factory callable for the given identifier.
+# Module-global registry keyed by aggregator identifier
+# (``"sum"``, ``"last_value"`` ...).
+_FACTORIES: Dict[str, Callable[[DataType, str, "CoreOptions"], FieldAggregator]] = {}
 
-    The factory is called as ``factory(field_type, field_name, options)`` and
-    must return a FieldAggregator instance.
+
+def register_aggregator(
+    identifier: str,
+    factory: Callable[[DataType, str, "CoreOptions"], FieldAggregator],
+) -> None:
+    """Register ``factory`` under ``identifier``.
+
+    Re-registering an identifier replaces the existing factory. The
+    built-in aggregators register themselves at module-import time from
+    :mod:`aggregators`.
     """
-    _AGGREGATOR_FACTORIES[identifier] = factory
+    _FACTORIES[identifier] = factory
 
 
-def create_field_aggregator(field_type, field_name, agg_func_name, options) -> FieldAggregator:
-    """Create a FieldAggregator by identifier. Mirrors Java
-    FieldAggregatorFactory.create (L39-65).
+def create_field_aggregator(
+    field_type: DataType,
+    field_name: str,
+    agg_func_name: str,
+    options: "CoreOptions",
+) -> FieldAggregator:
+    """Build a ``FieldAggregator`` for ``agg_func_name``.
+
+    Raises ``ValueError`` if the identifier was never registered, so
+    typos or out-of-scope aggregators surface at merge-function
+    construction time rather than at the first row.
     """
-    factory = _AGGREGATOR_FACTORIES.get(agg_func_name)
+    factory = _FACTORIES.get(agg_func_name)
     if factory is None:
         raise ValueError(
-            "Could not find a FieldAggregatorFactory for identifier '%s' "
-            "for field '%s'." % (agg_func_name, field_name))
+            "Use unsupported aggregation '{}' or spell aggregate function "
+            "incorrectly! Supported aggregators in pypaimon: {}".format(
+                agg_func_name, sorted(_FACTORIES.keys())
+            )
+        )
     return factory(field_type, field_name, options)
 
 
-# Trigger built-in aggregator registration. Each aggregator class registers
-# itself when the aggregators module is imported.
-from pypaimon.read.reader.aggregate import aggregators  # noqa: F401, E402
-
-__all__ = [
-    "FieldAggregator",
-    "register_aggregator",
-    "create_field_aggregator",
-]
+# Eager-import the built-in aggregator module so its top-level
+# ``register_aggregator(...)`` calls populate ``_FACTORIES`` before any
+# caller looks anything up. Placed at the bottom of the module so the
+# names ``register_aggregator`` / ``FieldAggregator`` aggregators
+# imports back from here are already defined when its import runs.
+from pypaimon.read.reader.aggregate import aggregators  # noqa: E402, F401

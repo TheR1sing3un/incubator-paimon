@@ -16,255 +16,268 @@
 # limitations under the License.
 ################################################################################
 
-"""Concrete FieldAggregator implementations.
+"""Built-in :class:`FieldAggregator` implementations.
 
-This module defines the first batch of aggregators ported from
-o.a.p.mergetree.compact.aggregate.* in Java. Each class is registered into
-the package-level _AGGREGATOR_FACTORIES table at module load time.
+Each class registers itself with the global registry at import time
+via :func:`register_aggregator`, so importing
+``pypaimon.read.reader.aggregate`` makes all of them discoverable.
 
-Aggregators wired into the versioned-partial-update merge engine never have
-their retract() called — DELETE clears state and a subsequent INSERT
-rebuilds the row. Hence retract() is intentionally inherited from the base
-class (which raises NotImplementedError); concrete retract semantics will
-be added when the partial-update engine is ported.
+This module ships 10 aggregators — the primary-key placeholder plus
+the 9 most commonly-used value aggregators: ``primary_key`` /
+``last_value`` / ``last_non_null_value`` / ``first_value`` /
+``first_non_null_value`` / ``sum`` / ``max`` / ``min`` / ``bool_or``
+/ ``bool_and``. Other aggregators (``product`` / ``listagg`` /
+``collect`` / ``merge_map`` / ``nested_update`` / ``theta_sketch`` /
+``hll_sketch`` / ``roaring_bitmap_*``) are intentionally deferred —
+the registry will report them as unsupported so users see a clear
+error rather than a silent fallback.
 """
 
-from typing import List, Optional
+from typing import Any
 
+from pypaimon.read.reader.aggregate import register_aggregator
 from pypaimon.read.reader.aggregate.field_aggregator import FieldAggregator
+from pypaimon.schema.data_types import AtomicType, DataType
 
 
-# ---------------------------------------------------------------------------
-# Numeric aggregators
-# ---------------------------------------------------------------------------
+# Aggregator identifiers exposed via ``fields.<name>.aggregate-function``
+# and ``fields.default-aggregate-function``.
+NAME_PRIMARY_KEY = "primary_key"
+NAME_LAST_VALUE = "last_value"
+NAME_LAST_NON_NULL_VALUE = "last_non_null_value"
+NAME_FIRST_VALUE = "first_value"
+NAME_FIRST_NON_NULL_VALUE = "first_non_null_value"
+NAME_SUM = "sum"
+NAME_MAX = "max"
+NAME_MIN = "min"
+NAME_BOOL_OR = "bool_or"
+NAME_BOOL_AND = "bool_and"
 
 
-class FieldSumAgg(FieldAggregator):
-    """Numeric sum. Mirrors Java FieldSumAgg."""
-
-    NAME = "sum"
-
-    def agg(self, accumulator, input_field):
-        if input_field is None:
-            return accumulator
-        if accumulator is None:
-            return input_field
-        return accumulator + input_field
+# Base SQL type names treated as numeric for sum/product-style
+# aggregators. NUMERIC / DEC are SQL synonyms accepted by the parser;
+# treat them the same as DECIMAL.
+_NUMERIC_BASE_TYPES = frozenset([
+    "TINYINT", "SMALLINT", "INT", "INTEGER", "BIGINT",
+    "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC", "DEC",
+])
 
 
-class FieldMaxAgg(FieldAggregator):
-    """Maximum value. Mirrors Java FieldMaxAgg."""
-
-    NAME = "max"
-
-    def agg(self, accumulator, input_field):
-        if input_field is None:
-            return accumulator
-        if accumulator is None:
-            return input_field
-        return input_field if input_field > accumulator else accumulator
-
-
-class FieldMinAgg(FieldAggregator):
-    """Minimum value. Mirrors Java FieldMinAgg."""
-
-    NAME = "min"
-
-    def agg(self, accumulator, input_field):
-        if input_field is None:
-            return accumulator
-        if accumulator is None:
-            return input_field
-        return input_field if input_field < accumulator else accumulator
-
-
-# ---------------------------------------------------------------------------
-# Position-based aggregators (last_value / last_non_null_value)
-# ---------------------------------------------------------------------------
-
-
-class FieldLastValueAgg(FieldAggregator):
-    """Take the last value, including nulls. Mirrors Java FieldLastValueAgg."""
-
-    NAME = "last_value"
-
-    def agg(self, accumulator, input_field):
-        return input_field
-
-
-class FieldLastNonNullValueAgg(FieldAggregator):
-    """Take the last non-null value. Mirrors Java FieldLastNonNullValueAgg.
-
-    Unique among aggregators in that ordering does not affect the final
-    result — the last non-null wins regardless of input order, so this is
-    the only aggregator partial-update allows without sequence-group
-    protection (see PartialUpdateFieldAggregators._resolve_agg_func_name).
+def _atomic_base_name(field_type: DataType):
+    """Extract the bare SQL type name from an :class:`AtomicType`,
+    stripping precision arguments (``DECIMAL(10,2)``) and trailing
+    ``NOT NULL``. Returns ``None`` for non-atomic types so callers can
+    raise a uniform "unsupported type" error.
     """
-
-    NAME = "last_non_null_value"
-
-    def agg(self, accumulator, input_field):
-        return accumulator if input_field is None else input_field
-
-
-# ---------------------------------------------------------------------------
-# Stateful position aggregators (first_value / first_non_null_value)
-# ---------------------------------------------------------------------------
+    if not isinstance(field_type, AtomicType):
+        return None
+    raw = field_type.type
+    head = raw.split('(', 1)[0].split(' ', 1)[0]
+    return head.upper()
 
 
-class FieldFirstValueAgg(FieldAggregator):
-    """Take the first value (including nulls), then lock. Mirrors Java
-    FieldFirstValueAgg.
-    """
-
-    NAME = "first_value"
-
-    def __init__(self, field_type, name):
-        super().__init__(field_type, name)
-        self._initialized = False
-
-    def reset(self):
-        self._initialized = False
-
-    def agg(self, accumulator, input_field):
-        if self._initialized:
-            return accumulator
-        self._initialized = True
-        return input_field
+def _check_numeric(name: str, field_type: DataType) -> None:
+    base = _atomic_base_name(field_type)
+    if base not in _NUMERIC_BASE_TYPES:
+        raise ValueError(
+            "Data type for '{}' column must be a numeric type but was "
+            "'{}'.".format(name, field_type)
+        )
 
 
-class FieldFirstNonNullValueAgg(FieldAggregator):
-    """Take the first non-null value, then lock. Mirrors Java
-    FieldFirstNonNullValueAgg.
-    """
-
-    NAME = "first_non_null_value"
-
-    def __init__(self, field_type, name):
-        super().__init__(field_type, name)
-        self._initialized = False
-
-    def reset(self):
-        self._initialized = False
-
-    def agg(self, accumulator, input_field):
-        if self._initialized:
-            return accumulator
-        if input_field is None:
-            return accumulator
-        self._initialized = True
-        return input_field
+def _check_boolean(name: str, field_type: DataType) -> None:
+    base = _atomic_base_name(field_type)
+    if base != "BOOLEAN":
+        raise ValueError(
+            "Data type for '{}' column must be 'BOOLEAN' but was "
+            "'{}'.".format(name, field_type)
+        )
 
 
 # ---------------------------------------------------------------------------
-# Special aggregators
+# Aggregator classes
 # ---------------------------------------------------------------------------
 
 
 class FieldPrimaryKeyAgg(FieldAggregator):
-    """Identity on input. Mirrors Java FieldPrimaryKeyAgg.
+    """Carries the primary-key column through merge unchanged."""
 
-    Auto-selected for primary-key columns by PartialUpdateFieldAggregators
-    so primary keys flow through unchanged.
-    """
-
-    NAME = "primary-key"
-
-    def agg(self, accumulator, input_field):
+    def agg(self, accumulator: Any, input_field: Any) -> Any:
         return input_field
 
 
-class FieldCollectAgg(FieldAggregator):
-    """Collect array elements into a single list. Mirrors Java FieldCollectAgg.
+class FieldLastValueAgg(FieldAggregator):
+    """Latest value wins, including ``None``."""
 
-    Both accumulator and input_field are expected to be Python lists (the
-    Python-native representation of ARRAY columns). When ``distinct`` is
-    True, duplicate elements are skipped (best-effort, by equality).
+    def agg(self, accumulator: Any, input_field: Any) -> Any:
+        return input_field
+
+
+class FieldLastNonNullValueAgg(FieldAggregator):
+    """Latest non-null value; ``None`` inputs are absorbed.
+
+    This is the system-wide default aggregator when no per-field
+    override and no ``fields.default-aggregate-function`` are set.
     """
 
-    NAME = "collect"
+    def agg(self, accumulator: Any, input_field: Any) -> Any:
+        return accumulator if input_field is None else input_field
 
-    def __init__(self, field_type, name, distinct=False):
-        super().__init__(field_type, name)
-        self.distinct = distinct
 
-    def agg(self, accumulator, input_field):
-        if input_field is None:
-            return accumulator
-        # Normalize input to a list of elements.
-        if isinstance(input_field, list):
-            items = input_field
-        else:
-            items = [input_field]
-        if accumulator is None:
-            accumulator = []
-        if self.distinct:
-            for it in items:
-                if it not in accumulator:
-                    accumulator.append(it)
-        else:
-            accumulator.extend(items)
+class FieldFirstValueAgg(FieldAggregator):
+    """First value (including ``None``) wins; locks after the first
+    :meth:`agg` call until the next :meth:`reset`.
+    """
+
+    def __init__(self, name: str, field_type: DataType):
+        super().__init__(name, field_type)
+        self._initialized = False
+
+    def agg(self, accumulator: Any, input_field: Any) -> Any:
+        if not self._initialized:
+            self._initialized = True
+            return input_field
         return accumulator
 
-
-# ---------------------------------------------------------------------------
-# Factory registration
-# ---------------------------------------------------------------------------
+    def reset(self) -> None:
+        self._initialized = False
 
 
-def _read_dynamic_option(options, key) -> Optional[str]:
-    """Read a dynamic-key option (e.g. ``fields.<f>.distinct``) directly
-    from the underlying map. Avoids requiring a ConfigOption per field.
+class FieldFirstNonNullValueAgg(FieldAggregator):
+    """First non-null value; locks after the first non-null
+    :meth:`agg` call until the next :meth:`reset`.
     """
-    if options is None:
-        return None
-    inner = getattr(options, "options", None)
-    if inner is None:
-        return None
-    raw_map = inner.to_map()
-    return raw_map.get(key)
+
+    def __init__(self, name: str, field_type: DataType):
+        super().__init__(name, field_type)
+        self._initialized = False
+
+    def agg(self, accumulator: Any, input_field: Any) -> Any:
+        if not self._initialized and input_field is not None:
+            self._initialized = True
+            return input_field
+        return accumulator
+
+    def reset(self) -> None:
+        self._initialized = False
 
 
-def _collect_factory(field_type, field_name, options):
-    raw = _read_dynamic_option(options, "fields.%s.distinct" % field_name)
-    distinct = raw is True or (isinstance(raw, str) and raw.lower() == "true")
-    return FieldCollectAgg(field_type, field_name, distinct=distinct)
+class FieldSumAgg(FieldAggregator):
+    """Numeric sum. ``None`` on either side returns the non-null
+    operand. Python's native ``+`` works uniformly for int / float /
+    Decimal — the values produced by the pyarrow read path already
+    arrive as the right Python primitive for the column's SQL type, so
+    no per-type branching is needed.
+    """
+
+    def agg(self, accumulator: Any, input_field: Any) -> Any:
+        if accumulator is None or input_field is None:
+            return accumulator if input_field is None else input_field
+        return accumulator + input_field
 
 
-# Identifier → factory callable. Each factory takes
-# (field_type, field_name, options) and returns a FieldAggregator.
-_BUILTIN_AGGREGATORS = [
-    (FieldSumAgg.NAME, lambda t, n, o: FieldSumAgg(t, n)),
-    (FieldMaxAgg.NAME, lambda t, n, o: FieldMaxAgg(t, n)),
-    (FieldMinAgg.NAME, lambda t, n, o: FieldMinAgg(t, n)),
-    (FieldLastValueAgg.NAME, lambda t, n, o: FieldLastValueAgg(t, n)),
-    (FieldLastNonNullValueAgg.NAME, lambda t, n, o: FieldLastNonNullValueAgg(t, n)),
-    (FieldFirstValueAgg.NAME, lambda t, n, o: FieldFirstValueAgg(t, n)),
-    (FieldFirstNonNullValueAgg.NAME, lambda t, n, o: FieldFirstNonNullValueAgg(t, n)),
-    (FieldPrimaryKeyAgg.NAME, lambda t, n, o: FieldPrimaryKeyAgg(t, n)),
-    (FieldCollectAgg.NAME, _collect_factory),
-]
+class FieldMaxAgg(FieldAggregator):
+    """Maximum value. ``None`` on either side returns the non-null
+    operand. Uses Python's native ``<`` so any orderable type
+    (numeric, string, date, datetime, Decimal) works.
+    """
+
+    def agg(self, accumulator: Any, input_field: Any) -> Any:
+        if accumulator is None or input_field is None:
+            return accumulator if input_field is None else input_field
+        return input_field if accumulator < input_field else accumulator
 
 
-def _register_builtins():
-    # Imported here to avoid a circular import: aggregate/__init__.py loads
-    # this module after the registry is defined.
-    from pypaimon.read.reader.aggregate import register_aggregator
-    for identifier, factory in _BUILTIN_AGGREGATORS:
-        register_aggregator(identifier, factory)
+class FieldMinAgg(FieldAggregator):
+    """Minimum value. ``None`` on either side returns the non-null
+    operand. Uses Python's native ``<``.
+    """
+
+    def agg(self, accumulator: Any, input_field: Any) -> Any:
+        if accumulator is None or input_field is None:
+            return accumulator if input_field is None else input_field
+        return accumulator if accumulator < input_field else input_field
 
 
-_register_builtins()
+class FieldBoolOrAgg(FieldAggregator):
+    """Logical OR. ``None`` on either side returns the non-null
+    operand.
+    """
+
+    def agg(self, accumulator: Any, input_field: Any) -> Any:
+        if accumulator is None or input_field is None:
+            return accumulator if input_field is None else input_field
+        return bool(accumulator) or bool(input_field)
 
 
-__all__: List[str] = [
-    "FieldSumAgg",
-    "FieldMaxAgg",
-    "FieldMinAgg",
-    "FieldLastValueAgg",
-    "FieldLastNonNullValueAgg",
-    "FieldFirstValueAgg",
-    "FieldFirstNonNullValueAgg",
-    "FieldPrimaryKeyAgg",
-    "FieldCollectAgg",
-]
+class FieldBoolAndAgg(FieldAggregator):
+    """Logical AND. ``None`` on either side returns the non-null
+    operand.
+    """
+
+    def agg(self, accumulator: Any, input_field: Any) -> Any:
+        if accumulator is None or input_field is None:
+            return accumulator if input_field is None else input_field
+        return bool(accumulator) and bool(input_field)
+
+
+# ---------------------------------------------------------------------------
+# Registration. Each builder binds an identifier to a factory that
+# optionally validates the column DataType before constructing the
+# aggregator instance.
+# ---------------------------------------------------------------------------
+
+
+def _build_no_type_check(cls, identifier: str):
+    """Build a factory that accepts any DataType. Used by
+    ``primary_key`` / ``last_value`` / ``first_value`` variants and by
+    ``max`` / ``min``, all of which work on any orderable DataType.
+    """
+    def _factory(field_type, field_name, options):
+        return cls(identifier, field_type)
+    return _factory
+
+
+def _build_numeric(cls, identifier: str):
+    def _factory(field_type, field_name, options):
+        _check_numeric(identifier, field_type)
+        return cls(identifier, field_type)
+    return _factory
+
+
+def _build_boolean(cls, identifier: str):
+    def _factory(field_type, field_name, options):
+        _check_boolean(identifier, field_type)
+        return cls(identifier, field_type)
+    return _factory
+
+
+register_aggregator(
+    NAME_PRIMARY_KEY,
+    _build_no_type_check(FieldPrimaryKeyAgg, NAME_PRIMARY_KEY),
+)
+register_aggregator(
+    NAME_LAST_VALUE,
+    _build_no_type_check(FieldLastValueAgg, NAME_LAST_VALUE),
+)
+register_aggregator(
+    NAME_LAST_NON_NULL_VALUE,
+    _build_no_type_check(FieldLastNonNullValueAgg, NAME_LAST_NON_NULL_VALUE),
+)
+register_aggregator(
+    NAME_FIRST_VALUE,
+    _build_no_type_check(FieldFirstValueAgg, NAME_FIRST_VALUE),
+)
+register_aggregator(
+    NAME_FIRST_NON_NULL_VALUE,
+    _build_no_type_check(FieldFirstNonNullValueAgg, NAME_FIRST_NON_NULL_VALUE),
+)
+register_aggregator(NAME_SUM, _build_numeric(FieldSumAgg, NAME_SUM))
+register_aggregator(NAME_MAX, _build_no_type_check(FieldMaxAgg, NAME_MAX))
+register_aggregator(NAME_MIN, _build_no_type_check(FieldMinAgg, NAME_MIN))
+register_aggregator(
+    NAME_BOOL_OR, _build_boolean(FieldBoolOrAgg, NAME_BOOL_OR)
+)
+register_aggregator(
+    NAME_BOOL_AND, _build_boolean(FieldBoolAndAgg, NAME_BOOL_AND)
+)
