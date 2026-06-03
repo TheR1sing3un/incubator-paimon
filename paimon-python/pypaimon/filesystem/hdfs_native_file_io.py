@@ -633,5 +633,57 @@ class HdfsNativeFileIO(FileIO):
             self.delete_quietly(path)
             raise RuntimeError(f"Failed to write blob file {path}: {e}") from e
 
+    def write_lance(self, path: str, data: pyarrow.Table, **kwargs):
+        # Mirror the remote-scheme writer: lance/vortex talk to the backend
+        # through their own object_store, so we hand them the URI plus any
+        # storage options the FileIO exposes rather than routing through the
+        # native client. Without these two methods, an HDFS table configured
+        # with file.format=lance/vortex would hit FileIO's NotImplementedError
+        # now that this class is the default hdfs:// backend.
+        try:
+            import lance
+
+            from pypaimon.read.reader.lance_utils import to_lance_specified
+            file_path_for_lance, storage_options = to_lance_specified(self, path)
+
+            writer = lance.file.LanceFileWriter(
+                file_path_for_lance, data.schema,
+                storage_options=storage_options, **kwargs)
+            try:
+                for batch in data.to_batches():
+                    writer.write_batch(batch)
+            finally:
+                writer.close()
+        except Exception as e:
+            self.delete_quietly(path)
+            raise RuntimeError(f"Failed to write Lance file {path}: {e}") from e
+
+    def write_mosaic(self, path: str, data: pyarrow.Table, **kwargs):
+        try:
+            import mosaic
+            with self.new_output_stream(path) as output_stream:
+                mosaic.write_table(data, output_stream)
+        except Exception as e:
+            self.delete_quietly(path)
+            raise RuntimeError(f"Failed to write Mosaic file {path}: {e}") from e
+
+    def write_vortex(self, path: str, data: pyarrow.Table, **kwargs):
+        try:
+            import vortex
+            from vortex import store
+
+            from pypaimon.read.reader.vortex_utils import to_vortex_specified
+            file_path_for_vortex, store_kwargs = to_vortex_specified(self, path)
+
+            if store_kwargs:
+                vortex_store = store.from_url(file_path_for_vortex, **store_kwargs)
+                vortex_store.write(vortex.array(data))
+            else:
+                from vortex._lib.io import write as vortex_write
+                vortex_write(vortex.array(data), file_path_for_vortex)
+        except Exception as e:
+            self.delete_quietly(path)
+            raise RuntimeError(f"Failed to write Vortex file {path}: {e}") from e
+
     def close(self):
         self._client = None
