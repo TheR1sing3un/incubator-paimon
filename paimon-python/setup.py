@@ -49,7 +49,7 @@ install_requires = [
     # covers Python 3.10+. Marker keeps it off non-Linux/x86_64 hosts so the
     # ImportError fallback in FileIO.get() can still bring up pyarrow on
     # local Mac dev boxes.
-    'hdfs-native @ http://bs3-hb1.internal/dp-lance-test-0/hdfs_native-0.13.5-cp310-abi3-manylinux_2_34_x86_64.whl ; platform_system == "Linux" and platform_machine == "x86_64" and python_version >= "3.10"',
+    'hdfs-native @ http://bs3-hb1.internal/dp-lance-test-0/hdfs_native-0.13.5-cp310-abi3-manylinux_2_31_x86_64.whl ; platform_system == "Linux" and platform_machine == "x86_64" and python_version >= "3.10"',
 ]
 
 long_description = "See Apache Paimon Python API \
