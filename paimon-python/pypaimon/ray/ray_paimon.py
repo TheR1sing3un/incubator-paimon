@@ -33,6 +33,11 @@ import ray.data
 from pypaimon.common.predicate import Predicate
 
 
+# Downstream-only: deletion-vectors.read-mode validator for the Ray
+# top-level API. Stays a tuple so callers can introspect / mirror it.
+_VALID_DV_READ_MODES = ('performance', 'freshness')
+
+
 def read_paimon(
     table_identifier: str,
     catalog_options: Dict[str, str],
@@ -42,6 +47,7 @@ def read_paimon(
     limit: Optional[int] = None,
     snapshot_id: Optional[int] = None,
     tag_name: Optional[str] = None,
+    dv_read_mode: Optional[str] = None,
     ray_remote_args: Optional[Dict[str, Any]] = None,
     concurrency: Optional[int] = None,
     override_num_blocks: Optional[int] = None,
@@ -80,6 +86,15 @@ def read_paimon(
         raise ValueError(
             "override_num_blocks must be at least 1, got {}".format(override_num_blocks)
         )
+
+    if dv_read_mode is not None:
+        if dv_read_mode not in _VALID_DV_READ_MODES:
+            raise ValueError(
+                "dv_read_mode must be one of {}, got {!r}".format(
+                    _VALID_DV_READ_MODES, dv_read_mode))
+        catalog_options = dict(catalog_options or {})
+        catalog_options.setdefault(
+            "deletion-vectors.read-mode", dv_read_mode)
 
     datasource = RayDatasource(
         CatalogSplitProvider(
