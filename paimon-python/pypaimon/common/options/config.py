@@ -59,6 +59,11 @@ class GcsOptions:
         .with_description("GCP project ID for GCS requests."))
 
 
+class JdbcCatalogOptions:
+    CATALOG_KEY = ConfigOptions.key("catalog-key").string_type().default_value("jdbc").with_description(
+        "Custom JDBC catalog store key.")
+
+
 class PVFSOptions:
     CACHE_ENABLED = ConfigOptions.key("cache-enabled").boolean_type().default_value("true").with_description(
         "Enable cache")
@@ -111,6 +116,8 @@ class CatalogOptions:
         .default_value(3).with_description("HTTP max retries for read/status errors (429/502/503/504)")
     HTTP_KEEP_ALIVE = ConfigOptions.key("http.keep-alive").boolean_type() \
         .default_value(True).with_description("Enable HTTP keep-alive")
+    SYNC_ALL_PROPERTIES = ConfigOptions.key("sync-all-properties").boolean_type().default_value(True).with_description(
+        "Sync all table properties to the catalog metastore")
     BLOB_FILE_IO_DEFAULT_CACHE_SIZE = 2 ** 31 - 1
 
 
