@@ -50,7 +50,8 @@ import java.util.Set;
  *
  * <ol>
  *   <li>Loads {@code view}'s physical Paimon table to get its schema (call it B).
- *   <li>Validates that A's columns are a subset of B's (by name and exact type match).
+ *   <li>Validates that A's columns are a subset of B's (matching by name and type shape; nested
+ *       field IDs are intentionally ignored, see {@link #validate}).
  *   <li>Synthesizes a new {@link TableSchema} that has B's column ordering, retaining A's existing
  *       field IDs for shared columns and assigning fresh IDs (above A's {@code highestFieldId}) for
  *       B-only columns.
@@ -329,11 +330,20 @@ public final class SchemaOverlayResolver {
     }
 
     /**
-     * Validates that A's columns are a subset of B's, with exact name and type match.
+     * Validates that A's columns are a subset of B's, with name and type-shape match.
      *
      * <p>Cheap insurance against schema drift after a CTAS-style derivation: if dataset A is later
      * altered (column added/dropped/retyped), the contract with B may break, and we want to fail
      * loudly at read time instead of silently mis-shaping rows.
+     *
+     * <p>Type comparison uses {@link DataType#equalsIgnoreFieldId(DataType)} rather than {@code
+     * equals}: only the type <em>shape</em> (names, nullability, nested structure, primitive types)
+     * needs to match — the internal field IDs of nested STRUCT/ROW children do not. Field IDs are
+     * Paimon's internal handles for schema-evolution tracking; CTAS-derived tables get fresh IDs
+     * even when the on-the-wire shape is identical, and using {@code equals} here would falsely
+     * reject every CTAS-derived A against its source B with deeply-nested ROW columns. Top-level
+     * field-ID alignment is preserved by the synthesizer above (it reuses A's {@link DataField} for
+     * shared columns), so the reader still resolves A's physical files correctly.
      */
     private static void validate(
             List<DataField> aFields, List<DataField> bFields, String aName, Identifier view) {
@@ -353,7 +363,7 @@ public final class SchemaOverlayResolver {
                                 + view
                                 + "'. The dataset's physical schema must be a subset of the view schema.");
             }
-            if (!bType.equals(af.type())) {
+            if (!bType.equalsIgnoreFieldId(af.type())) {
                 throw new IllegalStateException(
                         "Schema overlay validation failed: dataset '"
                                 + aName

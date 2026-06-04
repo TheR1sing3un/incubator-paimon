@@ -340,6 +340,86 @@ class DatasetCatalogTest {
     }
 
     @Test
+    void loadTableOverlayAcceptsNestedRowWithDifferentInnerFieldIds() throws Exception {
+        // CTAS-derived A and source B share the same nested ROW shape by name, but Paimon
+        // assigns fresh field IDs to nested struct children when the table is created via CTAS.
+        // Validation must compare by shape (equalsIgnoreFieldId), NOT by deep equals — otherwise
+        // every CTAS-derived dataset against its source view would falsely fail with
+        // "Types must match exactly" even though asSQLString() prints identical types.
+        setPublicView("ns.B");
+        try {
+            when(mockRestClient.getDatasetByName("ns", "A1"))
+                    .thenReturn(new DatasetInfo("A1", "db", "t_a1"));
+            when(mockRestClient.getDatasetByName("ns", "B"))
+                    .thenReturn(new DatasetInfo("B", "db", "t_b"));
+
+            // A's nested ROW: inner field IDs 100, 101 (representative of CTAS re-numbering).
+            RowType aNested =
+                    DataTypes.ROW(
+                            DataTypes.FIELD(100, "latest_version", DataTypes.STRING()),
+                            DataTypes.FIELD(101, "shot_num", DataTypes.BIGINT()));
+            FileStoreTable tableA =
+                    createMockFileStoreTable(RowType.builder().field("captioner", aNested).build());
+
+            // B's nested ROW: same shape, but inner field IDs 1, 2 (source-of-truth lineage).
+            RowType bNested =
+                    DataTypes.ROW(
+                            DataTypes.FIELD(1, "latest_version", DataTypes.STRING()),
+                            DataTypes.FIELD(2, "shot_num", DataTypes.BIGINT()));
+            Table tableB = createMockTable(RowType.builder().field("captioner", bNested).build());
+
+            when(mockPaimonCatalog.getTable(
+                            org.apache.paimon.catalog.Identifier.create("db", "t_a1")))
+                    .thenReturn(tableA);
+            when(mockPaimonCatalog.getTable(
+                            org.apache.paimon.catalog.Identifier.create("db", "t_b")))
+                    .thenReturn(tableB);
+
+            // Should not throw — overlay applies, returns a SparkTable backed by A's
+            // FileStoreTable (the mock returns itself from copy(TableSchema)).
+            org.apache.spark.sql.connector.catalog.Table result =
+                    catalog.loadTable(Identifier.of(new String[] {"ns"}, "A1"));
+            assertThat(result).isInstanceOf(SparkTable.class);
+        } finally {
+            clearPublicView();
+        }
+    }
+
+    @Test
+    void loadTableOverlayValidationFailsOnNestedShapeMismatch() throws Exception {
+        // Nested-id-equality is ignored, but actual shape mismatch (different inner field type)
+        // must still be rejected. Otherwise we'd silently mis-shape rows at read time.
+        setPublicView("ns.B");
+        try {
+            when(mockRestClient.getDatasetByName("ns", "A1"))
+                    .thenReturn(new DatasetInfo("A1", "db", "t_a1"));
+            when(mockRestClient.getDatasetByName("ns", "B"))
+                    .thenReturn(new DatasetInfo("B", "db", "t_b"));
+
+            // A inner field is INT, B inner field is BIGINT → shape mismatch.
+            RowType aNested = DataTypes.ROW(DataTypes.FIELD(100, "shot_num", DataTypes.INT()));
+            FileStoreTable tableA =
+                    createMockFileStoreTable(RowType.builder().field("captioner", aNested).build());
+
+            RowType bNested = DataTypes.ROW(DataTypes.FIELD(1, "shot_num", DataTypes.BIGINT()));
+            Table tableB = createMockTable(RowType.builder().field("captioner", bNested).build());
+
+            when(mockPaimonCatalog.getTable(
+                            org.apache.paimon.catalog.Identifier.create("db", "t_a1")))
+                    .thenReturn(tableA);
+            when(mockPaimonCatalog.getTable(
+                            org.apache.paimon.catalog.Identifier.create("db", "t_b")))
+                    .thenReturn(tableB);
+
+            assertThatThrownBy(() -> catalog.loadTable(Identifier.of(new String[] {"ns"}, "A1")))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("Types must match");
+        } finally {
+            clearPublicView();
+        }
+    }
+
+    @Test
     void loadTableOverlaySkipsForSuffixPath() throws Exception {
         // Suffix path (e.g. $snapshots) bypasses overlay even when public-view is set.
         setPublicView("ns.B");
@@ -550,6 +630,7 @@ class DatasetCatalogTest {
         when(table.options()).thenReturn(Collections.emptyMap());
         when(table.comment()).thenReturn(Optional.empty());
         when(table.copy(any(Map.class))).thenReturn(table);
+        when(table.copy(any(org.apache.paimon.schema.TableSchema.class))).thenReturn(table);
 
         org.apache.paimon.schema.TableSchema schema =
                 new org.apache.paimon.schema.TableSchema(
