@@ -1,0 +1,30 @@
+{
+  "version": 3,
+  "id": 0,
+  "fields": [
+    {
+      "id": 0,
+      "name": "id",
+      "type": "INT"
+    },
+    {
+      "id": 1,
+      "name": "name",
+      "type": "STRING"
+    },
+    {
+      "id": 2,
+      "name": "payload",
+      "type": "VARIANT"
+    }
+  ],
+  "highestFieldId": 2,
+  "partitionKeys": [],
+  "primaryKeys": [],
+  "options": {
+    "bucket": "-1",
+    "variant.shreddingSchema": "{\"type\":\"ROW\",\"fields\":[{\"name\":\"payload\",\"type\":{\"type\":\"ROW\",\"fields\":[{\"name\":\"age\",\"type\":\"BIGINT\"},{\"name\":\"city\",\"type\":\"VARCHAR\"}]}}]}"
+  },
+  "comment": null,
+  "timeMillis": 1780575218723
+}

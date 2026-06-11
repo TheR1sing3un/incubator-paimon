@@ -1,0 +1,34 @@
+{
+  "version": 3,
+  "id": 0,
+  "fields": [
+    {
+      "id": 0,
+      "name": "pt",
+      "type": "INT NOT NULL"
+    },
+    {
+      "id": 1,
+      "name": "a",
+      "type": "INT NOT NULL"
+    },
+    {
+      "id": 2,
+      "name": "b",
+      "type": "BIGINT"
+    }
+  ],
+  "highestFieldId": 2,
+  "partitionKeys": [
+    "pt"
+  ],
+  "primaryKeys": [
+    "pt",
+    "a"
+  ],
+  "options": {
+    "bucket": "1"
+  },
+  "comment": null,
+  "timeMillis": 1775644309244
+}

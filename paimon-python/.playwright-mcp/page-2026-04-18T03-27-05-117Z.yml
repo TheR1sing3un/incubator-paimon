@@ -1,0 +1,36 @@
+- generic [ref=e6]:
+  - generic [ref=e7]:
+    - generic [ref=e8]:
+      - img "logo" [ref=e9]
+      - generic [ref=e11]:
+        - generic [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - text: 中文
+          - img [ref=e14]
+        - list:
+          - listitem [ref=e15] [cursor=pointer]: 中文
+          - listitem [ref=e16] [cursor=pointer]: English
+    - generic [ref=e18]:
+      - heading "企业单点登录系统" [level=3] [ref=e19]
+      - paragraph [ref=e20]: 您正在进行grafana.corp.kuaishou.com要求的身份认证，通过后即可访问系统。
+      - generic [ref=e21]:
+        - generic [ref=e25]:
+          - generic [ref=e27]:
+            - generic [ref=e28]: 0Pass
+            - img [ref=e29]
+          - generic [ref=e30]: KIM扫码
+          - generic [ref=e31]: 短信验证
+          - generic [ref=e32]: 账号密码
+        - generic [ref=e33]:
+          - generic [ref=e35]:
+            - img [ref=e37]
+            - paragraph [ref=e38]: 刘朝阳
+            - paragraph [ref=e39]: liuchaoyang03
+            - button "一键登录" [ref=e40] [cursor=pointer]
+          - generic [ref=e41]:
+            - text: 登录遇到问题请联系客服Kimi
+            - generic [ref=e42]:
+              - img [ref=e43] [cursor=pointer]
+              - text: 客服Kimi
+    - generic [ref=e44]: 快手信息安全中心
+  - img [ref=e47] [cursor=pointer]

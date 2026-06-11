@@ -1,0 +1,52 @@
+{
+  "version": 3,
+  "id": 0,
+  "fields": [
+    {
+      "id": 0,
+      "name": "id",
+      "type": "INT"
+    },
+    {
+      "id": 1,
+      "name": "name",
+      "type": "STRING"
+    },
+    {
+      "id": 2,
+      "name": "category",
+      "type": "STRING"
+    },
+    {
+      "id": 3,
+      "name": "value",
+      "type": "DOUBLE"
+    },
+    {
+      "id": 4,
+      "name": "ts",
+      "type": "TIMESTAMP(6)"
+    },
+    {
+      "id": 5,
+      "name": "ts_ltz",
+      "type": "TIMESTAMP_LTZ(6)"
+    },
+    {
+      "id": 6,
+      "name": "t",
+      "type": "TIME(0)"
+    }
+  ],
+  "highestFieldId": 6,
+  "partitionKeys": [
+    "category"
+  ],
+  "primaryKeys": [],
+  "options": {
+    "dynamic-partition-overwrite": "false",
+    "file.format": "avro"
+  },
+  "comment": null,
+  "timeMillis": 1775181039126
+}

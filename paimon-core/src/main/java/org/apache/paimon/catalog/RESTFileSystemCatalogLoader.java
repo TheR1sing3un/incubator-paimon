@@ -16,28 +16,26 @@
  * limitations under the License.
  */
 
-package org.apache.paimon.catalog;
+package org.apache.paimon.spark.read;
 
-import org.apache.paimon.fs.FileIO;
-import org.apache.paimon.fs.Path;
+import org.apache.paimon.table.InnerTable;
+import org.apache.paimon.table.source.VectorRead;
+import org.apache.paimon.table.source.VectorSearchBuilderImpl;
 
-/** Loader to create {@link RESTFileSystemCatalog}. */
-public class RESTFileSystemCatalogLoader implements CatalogLoader {
+/**
+ * Spark-aware {@link VectorSearchBuilderImpl} which produces a {@link SparkVectorReadImpl} so the
+ * per-split vector index evaluation is dispatched through Spark instead of the local thread pool.
+ */
+public class SparkVectorSearchBuilderImpl extends VectorSearchBuilderImpl {
 
     private static final long serialVersionUID = 1L;
 
-    private final FileIO fileIO;
-    private final Path warehouse;
-    private final CatalogContext context;
-
-    public RESTFileSystemCatalogLoader(FileIO fileIO, Path warehouse, CatalogContext context) {
-        this.fileIO = fileIO;
-        this.warehouse = warehouse;
-        this.context = context;
+    public SparkVectorSearchBuilderImpl(InnerTable table) {
+        super(table);
     }
 
     @Override
-    public Catalog load() {
-        return new RESTFileSystemCatalog(fileIO, warehouse, context);
+    public VectorRead newVectorRead() {
+        return new SparkVectorReadImpl(table, filter, limit, vectorColumn, vector, options);
     }
 }
