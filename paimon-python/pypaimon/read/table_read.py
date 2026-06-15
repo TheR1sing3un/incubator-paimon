@@ -22,7 +22,6 @@ from typing import Any, Dict, Iterator, List, Optional
 import pandas
 import pyarrow
 
-from pypaimon.common.options.core_options import CoreOptions
 from pypaimon.common.predicate import Predicate
 from pypaimon.read.reader.iface.record_batch_reader import RecordBatchReader
 from pypaimon.read.split import Split
@@ -188,56 +187,7 @@ class TableRead:
         if not table_list:
             return pyarrow.Table.from_arrays([pyarrow.array([], type=field.type) for field in schema], schema=schema)
         else:
-            table = pyarrow.Table.from_batches(table_list)
-            return self._convert_descriptor_stored_fields_for_read(table)
-
-    def _convert_descriptor_stored_fields_for_read(self, table: pyarrow.Table) -> pyarrow.Table:
-        if CoreOptions.blob_as_descriptor(self.table.options):
-            return table
-
-        descriptor_fields = CoreOptions.blob_descriptor_fields(self.table.options)
-        if not descriptor_fields:
-            return table
-
-        from pypaimon.table.row.blob import Blob, BlobDescriptor
-
-        result = table
-        for field_name in descriptor_fields:
-            if field_name not in result.column_names:
-                continue
-            values = result.column(field_name).to_pylist()
-            converted_values = []
-            for value in values:
-                if value is None:
-                    converted_values.append(None)
-                    continue
-                if hasattr(value, 'as_py'):
-                    value = value.as_py()
-                if isinstance(value, str):
-                    value = value.encode('utf-8')
-                if isinstance(value, bytearray):
-                    value = bytes(value)
-                if not isinstance(value, bytes):
-                    converted_values.append(value)
-                    continue
-
-                try:
-                    descriptor = BlobDescriptor.deserialize(value)
-                    if descriptor.serialize() != value:
-                        converted_values.append(value)
-                        continue
-                    uri_reader = self.table.file_io.uri_reader_factory.create(descriptor.uri)
-                    converted_values.append(Blob.from_descriptor(uri_reader, descriptor).to_data())
-                except Exception:
-                    converted_values.append(value)
-
-            column_idx = result.column_names.index(field_name)
-            result = result.set_column(
-                column_idx,
-                pyarrow.field(field_name, pyarrow.large_binary(), nullable=True),
-                pyarrow.array(converted_values, type=pyarrow.large_binary()),
-            )
-        return result
+            return pyarrow.Table.from_batches(table_list)
 
     def _arrow_batch_generator(self, splits: List[Split], schema: pyarrow.Schema) -> Iterator[pyarrow.RecordBatch]:
         chunk_size = 65536
@@ -283,20 +233,20 @@ class TableRead:
                                     break
 
                             if len(row_tuple_chunk) >= chunk_size:
-                                for batch in self._convert_rows_to_arrow_batches_with_row_kind(
+                                batch = self._convert_rows_to_arrow_batch_with_row_kind(
                                     row_tuple_chunk, row_kind_chunk, schema
-                                ):
-                                    yield batch
+                                )
+                                yield batch
                                 row_tuple_chunk = []
                                 row_kind_chunk = []
                         if stop:
                             break
 
                     if row_tuple_chunk:
-                        for batch in self._convert_rows_to_arrow_batches_with_row_kind(
+                        batch = self._convert_rows_to_arrow_batch_with_row_kind(
                             row_tuple_chunk, row_kind_chunk, schema
-                        ):
-                            yield batch
+                        )
+                        yield batch
             finally:
                 reader.close()
 
@@ -378,8 +328,7 @@ class TableRead:
                 [pyarrow.array([], type=field.type) for field in schema],
                 schema=schema,
             )
-        table = pyarrow.Table.from_batches(table_list)
-        return self._convert_descriptor_stored_fields_for_read(table)
+        return pyarrow.Table.from_batches(table_list)
 
     def _read_one_split_to_batches(
         self,
@@ -430,31 +379,24 @@ class TableRead:
                             row_kind_chunk.append(row.get_row_kind().to_string())
 
                         if len(row_tuple_chunk) >= chunk_size:
-                            out.extend(self._convert_rows_to_arrow_batches_with_row_kind(
+                            out.append(self._convert_rows_to_arrow_batch_with_row_kind(
                                 row_tuple_chunk, row_kind_chunk, schema))
                             row_tuple_chunk = []
                             row_kind_chunk = []
                 if row_tuple_chunk:
-                    out.extend(self._convert_rows_to_arrow_batches_with_row_kind(
+                    out.append(self._convert_rows_to_arrow_batch_with_row_kind(
                         row_tuple_chunk, row_kind_chunk, schema))
         finally:
             reader.close()
         return out
 
-    def _convert_rows_to_arrow_batches_with_row_kind(
+    def _convert_rows_to_arrow_batch_with_row_kind(
         self,
         row_tuples: List[tuple],
         row_kinds: List[str],
         schema: pyarrow.Schema
-    ) -> Iterator[pyarrow.RecordBatch]:
-        """Convert rows to one or more Arrow batches, optionally including row kind column.
-
-        A RecordBatch STRING/BYTES column maps to pyarrow.string()/binary() which use
-        32-bit offsets (max 2GB per column). A chunk of large JSON blobs can overflow
-        that; pyarrow.array() then returns a ChunkedArray that RecordBatch.from_arrays
-        cannot hold. When that happens we split the chunk and recurse so every emitted
-        batch keeps each column under the limit.
-        """
+    ) -> pyarrow.RecordBatch:
+        """Convert rows to Arrow batch, optionally including row kind column."""
         if not self.include_row_kind or not row_kinds:
             # No row kind - use original schema (without _row_kind column)
             data_schema = schema
@@ -468,36 +410,7 @@ class TableRead:
             pydict = {ROW_KIND_COLUMN: row_kinds}
             for name, column in zip(data_field_names, columns_data):
                 pydict[name] = list(column)
-
-        arrays = []
-        overflow = False
-        for field in schema:
-            arr = pyarrow.array(pydict[field.name], type=field.type)
-            if isinstance(arr, pyarrow.ChunkedArray):
-                # A string/binary column exceeded the 2GB per-column limit for this
-                # chunk, so pyarrow auto-chunked it. A single RecordBatch cannot hold
-                # that, so split the rows and retry.
-                overflow = True
-                break
-            arrays.append(arr)
-
-        if not overflow:
-            yield pyarrow.RecordBatch.from_arrays(arrays, schema=schema)
-            return
-
-        n = len(row_tuples)
-        if n <= 1:
-            raise ValueError(
-                "A single row exceeds the 2GB per-column limit of pyarrow.string()/"
-                "binary(); cannot build a RecordBatch for this row."
-            )
-        mid = n // 2
-        left_kinds = row_kinds[:mid] if row_kinds else row_kinds
-        right_kinds = row_kinds[mid:] if row_kinds else row_kinds
-        yield from self._convert_rows_to_arrow_batches_with_row_kind(
-            row_tuples[:mid], left_kinds, schema)
-        yield from self._convert_rows_to_arrow_batches_with_row_kind(
-            row_tuples[mid:], right_kinds, schema)
+        return pyarrow.RecordBatch.from_pydict(pydict, schema=schema)
 
     def _add_row_kind_column_to_batch(
         self,
@@ -672,6 +585,8 @@ class TableRead:
                 split=split,
                 row_tracking_enabled=False,
                 outer_extract_name_paths=outer_extract_name_paths,
+                outer_flat_read_type=(
+                    self.read_type if outer_extract_name_paths else None),
                 limit=self.limit,
             )
         elif self.table.options.data_evolution_enabled():
@@ -687,15 +602,30 @@ class TableRead:
                 split=split,
                 row_tracking_enabled=True,
                 nested_name_paths=self.nested_name_paths,
+                limit=self.limit,
             )
         else:
+            inner_read_type = self.read_type
+            outer_extract_name_paths: Optional[List[List[str]]] = None
+            if self.nested_name_paths and any(
+                    len(p) > 1 for p in self.nested_name_paths):
+                # Mirror the merge path: read the full top-level columns so
+                # the per-file field-id normalization applies (a leaf path is
+                # only valid against the latest schema, not each file's own
+                # names/types), then extract the requested sub-paths back to
+                # the user's flat schema.
+                inner_read_type = self._widen_to_top_level_for_merge()
+                outer_extract_name_paths = self.nested_name_paths
             return RawFileSplitRead(
                 table=self.table,
                 predicate=self.predicate,
-                read_type=self.read_type,
+                read_type=inner_read_type,
                 split=split,
                 row_tracking_enabled=self.table.options.row_tracking_enabled(),
-                nested_name_paths=self.nested_name_paths,
+                outer_extract_name_paths=outer_extract_name_paths,
+                outer_flat_read_type=(
+                    self.read_type if outer_extract_name_paths else None),
+                limit=self.limit,
             )
 
     def _widen_to_top_level_for_merge(self) -> List[DataField]:
