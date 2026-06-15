@@ -238,13 +238,13 @@ class TableRead:
                 if self.include_row_kind:
                     row_kind_chunk.append(row.get_row_kind().to_string())
                 if len(row_tuple_chunk) >= chunk_size:
-                    yield self._convert_rows_to_arrow_batch_with_row_kind(
+                    yield from self._convert_rows_to_arrow_batches_with_row_kind(
                         row_tuple_chunk, row_kind_chunk, schema
                     )
                     row_tuple_chunk = []
                     row_kind_chunk = []
         if row_tuple_chunk:
-            yield self._convert_rows_to_arrow_batch_with_row_kind(
+            yield from self._convert_rows_to_arrow_batches_with_row_kind(
                 row_tuple_chunk, row_kind_chunk, schema
             )
 
@@ -335,10 +335,10 @@ class TableRead:
                                     break
 
                             if len(row_tuple_chunk) >= chunk_size:
-                                batch = self._convert_rows_to_arrow_batch_with_row_kind(
+                                for batch in self._convert_rows_to_arrow_batches_with_row_kind(
                                     row_tuple_chunk, row_kind_chunk, schema
-                                )
-                                yield batch
+                                ):
+                                    yield batch
                                 row_tuple_chunk = []
                                 row_kind_chunk = []
 
@@ -346,20 +346,27 @@ class TableRead:
                             break
 
                     if row_tuple_chunk:
-                        batch = self._convert_rows_to_arrow_batch_with_row_kind(
+                        for batch in self._convert_rows_to_arrow_batches_with_row_kind(
                             row_tuple_chunk, row_kind_chunk, schema
-                        )
-                        yield batch
+                        ):
+                            yield batch
             finally:
                 reader.close()
 
-    def _convert_rows_to_arrow_batch_with_row_kind(
+    def _convert_rows_to_arrow_batches_with_row_kind(
         self,
         row_tuples: List[tuple],
         row_kinds: List[str],
         schema: pyarrow.Schema
-    ) -> pyarrow.RecordBatch:
-        """Convert rows to Arrow batch, optionally including row kind column."""
+    ) -> Iterator[pyarrow.RecordBatch]:
+        """Convert rows to one or more Arrow batches, optionally including row kind column.
+
+        A RecordBatch STRING/BYTES column maps to pyarrow.string()/binary() which use
+        32-bit offsets (max 2GB per column). A chunk of large JSON blobs can overflow
+        that; pyarrow.array() then returns a ChunkedArray that RecordBatch.from_arrays
+        cannot hold. When that happens we split the chunk and recurse so every emitted
+        batch keeps each column under the limit.
+        """
         if not self.include_row_kind or not row_kinds:
             # No row kind - use original schema (without _row_kind column)
             data_schema = schema
@@ -373,7 +380,36 @@ class TableRead:
             pydict = {ROW_KIND_COLUMN: row_kinds}
             for name, column in zip(data_field_names, columns_data):
                 pydict[name] = list(column)
-        return pyarrow.RecordBatch.from_pydict(pydict, schema=schema)
+
+        arrays = []
+        overflow = False
+        for field in schema:
+            arr = pyarrow.array(pydict[field.name], type=field.type)
+            if isinstance(arr, pyarrow.ChunkedArray):
+                # A string/binary column exceeded the 2GB per-column limit for this
+                # chunk, so pyarrow auto-chunked it. A single RecordBatch cannot hold
+                # that, so split the rows and retry.
+                overflow = True
+                break
+            arrays.append(arr)
+
+        if not overflow:
+            yield pyarrow.RecordBatch.from_arrays(arrays, schema=schema)
+            return
+
+        n = len(row_tuples)
+        if n <= 1:
+            raise ValueError(
+                "A single row exceeds the 2GB per-column limit of pyarrow.string()/"
+                "binary(); cannot build a RecordBatch for this row."
+            )
+        mid = n // 2
+        left_kinds = row_kinds[:mid] if row_kinds else row_kinds
+        right_kinds = row_kinds[mid:] if row_kinds else row_kinds
+        yield from self._convert_rows_to_arrow_batches_with_row_kind(
+            row_tuples[:mid], left_kinds, schema)
+        yield from self._convert_rows_to_arrow_batches_with_row_kind(
+            row_tuples[mid:], right_kinds, schema)
 
     def _add_row_kind_column_to_batch(
         self,
