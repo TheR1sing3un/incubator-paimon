@@ -1096,7 +1096,11 @@ class CoreOptions:
         return (self.options.get(CoreOptions.SEQUENCE_FIELD_SORT_ORDER)
                 == SortOrder.ASCENDING)
 
-    def ignore_delete(self) -> bool:
+    def ignore_delete(self, default=None) -> bool:
+        # Walk merge-engine-specific fallback keys before the generic
+        # IGNORE_DELETE option so callers honour both kwai-side option
+        # callers that pass an explicit default and master callers that
+        # rely on the fallback chain.
         raw = self.options.to_map()
         fallback_keys = (
             "ignore-delete", "first-row.ignore-delete",
@@ -1107,6 +1111,8 @@ class CoreOptions:
             val = raw.get(key)
             if val is not None:
                 return OptionsUtils.convert_to_boolean(val)
+        if default is not None:
+            return default
         return False
 
     def data_file_external_paths(self, default=None):
@@ -1225,10 +1231,7 @@ class CoreOptions:
     def dv_freshness_read_enabled(self) -> bool:
         return self.deletion_vectors_enabled() and self.dv_read_mode() == DvReadMode.FRESHNESS
 
-    # Versioned partial-update / ignore-delete accessors
-    def ignore_delete(self, default=None):
-        return self.options.get(CoreOptions.IGNORE_DELETE, default)
-
+    # Versioned partial-update accessors
     def versioned_partial_update_merge_mode(self, default=None):
         return self.options.get(CoreOptions.VERSIONED_PARTIAL_UPDATE_MERGE_MODE, default)
 
