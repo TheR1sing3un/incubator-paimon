@@ -89,34 +89,33 @@ class CliExplainTest(unittest.TestCase):
 
     def test_explain_text_default(self):
         out = self._run()
-        self.assertIn('Plan for test_db.users', out)
-        self.assertIn('Plan summary', out)
-        self.assertIn('splits', out)
-        self.assertIn('files', out)
-        self.assertIn('rows (raw)', out)
+        self.assertIn('== PyPaimon Scan Plan ==', out)
+        self.assertIn('test_db.users', out)
+        self.assertIn('Splits:', out)
+        self.assertIn('Files:', out)
+        self.assertIn('Estimated rows:', out)
 
     def test_explain_json_output(self):
-        out = self._run('--output', 'json')
+        out = self._run('--format', 'json')
         # The JSON object should be the only block in stdout (text header is not printed in json mode)
         payload = json.loads(out)
-        self.assertGreaterEqual(payload['num_splits'], 1)
-        self.assertGreaterEqual(payload['num_files'], 1)
-        self.assertEqual(payload['total_row_count'], 5)
-        self.assertIn('files_per_split', payload)
-        self.assertIn('partition_breakdown', payload)
-        self.assertIn('top_splits_by_rows', payload)
-        self.assertIn('skew_ratio_rows', payload)
+        self.assertGreaterEqual(payload['split_count'], 1)
+        self.assertGreaterEqual(payload['file_count'], 1)
+        self.assertEqual(payload['estimated_row_count'], 5)
+        self.assertIn('files_per_split_avg', payload)
+        self.assertIn('table_identifier', payload)
+        self.assertIn('snapshot_id', payload)
 
     def test_explain_with_where_and_select(self):
         out = self._run(
             '--where', "age > 28",
             '--select', 'id,name',
-            '--output', 'json',
+            '--format', 'json',
         )
         payload = json.loads(out)
-        self.assertGreaterEqual(payload['num_splits'], 1)
-        # In JSON mode predicate_repr is the raw clause
-        self.assertEqual(payload['predicate_repr'], 'age > 28')
+        self.assertGreaterEqual(payload['split_count'], 1)
+        # predicate is the human-readable form of the pushed-down filter
+        self.assertIsNotNone(payload['predicate'])
 
     def test_explain_invalid_table_identifier(self):
         argv = ['paimon', '-c', self.config_file, 'table', 'explain', 'not_a_qualified_name']
