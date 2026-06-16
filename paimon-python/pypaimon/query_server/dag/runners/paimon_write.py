@@ -125,13 +125,14 @@ class PaimonWriteRunner(NodeRunner):
         from pypaimon.daft import write_paimon
 
         try:
+            # Community write_paimon takes a single ``mode`` string instead
+            # of overwrite/committer/message kwargs. committer/message are
+            # not yet plumbed through the daft path on master.
             write_paimon(
                 df,
                 identifier,
                 ctx.request.catalog_options,
-                overwrite=(mode == "overwrite"),
-                committer="paimon-dag",
-                message=f"DAG write from node {ctx.node.name}",
+                mode=("overwrite" if mode == "overwrite" else "append"),
             )
         except Exception as e:
             raise RunnerError(

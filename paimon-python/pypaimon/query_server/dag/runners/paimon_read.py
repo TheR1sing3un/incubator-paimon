@@ -77,11 +77,15 @@ class PaimonReadRunner(NodeRunner):
             df = read_paimon(
                 identifier,
                 ctx.request.catalog_options,
-                projection=columns,
-                limit=limit,
                 snapshot_id=snapshot_id,
                 tag_name=tag_name,
             )
+            # The community read_paimon returns a lazy Daft DataFrame;
+            # projection and limit are pushed through standard Daft ops.
+            if columns:
+                df = df.select(*columns)
+            if limit is not None:
+                df = df.limit(limit)
         except Exception as e:
             raise RunnerError(
                 f"paimon_read node {ctx.node.name!r} failed: {e}"
