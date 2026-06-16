@@ -155,6 +155,8 @@ class ConflictDetection:
         if self._row_id_check_from_snapshot is None:
             return None
 
+        delta_files = [entry.file for entry in commit_entries]
+
         history_id_ranges = []
         for entry in commit_entries:
             first_row_id = entry.file.first_row_id

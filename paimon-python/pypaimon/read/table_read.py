@@ -412,6 +412,54 @@ class TableRead:
                 pydict[name] = list(column)
         return pyarrow.RecordBatch.from_pydict(pydict, schema=schema)
 
+    def _convert_rows_to_arrow_batches_with_row_kind(
+        self,
+        row_tuples: List[tuple],
+        row_kinds: List[str],
+        schema: pyarrow.Schema,
+    ) -> Iterator[pyarrow.RecordBatch]:
+        """Yield one or more Arrow batches, recursively splitting on per-column
+        2GB overflow. Mirrors the kwai-side iterator surface that the chunked
+        overflow tests poke at directly; the common path emits a single batch
+        and matches the singular helper above."""
+        if not self.include_row_kind or not row_kinds:
+            data_schema = schema
+            columns_data = zip(*row_tuples)
+            pydict = {name: list(column) for name, column in zip(data_schema.names, columns_data)}
+        else:
+            data_field_names = [f.name for f in schema if f.name != ROW_KIND_COLUMN]
+            columns_data = zip(*row_tuples)
+            pydict = {ROW_KIND_COLUMN: row_kinds}
+            for name, column in zip(data_field_names, columns_data):
+                pydict[name] = list(column)
+
+        arrays = []
+        overflow = False
+        for field in schema:
+            arr = pyarrow.array(pydict[field.name], type=field.type)
+            if isinstance(arr, pyarrow.ChunkedArray):
+                overflow = True
+                break
+            arrays.append(arr)
+
+        if not overflow:
+            yield pyarrow.RecordBatch.from_arrays(arrays, schema=schema)
+            return
+
+        n = len(row_tuples)
+        if n <= 1:
+            raise ValueError(
+                "A single row exceeds the 2GB per-column limit of pyarrow.string()/"
+                "binary(); cannot build a RecordBatch for this row."
+            )
+        mid = n // 2
+        left_kinds = row_kinds[:mid] if row_kinds else row_kinds
+        right_kinds = row_kinds[mid:] if row_kinds else row_kinds
+        yield from self._convert_rows_to_arrow_batches_with_row_kind(
+            row_tuples[:mid], left_kinds, schema)
+        yield from self._convert_rows_to_arrow_batches_with_row_kind(
+            row_tuples[mid:], right_kinds, schema)
+
     def _add_row_kind_column_to_batch(
         self,
         batch: pyarrow.RecordBatch,
