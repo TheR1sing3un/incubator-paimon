@@ -53,3 +53,7 @@ paimon-faiss/paimon-faiss-jni/src/main/native/cmake-build-debug/
 
 ### Agent ###
 CLAUDE.md
+
+### pypaimon runtime test fixtures (should never be checked in) ###
+paimon-python/warehouse/
+paimon-python/.playwright-mcp/
