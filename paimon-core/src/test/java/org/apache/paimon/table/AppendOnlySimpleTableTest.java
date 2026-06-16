@@ -75,8 +75,6 @@ import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.RoaringBitmap32;
 
-import org.apache.paimon.shade.org.apache.parquet.hadoop.ParquetOutputFormat;
-
 import org.apache.commons.math3.random.RandomDataGenerator;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -1024,10 +1022,9 @@ public class AppendOnlySimpleTableTest extends SimpleTableTestBase {
                                             + "."
                                             + CoreOptions.COLUMNS,
                                     "price");
-                            options.set(ParquetOutputFormat.BLOCK_SIZE, "1048576");
-                            options.set(
-                                    ParquetOutputFormat.MIN_ROW_COUNT_FOR_PAGE_SIZE_CHECK, "100");
-                            options.set(ParquetOutputFormat.PAGE_ROW_COUNT_LIMIT, "300");
+                            options.set("parquet.block.size", "1048576");
+                            options.set("parquet.page.size.row.check.min", "100");
+                            options.set("parquet.page.row.count.limit", "300");
                         });
 
         int bound = 300000;
@@ -1109,9 +1106,9 @@ public class AppendOnlySimpleTableTest extends SimpleTableTestBase {
                                     + "."
                                     + CoreOptions.COLUMNS,
                             "price");
-                    options.set(ParquetOutputFormat.BLOCK_SIZE, "1048576");
-                    options.set(ParquetOutputFormat.MIN_ROW_COUNT_FOR_PAGE_SIZE_CHECK, "100");
-                    options.set(ParquetOutputFormat.PAGE_ROW_COUNT_LIMIT, "300");
+                    options.set("parquet.block.size", "1048576");
+                    options.set("parquet.page.size.row.check.min", "100");
+                    options.set("parquet.page.row.count.limit", "300");
                 };
         // in unaware-bucket mode, we split files into splits all the time
         FileStoreTable table = createUnawareBucketFileStoreTable(rowType, configure);
@@ -1208,9 +1205,9 @@ public class AppendOnlySimpleTableTest extends SimpleTableTestBase {
                     options.set(FILE_FORMAT, FILE_FORMAT_PARQUET);
                     options.set(WRITE_ONLY, true);
                     options.set(SOURCE_SPLIT_TARGET_SIZE, MemorySize.ofBytes(1));
-                    options.set(ParquetOutputFormat.BLOCK_SIZE, "1048576");
-                    options.set(ParquetOutputFormat.MIN_ROW_COUNT_FOR_PAGE_SIZE_CHECK, "100");
-                    options.set(ParquetOutputFormat.PAGE_ROW_COUNT_LIMIT, "300");
+                    options.set("parquet.block.size", "1048576");
+                    options.set("parquet.page.size.row.check.min", "100");
+                    options.set("parquet.page.row.count.limit", "300");
                 };
         // in unaware-bucket mode, we split files into splits all the time
         FileStoreTable table = createUnawareBucketFileStoreTable(rowType, configure);
