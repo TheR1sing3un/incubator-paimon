@@ -133,6 +133,14 @@ class DataFileBatchReader(RecordBatchReader):
         self.max_sequence_number = max_sequence_number
         self.system_fields = system_fields
         self.file_io = file_io
+        # Master's #8021 BlobView migration moved blob_as_descriptor /
+        # blob_descriptor_fields parameters off this constructor onto the
+        # call sites that now read them from CoreOptions. Initialise empty
+        # defaults so the legacy descriptor-blob-field walk below still works
+        # for the common path where the caller has not opted in to blob
+        # descriptors.
+        self.blob_as_descriptor = False
+        self.blob_descriptor_fields = set()
         self.blob_field_names = {
             field.name
             for field in fields
