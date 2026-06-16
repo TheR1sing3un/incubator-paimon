@@ -109,10 +109,18 @@ class Schema:
                     "Vector column family column '{}' must be VectorType, got {}."
                     .format(col_name, vf.type))
 
-        # Check if Blob type exists in the schema
+        # Check if Blob type exists in the schema. Match the top-level field
+        # type only — a nested ROW/ARRAY/MAP whose stringification happens to
+        # contain the substring "blob" (e.g. a sub-field literally named
+        # "blob") must not be flagged as a top-level BLOB column.
+        from pypaimon.schema.data_types import AtomicType
+
+        def _is_blob_atomic(t) -> bool:
+            return isinstance(t, AtomicType) and t.type.upper() == 'BLOB'
+
         blob_names = [
             field.name for field in fields
-            if 'blob' in str(field.type).lower()
+            if _is_blob_atomic(field.type)
         ]
 
         if blob_names:
