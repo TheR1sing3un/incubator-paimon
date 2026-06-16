@@ -22,6 +22,7 @@ from typing import Any, Dict, Iterator, List, Optional
 import pandas
 import pyarrow
 
+from pypaimon.common.options.core_options import CoreOptions
 from pypaimon.common.predicate import Predicate
 from pypaimon.read.reader.iface.record_batch_reader import RecordBatchReader
 from pypaimon.read.split import Split
